@@ -84,7 +84,11 @@ body { font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Robo
 .action-btn.danger { background: #fee2e2; color: #dc2626; }
 .action-btn.primary { background: #0f172a; color: white; }
 .action-btn.success { background: #10b981; color: white; }
+.action-btn.route { background: #4338ca; color: white; }
 .action-btn:hover { transform: scale(0.96); }
+.action-btn:disabled { opacity: 0.6; cursor: progress; transform: none; }
+.stat.real { color: #4338ca; }
+.stat.real span { color: #4338ca; }
 .section-card { background: #ffffff; border-radius: 24px; margin: 1.2rem 1.2rem; padding: 1.2rem; border: 1px solid #eef2f6; box-shadow: 0 1px 3px rgba(0,0,0,0.02); }
 .section-title { font-size: 1rem; font-weight: 700; margin-bottom: 1.2rem; display: flex; align-items: center; gap: 8px; color: #0f172a; border-left: 4px solid #3b82f6; padding-left: 12px; }
 .badge-count { background: #3b82f6; color: white; border-radius: 30px; padding: 2px 10px; font-size: 0.7rem; margin-left: 8px; }
@@ -102,6 +106,8 @@ body { font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Robo
 .delivery-header, .agenda-header { display: flex; justify-content: space-between; margin-bottom: 10px; align-items: flex-start; flex-wrap: wrap; gap: 8px; }
 .delivery-id { font-weight: 800; background: #0f172a; color: white; padding: 4px 12px; border-radius: 30px; font-size: 0.7rem; }
 .agenda-badge { background: #10b981; color: white; padding: 4px 12px; border-radius: 30px; font-size: 0.7rem; font-weight: 600; display: inline-flex; align-items: center; gap: 5px; }
+.route-order { background: #4338ca; color: white; padding: 4px 10px; border-radius: 30px; font-size: 0.7rem; font-weight: 800; }
+.leg-info { font-size: 0.72rem; color: #4338ca; font-weight: 600; }
 .status-badge { font-size: 0.7rem; padding: 4px 10px; border-radius: 30px; font-weight: 600; }
 .status-pendente { background: #fee2e2; color: #dc2626; }
 .status-em-rota { background: #e0f2fe; color: #0284c7; }
@@ -884,6 +890,7 @@ body {
                 <div class="stat" id="timeEstimate">Tempo: --</div>
             </div>
             <div class="action-buttons">
+                <button type="button" id="optimizeRouteBtn" class="action-btn route" title="Calcular a melhor ordem de entrega pelas ruas"><i class="fas fa-route"></i> Otimizar rota</button>
                 <button type="button" id="backupBtn" class="action-btn primary" title="Exportar dados (JSON)"><i class="fas fa-database"></i> Backup</button>
                 <button type="button" id="restoreBtn" class="action-btn success" title="Importar dados (JSON)"><i class="fas fa-upload"></i> Restaurar</button>
                 <button type="button" id="clearRouteBtn" class="action-btn danger"><i class="fas fa-trash-alt"></i> Limpar rota</button>
@@ -1336,6 +1343,23 @@ function updateProgressAndEstimates() {
     document.getElementById('progressPercent').innerText = percent + '%';
     document.getElementById('progressFill').style.width = percent + '%';
 
+    const distEl = document.getElementById('distanceEstimate');
+    const timeEl = document.getElementById('timeEstimate');
+
+    if (routeMetrics && routeMetrics.signature === routeSignature(pendingStops())) {
+        distEl.classList.add('real');
+        timeEl.classList.add('real');
+        distEl.innerHTML = `Dist: ${formatKm(routeMetrics.meters)}`;
+        timeEl.innerHTML = `Tempo: ${formatDuration(routeMetrics.seconds)}`;
+        return;
+    }
+
+    // A rota traçada não corresponde mais às paradas pendentes: descarta a
+    // linha do mapa e volta para a estimativa em linha reta.
+    clearRouteOverlay();
+    distEl.classList.remove('real');
+    timeEl.classList.remove('real');
+
     const pendentes = deliveries.filter(d => d.status !== 'entregue');
     if (pendentes.length > 1) {
         let coords = pendentes.map(d => ({ lat: d.lat, lng: d.lng }));
@@ -1344,11 +1368,11 @@ function updateProgressAndEstimates() {
             totalDist += haversineDistance(coords[i-1].lat, coords[i-1].lng, coords[i].lat, coords[i].lng);
         }
         let timeMin = totalDist / 30 * 60;
-        document.getElementById('distanceEstimate').innerHTML = `Dist: ${totalDist.toFixed(1)} km`;
-        document.getElementById('timeEstimate').innerHTML = `Tempo: ~${Math.round(timeMin)} min`;
-    } else if (pendentes.length <= 1) {
-        document.getElementById('distanceEstimate').innerHTML = 'Dist: --';
-        document.getElementById('timeEstimate').innerHTML = 'Tempo: --';
+        distEl.innerHTML = `Dist: ~${totalDist.toFixed(1)} km`;
+        timeEl.innerHTML = `Tempo: ~${Math.round(timeMin)} min`;
+    } else {
+        distEl.innerHTML = 'Dist: --';
+        timeEl.innerHTML = 'Tempo: --';
     }
 }
 
@@ -1716,9 +1740,15 @@ function renderDeliveriesList() {
 
         const favBtn = `<button class="fav-btn ${del.favorito ? 'active' : ''}" data-id="${del.id}" title="${del.favorito ? 'Remover dos favoritos' : 'Adicionar aos favoritos'}"><i class="fas fa-star"></i></button>`;
 
+        const orderBadge = del.routeOrder ? `<span class="route-order" title="Ordem na rota otimizada">${del.routeOrder}º</span>` : '';
+        const legOrigin = del.routeOrder === 1 ? 'do ponto de partida' : 'da parada anterior';
+        const legHtml = del.legMeters === undefined ? '' :
+            `<div class="leg-info"><i class="fas fa-car"></i> ${formatKm(del.legMeters)} · ${formatDuration(del.legSeconds)} ${legOrigin}</div>`;
+
         html += `<div class="delivery-item" data-id="${del.id}">
                     <div class="delivery-header">
                         <div class="delivery-info">
+                            ${orderBadge}
                             ${photosHtml}
                             <span class="delivery-id">ID: ${del.sequentialId}</span>
                             ${agendaBadge}
@@ -1730,6 +1760,7 @@ function renderDeliveriesList() {
                         <span class="status-badge ${statusClass}">${statusLabel}</span>
                     </div>
                     <div><i class="fas fa-location-dot"></i> ${escapeHtml(del.endereco)}</div>
+                    ${legHtml}
                     ${phonesDisplay}
                     ${whatsLink ? `<div>${whatsLink}</div>` : ''}
                     ${del.notes ? `<div><i class="fas fa-pen"></i> ${escapeHtml(del.notes)}</div>` : ''}
@@ -2650,6 +2681,247 @@ function addDeliveryDirect(nome, endereco, telefones, pacotes, notes) {
     });
 }
 
+// ========== ROTA OTIMIZADA (Directions API) ==========
+// A Directions API aceita no máximo 25 pontos intermediários por requisição.
+const MAX_WAYPOINTS = 23;
+let directionsService = null;
+let routeRenderers = [];
+let routeMetrics = null;
+let startPoint = null;
+let gpsDenied = false;
+let optimizing = false;
+
+function isPendingStop(d) {
+    return d.status !== 'entregue' && typeof d.lat === 'number' && typeof d.lng === 'number';
+}
+function pendingStops() { return deliveries.filter(isPendingStop); }
+
+function routeSignature(stops) {
+    const start = startPoint ? `${startPoint.lat.toFixed(3)},${startPoint.lng.toFixed(3)}` : 'lista';
+    return start + '|' + stops.map(d => d.id).join('>');
+}
+
+function formatKm(meters) { return (meters / 1000).toFixed(1).replace('.', ',') + ' km'; }
+function formatDuration(seconds) {
+    const min = Math.round(seconds / 60);
+    if (min < 60) return `${min} min`;
+    return `${Math.floor(min / 60)}h${String(min % 60).padStart(2, '0')}`;
+}
+
+// Uma tentativa de GPS por sessão: se o motorista recusar, a primeira parada
+// da lista passa a ser o ponto de partida.
+function requestStartPoint() {
+    if (startPoint || gpsDenied || !navigator.geolocation) return Promise.resolve(startPoint);
+    return new Promise(resolve => {
+        navigator.geolocation.getCurrentPosition(
+            pos => { startPoint = { lat: pos.coords.latitude, lng: pos.coords.longitude }; resolve(startPoint); },
+            () => { gpsDenied = true; resolve(null); },
+            { enableHighAccuracy: true, timeout: 8000, maximumAge: 60000 }
+        );
+    });
+}
+
+function showStartMarker() {
+    if (gpsMarker) gpsMarker.setMap(null);
+    gpsMarker = null;
+    if (!startPoint || !map) return;
+    gpsMarker = new google.maps.Marker({
+        position: startPoint,
+        map: map,
+        title: 'Ponto de partida',
+        zIndex: 999,
+        icon: { path: google.maps.SymbolPath.CIRCLE, scale: 8, fillColor: '#4338ca', fillOpacity: 1, strokeColor: 'white', strokeWeight: 3 }
+    });
+}
+
+function routeDirections(request) {
+    return new Promise((resolve, reject) => {
+        directionsService.route(request, (result, status) => {
+            if (status === 'OK' && result) resolve(result);
+            else reject(new Error(status));
+        });
+    });
+}
+
+function directionsErrorMessage(err) {
+    switch (err && err.message) {
+        case 'REQUEST_DENIED': return "Habilite a Directions API na chave do Google";
+        case 'OVER_QUERY_LIMIT': return "Limite do Google atingido, tente em instantes";
+        case 'ZERO_RESULTS': return "Não há caminho por rua entre essas paradas";
+        case 'MAX_WAYPOINTS_EXCEEDED': return "Paradas demais para uma única rota";
+        default: return "Não consegui calcular a rota agora";
+    }
+}
+
+// Sem destino fixo, a parada mais distante da partida é o melhor ponto final:
+// a otimização resolve o caminho no meio.
+function farthestFrom(point, stops) {
+    let best = stops[0], bestDist = -1;
+    stops.forEach(s => {
+        const dist = haversineDistance(point.lat, point.lng, s.lat, s.lng);
+        if (dist > bestDist) { bestDist = dist; best = s; }
+    });
+    return best;
+}
+
+async function orderByDirections(stops) {
+    const fixedStart = startPoint ? null : stops[0];
+    const origin = startPoint || { lat: fixedStart.lat, lng: fixedStart.lng };
+    const rest = fixedStart ? stops.slice(1) : stops.slice();
+    const end = farthestFrom(origin, rest);
+    const waypoints = rest.filter(s => s !== end);
+    const result = await routeDirections({
+        origin: origin,
+        destination: { lat: end.lat, lng: end.lng },
+        waypoints: waypoints.map(s => ({ location: { lat: s.lat, lng: s.lng }, stopover: true })),
+        optimizeWaypoints: true,
+        travelMode: google.maps.TravelMode.DRIVING
+    });
+    const order = result.routes[0].waypoint_order || waypoints.map((_, i) => i);
+    const middle = order.map(i => waypoints[i]);
+    return { ordered: fixedStart ? [fixedStart, ...middle, end] : [...middle, end], result: result };
+}
+
+// Acima do limite da API: vizinho mais próximo, sempre indo para a parada
+// pendente mais perto da atual.
+function orderByProximity(stops) {
+    const fixedStart = startPoint ? null : stops[0];
+    let current = startPoint || { lat: fixedStart.lat, lng: fixedStart.lng };
+    const remaining = fixedStart ? stops.slice(1) : stops.slice();
+    const ordered = fixedStart ? [fixedStart] : [];
+    while (remaining.length) {
+        let bestIdx = 0, bestDist = Infinity;
+        remaining.forEach((s, i) => {
+            const dist = haversineDistance(current.lat, current.lng, s.lat, s.lng);
+            if (dist < bestDist) { bestDist = dist; bestIdx = i; }
+        });
+        current = remaining.splice(bestIdx, 1)[0];
+        ordered.push(current);
+    }
+    return ordered;
+}
+
+// Reposiciona as pendentes nos lugares que já ocupavam, sem mexer nas
+// entregues nem renumerar os IDs colados nos pacotes.
+function applyStopOrder(ordered) {
+    const slots = [];
+    deliveries.forEach((d, i) => { if (isPendingStop(d)) slots.push(i); });
+    // Reordenar com uma lista incompleta deixaria buracos na rota e no backup.
+    if (ordered.length !== slots.length) throw new Error('ORDER_MISMATCH');
+    ordered.forEach((d, i) => { deliveries[slots[i]] = d; });
+}
+
+function clearRouteOverlay() {
+    routeRenderers.forEach(r => r.setMap(null));
+    routeRenderers = [];
+    routeMetrics = null;
+    deliveries.forEach(d => { delete d.legMeters; delete d.legSeconds; delete d.routeOrder; });
+}
+
+function chunkPoints(points) {
+    const perRequest = MAX_WAYPOINTS + 2;
+    const chunks = [];
+    for (let i = 0; i < points.length - 1; i += perRequest - 1) {
+        chunks.push(points.slice(i, i + perRequest));
+    }
+    return chunks;
+}
+
+async function renderRoute(ordered, precomputed) {
+    const points = ordered.map(s => ({ lat: s.lat, lng: s.lng }));
+    if (startPoint) points.unshift(startPoint);
+
+    let results = precomputed ? [precomputed] : [];
+    if (!precomputed) {
+        for (const chunk of chunkPoints(points)) {
+            results.push(await routeDirections({
+                origin: chunk[0],
+                destination: chunk[chunk.length - 1],
+                waypoints: chunk.slice(1, -1).map(p => ({ location: p, stopover: true })),
+                travelMode: google.maps.TravelMode.DRIVING
+            }));
+        }
+    }
+
+    routeRenderers.forEach(r => r.setMap(null));
+    routeRenderers = results.map(result => new google.maps.DirectionsRenderer({
+        map: map,
+        directions: result,
+        suppressMarkers: true,
+        suppressInfoWindows: true,
+        preserveViewport: true,
+        polylineOptions: { strokeColor: '#4338ca', strokeOpacity: 0.75, strokeWeight: 5 }
+    }));
+
+    let meters = 0, seconds = 0;
+    const legs = results.reduce((acc, r) => acc.concat(r.routes[0].legs), []);
+    legs.forEach((leg, i) => {
+        const legMeters = leg.distance ? leg.distance.value : 0;
+        const legSeconds = leg.duration ? leg.duration.value : 0;
+        meters += legMeters;
+        seconds += legSeconds;
+        const stop = ordered[startPoint ? i : i + 1];
+        if (stop) { stop.legMeters = legMeters; stop.legSeconds = legSeconds; }
+    });
+    ordered.forEach((s, i) => { s.routeOrder = i + 1; });
+    routeMetrics = { signature: routeSignature(pendingStops()), meters: meters, seconds: seconds };
+}
+
+function fitMapToRoute() {
+    if (!map || !routeRenderers.length) return;
+    const bounds = new google.maps.LatLngBounds();
+    routeRenderers.forEach(r => {
+        const dirs = r.getDirections();
+        if (dirs && dirs.routes[0]) bounds.union(dirs.routes[0].bounds);
+    });
+    if (!bounds.isEmpty()) map.fitBounds(bounds);
+}
+
+async function optimizeRoute() {
+    if (optimizing) return;
+    if (!directionsService) return showToast("Mapa ainda carregando", true);
+    const stops = pendingStops();
+    if (stops.length < 2) return showToast("Precisa de ao menos 2 entregas pendentes", true);
+
+    const btn = document.getElementById('optimizeRouteBtn');
+    const btnHtml = btn.innerHTML;
+    optimizing = true;
+    btn.disabled = true;
+    btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Calculando…';
+
+    try {
+        await requestStartPoint();
+        showStartMarker();
+
+        let ordered, precomputed = null;
+        if (stops.length <= MAX_WAYPOINTS + 1) {
+            const planned = await orderByDirections(stops);
+            ordered = planned.ordered;
+            precomputed = planned.result;
+        } else {
+            ordered = orderByProximity(stops);
+            showToast(`${stops.length} paradas: ordem por proximidade, distância pelas ruas`);
+        }
+
+        applyStopOrder(ordered);
+        await renderRoute(ordered, precomputed);
+        saveStorage();
+        renderDeliveriesList();
+        rebuildMarkers(false);
+        fitMapToRoute();
+        switchSidebarTab('rota');
+        showToast(`Rota pronta: ${formatKm(routeMetrics.meters)} · ${formatDuration(routeMetrics.seconds)}`);
+    } catch (e) {
+        clearRouteOverlay();
+        renderDeliveriesList();
+        showToast(directionsErrorMessage(e), true);
+    } finally {
+        optimizing = false;
+        btn.disabled = false;
+        btn.innerHTML = btnHtml;
+    }
+}
+
 // ========== MAPA E INICIALIZAÇÃO ==========
 function initMap() {
     map = new google.maps.Map(document.getElementById("map"), { 
@@ -2662,6 +2934,7 @@ function initMap() {
         styles: mapStyle
     });
     geocoder = new google.maps.Geocoder();
+    directionsService = new google.maps.DirectionsService();
     const addressInput = document.getElementById("address");
     autocomplete = new google.maps.places.Autocomplete(addressInput, { 
         componentRestrictions: { country: "br" }, 
@@ -2710,6 +2983,7 @@ function initMap() {
         }
     });
 
+    document.getElementById('optimizeRouteBtn').addEventListener('click', optimizeRoute);
     document.getElementById('clearRouteBtn').addEventListener('click', clearRoute);
     document.getElementById('toggleSidebarBtn').addEventListener('click', toggleSidebar);
     document.getElementById('copyFromRouteBtn').addEventListener('click', copyFromOtherRoute);
@@ -2901,7 +3175,7 @@ window.addEventListener('beforeunload', persistStorageNow);
 
 if ('serviceWorker' in navigator) {
     const swCode = `
-            const CACHE_NAME = 'rotaflow-v4';
+            const CACHE_NAME = 'rotaflow-v5';
             const ASSETS = [ './' ];
             self.addEventListener('install', event => {
                 event.waitUntil(caches.open(CACHE_NAME).then(cache => cache.addAll(ASSETS)));
