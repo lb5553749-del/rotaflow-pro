@@ -333,7 +333,29 @@ body { font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Robo
     height: 4px;
     background: #cbd5e1;
     border-radius: 2px;
-    margin: 12px auto;
+    margin: 12px auto 6px;
+}
+.panel-swipe-hint {
+    text-align: center;
+    font-size: 0.7rem;
+    color: #94a3b8;
+    margin-bottom: 8px;
+    user-select: none;
+}
+.delivery-bottom-panel.red-bg .panel-swipe-hint { color: rgba(255,255,255,0.75); }
+.panel-content.swipe-anim-next {
+    animation: panelSwipeNext 0.22s ease;
+}
+.panel-content.swipe-anim-prev {
+    animation: panelSwipePrev 0.22s ease;
+}
+@keyframes panelSwipeNext {
+    from { opacity: 0.35; transform: translateX(48px); }
+    to { opacity: 1; transform: translateX(0); }
+}
+@keyframes panelSwipePrev {
+    from { opacity: 0.35; transform: translateX(-48px); }
+    to { opacity: 1; transform: translateX(0); }
 }
 .panel-content {
     padding: 0 20px 20px;
@@ -930,6 +952,7 @@ body {
 
 <div id="deliveryPanel" class="delivery-bottom-panel">
     <div class="panel-handle"></div>
+    <div class="panel-swipe-hint" aria-hidden="true">← deslize para trocar a entrega →</div>
     <div class="panel-content">
         <div class="panel-header">
             <h3>
@@ -1550,6 +1573,114 @@ function clearForm() {
 }
 
 // ========== PAINEL INFERIOR ==========
+function focusDeliveryInPanel(delivery, direction = 0) {
+    if (!delivery) return;
+    openDeliveryPanel(delivery);
+    const marker = markersList.find(m => m.sequentialId === delivery.sequentialId);
+    if (marker) {
+        highlightMarker(marker, delivery);
+        if (map) {
+            const pos = marker.getPosition();
+            if (pos) map.panTo(pos);
+        }
+    }
+    if (direction !== 0) animatePanelSwipe(direction);
+}
+
+function animatePanelSwipe(direction) {
+    const content = document.querySelector('#deliveryPanel .panel-content');
+    if (!content) return;
+    content.classList.remove('swipe-anim-next', 'swipe-anim-prev');
+    void content.offsetWidth;
+    content.classList.add(direction > 0 ? 'swipe-anim-next' : 'swipe-anim-prev');
+}
+
+function getPanelDeliveryIndex() {
+    if (!currentSelectedDelivery) return -1;
+    return deliveries.findIndex(d => d.id === currentSelectedDelivery.id);
+}
+
+function isActiveStop(d) {
+    return d && d.status !== 'entregue' && d.status !== 'falhou';
+}
+
+// direction: 1 = próxima (deslize esquerda), -1 = anterior (deslize direita)
+function goToAdjacentDelivery(direction, { preferPending = false } = {}) {
+    if (!deliveries.length) {
+        closeDeliveryPanel();
+        return;
+    }
+    const idx = getPanelDeliveryIndex();
+    if (preferPending) {
+        for (let step = 1; step <= deliveries.length; step++) {
+            const i = (Math.max(idx, 0) + step) % deliveries.length;
+            if (isActiveStop(deliveries[i])) {
+                focusDeliveryInPanel(deliveries[i], 1);
+                return;
+            }
+        }
+        if (idx >= 0) openDeliveryPanel(deliveries[idx]);
+        else closeDeliveryPanel();
+        showToast('Todas as entregas concluídas');
+        return;
+    }
+    const next = idx + direction;
+    if (idx < 0) {
+        focusDeliveryInPanel(deliveries[0], direction);
+        return;
+    }
+    if (next < 0) {
+        showToast('Primeira entrega');
+        return;
+    }
+    if (next >= deliveries.length) {
+        showToast('Última entrega');
+        return;
+    }
+    focusDeliveryInPanel(deliveries[next], direction);
+}
+
+function setupPanelSwipe() {
+    const panel = document.getElementById('deliveryPanel');
+    if (!panel || panel.dataset.swipeReady) return;
+    panel.dataset.swipeReady = '1';
+    let startX = 0, startY = 0, tracking = false;
+
+    const onStart = (x, y) => {
+        startX = x;
+        startY = y;
+        tracking = true;
+    };
+    const onEnd = (x, y) => {
+        if (!tracking || !panel.classList.contains('open')) return;
+        tracking = false;
+        const dx = x - startX;
+        const dy = y - startY;
+        if (Math.abs(dx) < 70 || Math.abs(dx) < Math.abs(dy) * 1.2) return;
+        // Deslize para a esquerda → próxima; para a direita → anterior (inclui entregues)
+        goToAdjacentDelivery(dx < 0 ? 1 : -1);
+    };
+
+    panel.addEventListener('touchstart', (e) => {
+        if (e.touches.length !== 1) return;
+        onStart(e.touches[0].clientX, e.touches[0].clientY);
+    }, { passive: true });
+    panel.addEventListener('touchend', (e) => {
+        if (!e.changedTouches.length) return;
+        onEnd(e.changedTouches[0].clientX, e.changedTouches[0].clientY);
+    }, { passive: true });
+
+    panel.addEventListener('pointerdown', (e) => {
+        if (e.pointerType === 'touch') return;
+        if (e.target.closest('button, a, input, select, textarea')) return;
+        onStart(e.clientX, e.clientY);
+    });
+    panel.addEventListener('pointerup', (e) => {
+        if (e.pointerType === 'touch') return;
+        onEnd(e.clientX, e.clientY);
+    });
+}
+
 function openDeliveryPanel(delivery) {
     currentSelectedDelivery = delivery;
     const panel = document.getElementById('deliveryPanel');
@@ -1586,13 +1717,13 @@ function openDeliveryPanel(delivery) {
         const undoBtn = document.createElement('button');
         undoBtn.className = 'panel-action-btn undo';
         undoBtn.innerHTML = '<i class="fas fa-undo-alt"></i> Desfazer entrega';
-        undoBtn.onclick = () => { undoDelivered(delivery.id); closeDeliveryPanel(); };
+        undoBtn.onclick = () => { undoDelivered(delivery.id, { keepPanel: true }); };
         actionsDiv.appendChild(undoBtn);
     } else {
         const deliverBtn = document.createElement('button');
         deliverBtn.className = 'panel-action-btn deliver';
         deliverBtn.innerHTML = '<i class="fas fa-check-circle"></i> Entregar';
-        deliverBtn.onclick = () => { markDelivered(delivery.id); closeDeliveryPanel(); };
+        deliverBtn.onclick = () => { markDelivered(delivery.id, { advance: true }); };
         actionsDiv.appendChild(deliverBtn);
     }
     if (delivery.telefones && delivery.telefones.length) {
@@ -3447,6 +3578,7 @@ function initMap() {
     document.getElementById('panelPacotesMinus').addEventListener('click', () => adjustPacotes(-1));
     document.getElementById('editObsBtn').addEventListener('click', editObservation);
     document.getElementById('editPhoneBtn').addEventListener('click', editPhonesPanel);
+    setupPanelSwipe();
 
     document.getElementById('profileBtn').addEventListener('click', showProfileModal);
     document.getElementById('backupBtn').addEventListener('click', backupData);
@@ -3557,7 +3689,7 @@ function geocodeAddressAndUpdate(delivery, newAddress, callback) {
     });
 }
 
-function markDelivered(id) {
+function markDelivered(id, { advance = false } = {}) {
     let d = deliveries.find(d => d.id === id);
     if (d && d.status !== 'entregue') {
         d.status = 'entregue';
@@ -3569,11 +3701,15 @@ function markDelivered(id) {
         renderDeliveriesList();
         notifyRouteCompositionChanged({ keepRoute: true });
         showToast(`✅ ${d.sequentialId} entregue!`);
-        if (currentSelectedDelivery && currentSelectedDelivery.id === id) closeDeliveryPanel();
+        if (advance) {
+            goToAdjacentDelivery(1, { preferPending: true });
+        } else if (currentSelectedDelivery && currentSelectedDelivery.id === id) {
+            openDeliveryPanel(d);
+        }
     }
 }
 
-function undoDelivered(id) {
+function undoDelivered(id, { keepPanel = false } = {}) {
     let d = deliveries.find(d => d.id === id);
     if (d && d.status === 'entregue') {
         d.status = 'pendente';
@@ -3585,7 +3721,9 @@ function undoDelivered(id) {
         renderDeliveriesList();
         notifyRouteCompositionChanged({ keepRoute: true });
         showToast(`↩️ Entrega ${d.sequentialId} reaberta (pendente)`);
-        if (currentSelectedDelivery && currentSelectedDelivery.id === id) closeDeliveryPanel();
+        if (keepPanel || (currentSelectedDelivery && currentSelectedDelivery.id === id)) {
+            openDeliveryPanel(d);
+        }
     }
 }
 
@@ -3673,7 +3811,7 @@ window.addEventListener('beforeunload', persistStorageNow);
 
 if ('serviceWorker' in navigator) {
     const swCode = `
-            const CACHE_NAME = 'rotaflow-v10';
+            const CACHE_NAME = 'rotaflow-v11';
             const ASSETS = [ './' ];
             self.addEventListener('install', event => {
                 event.waitUntil(caches.open(CACHE_NAME).then(cache => cache.addAll(ASSETS)));
