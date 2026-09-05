@@ -116,6 +116,8 @@ body { font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Robo
 .delivery-actions, .agenda-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 12px; flex-wrap: wrap; }
 .icon-btn { background: none; border: none; cursor: pointer; font-size: 0.9rem; color: #64748b; padding: 6px; border-radius: 30px; }
 .icon-btn:hover { background: #f1f5f9; color: #0f172a; }
+.icon-btn.disabled, .icon-btn:disabled { opacity: 0.55; cursor: not-allowed; color: #94a3b8; }
+.icon-btn.disabled:hover, .icon-btn:disabled:hover { background: none; color: #94a3b8; }
 .whatsapp-link { background: #25D366; color: white; padding: 4px 12px; border-radius: 30px; font-size: 0.7rem; display: inline-flex; align-items: center; gap: 6px; text-decoration: none; }
 .search-box { display: flex; align-items: center; background: #f8fafc; border-radius: 40px; padding: 8px 16px; margin-bottom: 16px; border: 1px solid #eef2f6; }
 .search-box input { border: none; flex: 1; outline: none; background: transparent; font-size: 0.85rem; }
@@ -1238,7 +1240,7 @@ function checkAddressDuplicate() {
         addressInput.classList.remove('duplicate');
         return;
     }
-    const found = deliveries.find(d => d.endereco.toLowerCase() === address);
+    const found = findActiveRouteByAddress(address);
     if (found) {
         warningText.textContent = `Endereço já está na rota (ID: ${found.sequentialId})`;
         warningDiv.classList.add('show');
@@ -1354,9 +1356,8 @@ function updateProgressAndEstimates() {
         return;
     }
 
-    // A rota traçada não corresponde mais às paradas pendentes: descarta a
-    // linha do mapa e volta para a estimativa em linha reta.
-    clearRouteOverlay();
+    // Não limpa a linha aqui: marcar entregue redesenha a rota; só
+    // adicionar/remover/reordenar chama clearRouteOverlay de propósito.
     distEl.classList.remove('real');
     timeEl.classList.remove('real');
 
@@ -1740,9 +1741,10 @@ function renderDeliveriesList() {
 
         const favBtn = `<button class="fav-btn ${del.favorito ? 'active' : ''}" data-id="${del.id}" title="${del.favorito ? 'Remover dos favoritos' : 'Adicionar aos favoritos'}"><i class="fas fa-star"></i></button>`;
 
-        const orderBadge = del.routeOrder ? `<span class="route-order" title="Ordem na rota otimizada">${del.routeOrder}º</span>` : '';
+        const orderBadge = (del.routeOrder && del.status !== 'entregue' && del.status !== 'falhou')
+            ? `<span class="route-order" title="Ordem na rota otimizada">${del.routeOrder}º</span>` : '';
         const legOrigin = del.routeOrder === 1 ? 'do ponto de partida' : 'da parada anterior';
-        const legHtml = del.legMeters === undefined ? '' :
+        const legHtml = (del.legMeters === undefined || del.status === 'entregue' || del.status === 'falhou') ? '' :
             `<div class="leg-info"><i class="fas fa-car"></i> ${formatKm(del.legMeters)} · ${formatDuration(del.legSeconds)} ${legOrigin}</div>`;
 
         html += `<div class="delivery-item" data-id="${del.id}">
@@ -1812,13 +1814,31 @@ function renderDeliveriesList() {
 
 function attachDeliveryEvents() {
     document.querySelectorAll(".select-status").forEach(sel => {
-        sel.onchange = () => { let id = parseInt(sel.dataset.id); let d = deliveries.find(d => d.id === id); if (d) { const oldStatus = d.status; d.status = sel.value; saveStorage(); if (oldStatus !== d.status) { const marker = markersList.find(m => m.sequentialId === d.sequentialId); if (marker) updateMarkerIcon(marker, d); else rebuildMarkers(false); } updateDeliveryStats(); renderDeliveriesList(); } };
+        sel.onchange = () => {
+            let id = parseInt(sel.dataset.id);
+            let d = deliveries.find(d => d.id === id);
+            if (!d) return;
+            const oldStatus = d.status;
+            d.status = sel.value;
+            saveStorage();
+            if (oldStatus !== d.status) {
+                const marker = markersList.find(m => m.sequentialId === d.sequentialId);
+                if (marker) updateMarkerIcon(marker, d);
+                else rebuildMarkers(false);
+            }
+            updateDeliveryStats();
+            renderDeliveriesList();
+            // Entregue/falhou: redesenha a rota nas que faltam. Outros status: só atualiza.
+            if (oldStatus !== d.status && (d.status === 'entregue' || oldStatus === 'entregue' || d.status === 'falhou' || oldStatus === 'falhou')) {
+                notifyRouteCompositionChanged({ keepRoute: true });
+            }
+        };
     });
     document.querySelectorAll(".edit-delivery").forEach(btn => { btn.onclick = () => { let id = parseInt(btn.dataset.id); let d = deliveries.find(d => d.id === id); if (d) showEditDeliveryModal(d, (updated) => editDeliveryInRoute(d, updated)); }; });
-    document.querySelectorAll(".move-up").forEach(btn => { btn.onclick = () => { let id = parseInt(btn.dataset.id); let idx = deliveries.findIndex(d => d.id === id); if (idx > 0) { [deliveries[idx-1], deliveries[idx]] = [deliveries[idx], deliveries[idx-1]]; saveStorage(); renderDeliveriesList(); } }; });
-    document.querySelectorAll(".move-down").forEach(btn => { btn.onclick = () => { let id = parseInt(btn.dataset.id); let idx = deliveries.findIndex(d => d.id === id); if (idx < deliveries.length-1) { [deliveries[idx+1], deliveries[idx]] = [deliveries[idx], deliveries[idx+1]]; saveStorage(); renderDeliveriesList(); } }; });
+    document.querySelectorAll(".move-up").forEach(btn => { btn.onclick = () => { let id = parseInt(btn.dataset.id); let idx = deliveries.findIndex(d => d.id === id); if (idx > 0) { [deliveries[idx-1], deliveries[idx]] = [deliveries[idx], deliveries[idx-1]]; saveStorage(); clearRouteOverlay(); renderDeliveriesList(); updateProgressAndEstimates(); } }; });
+    document.querySelectorAll(".move-down").forEach(btn => { btn.onclick = () => { let id = parseInt(btn.dataset.id); let idx = deliveries.findIndex(d => d.id === id); if (idx < deliveries.length-1) { [deliveries[idx+1], deliveries[idx]] = [deliveries[idx], deliveries[idx+1]]; saveStorage(); clearRouteOverlay(); renderDeliveriesList(); updateProgressAndEstimates(); } }; });
     document.querySelectorAll(".remove-del").forEach(btn => { btn.onclick = () => { let id = parseInt(btn.dataset.id); const removed = deliveries.find(d => d.id === id);
-                deliveries = deliveries.filter(d => d.id !== id); persistStorageNow(); renderDeliveriesList(); if (removed) removeMarkerById(removed.sequentialId); showToast("Entrega removida"); }; });
+                deliveries = deliveries.filter(d => d.id !== id); persistStorageNow(); clearRouteOverlay(); renderDeliveriesList(); if (removed) removeMarkerById(removed.sequentialId); updateProgressAndEstimates(); showToast("Entrega removida"); }; });
     document.querySelectorAll(".save-agenda").forEach(btn => { btn.onclick = () => { let id = parseInt(btn.dataset.id); let d = deliveries.find(d => d.id === id); if (d) saveToAgenda(d, true); }; });
     document.querySelectorAll("[data-wa-phone]").forEach(el => {
         el.addEventListener('click', (e) => {
@@ -2067,6 +2087,10 @@ function renderAgendaList() {
                 return label + formatPhoneShort(p.numero);
             }).join(', ') : '—';
         const favoritoIcon = item.favorito ? '⭐ ' : '';
+        const onRoute = findActiveRouteByAddress(item.endereco);
+        const addBtn = onRoute
+            ? `<button class="icon-btn add-agenda disabled" disabled title="Já está na rota">🔒 Na rota (${onRoute.sequentialId})</button>`
+            : `<button class="icon-btn add-agenda" data-id="${item.agendaId}"><i class="fas fa-plus-circle"></i> Adicionar à rota</button>`;
         html += `<div class="agenda-item" data-id="${item.agendaId}">
                     <div class="agenda-header">
                         <strong>${favoritoIcon}${escapeHtml(item.nome)}</strong>
@@ -2077,7 +2101,7 @@ function renderAgendaList() {
                     <div>📞 ${escapeHtml(phonesDisplay)}</div>
                     ${item.notes ? `<div>📝 ${escapeHtml(item.notes)}</div>` : ''}
                     ${photosHtml}
-                    <div class="agenda-actions"><button class="icon-btn add-agenda" data-id="${item.agendaId}"><i class="fas fa-plus-circle"></i> Adicionar à rota</button></div>
+                    <div class="agenda-actions">${addBtn}</div>
                 </div>`;
     });
     container.innerHTML = html;
@@ -2213,36 +2237,77 @@ function showEditAgendaModal(item, onSave) {
 }
 
 // ========== ADICIONAR DA AGENDA PARA A ROTA (PERMITIDO) ==========
+function normalizeAddress(addr) {
+    return String(addr || '').trim().toLowerCase().replace(/\s+/g, ' ');
+}
+function findActiveRouteByAddress(endereco) {
+    const key = normalizeAddress(endereco);
+    return deliveries.find(d =>
+        normalizeAddress(d.endereco) === key &&
+        d.status !== 'entregue' &&
+        d.status !== 'falhou'
+    );
+}
+
 function addAgendaToRoute(item) {
-    // Verifica se o endereço já está na rota
-    if (deliveries.some(d => d.endereco.toLowerCase() === item.endereco.toLowerCase())) {
-        showToast("Endereço já está na rota!", true);
+    const already = findActiveRouteByAddress(item.endereco);
+    if (already) {
+        showToast(`Endereço já está na rota (ID: ${already.sequentialId})`, true);
+        switchSidebarTab('rota');
         return;
     }
-    // Permite adicionar à rota mesmo que o endereço esteja na agenda
-    const newId = getSequentialId(nextSequenceNumber);
-    deliveries.push({ 
-        id: newId(), 
-        sequentialId: newId, 
-        nome: item.nome, 
-        endereco: item.endereco, 
-        telefones: item.telefones || [], 
-        pacotes: item.pacotes || 1, 
-        status: "pendente", 
-        lat: item.lat, 
-        lng: item.lng, 
-        savedToAgenda: false, 
-        photos: [...(item.photos || [])], 
-        notes: item.notes || '',
-        favorito: item.favorito || false
+
+    const finish = (lat, lng) => {
+        const seqId = getSequentialId(nextSequenceNumber);
+        deliveries.push({
+            id: newId(),
+            sequentialId: seqId,
+            nome: item.nome,
+            endereco: item.endereco,
+            telefones: item.telefones || [],
+            pacotes: item.pacotes || 1,
+            status: "pendente",
+            lat,
+            lng,
+            savedToAgenda: true,
+            photos: [...(item.photos || [])],
+            notes: item.notes || '',
+            favorito: item.favorito || false
+        });
+        nextSequenceNumber++;
+        persistStorageNow();
+        renderDeliveriesList();
+        renderAgendaList();
+        upsertMarker(deliveries[deliveries.length - 1]);
+        updateLastIdDisplay(seqId);
+        clearRouteOverlay();
+        updateProgressAndEstimates();
+        switchSidebarTab('rota');
+        showToast(`✅ ${item.nome} adicionado à rota (ID ${seqId})`);
+    };
+
+    if (typeof item.lat === 'number' && typeof item.lng === 'number') {
+        finish(item.lat, item.lng);
+        return;
+    }
+    if (!geocoder) {
+        showToast("Aguarde o mapa carregar", true);
+        return;
+    }
+    showToast("Buscando coordenadas...");
+    geocoder.geocode({ address: item.endereco }, (res, stat) => {
+        let lat = PORTO_VELHO_CENTER.lat, lng = PORTO_VELHO_CENTER.lng;
+        if (stat === "OK" && res[0]) {
+            lat = res[0].geometry.location.lat();
+            lng = res[0].geometry.location.lng();
+            item.lat = lat;
+            item.lng = lng;
+            saveStorage();
+        } else {
+            showToast("Endereço sem coordenadas, usando o centro do mapa", true);
+        }
+        finish(lat, lng);
     });
-    nextSequenceNumber++; 
-    persistStorageNow();
-    renderDeliveriesList();
-    upsertMarker(deliveries[deliveries.length - 1]);
-    updateLastIdDisplay(newId);
-    switchSidebarTab('rota');
-    showToast(`✅ ${item.nome} adicionado à rota (ID ${newId})`);
 }
 
 // ========== SALVAR NA AGENDA ==========
@@ -2354,8 +2419,10 @@ function clearRoute() {
     if (confirm("Limpar todas as entregas?")) {
         deliveries = [];
         nextSequenceNumber = 1;
+        clearRouteOverlay();
         saveStorage();
         renderDeliveriesList();
+        renderAgendaList();
         rebuildMarkers(false);
         updateLastIdDisplay(null);
         showToast("Rota limpa");
@@ -2434,7 +2501,7 @@ function initNameSuggestions() {
         });
 
         agendaMatches.forEach(item => {
-            const isInRoute = deliveries.some(d => d.endereco.toLowerCase() === item.endereco.toLowerCase());
+            const onRoute = findActiveRouteByAddress(item.endereco);
             combined.push({
                 type: 'agenda',
                 item: item,
@@ -2445,7 +2512,8 @@ function initNameSuggestions() {
                 notes: item.notes || '',
                 favorito: item.favorito || false,
                 agendaId: item.agendaId,
-                isInRoute: isInRoute
+                isInRoute: !!onRoute,
+                sequentialId: onRoute ? onRoute.sequentialId : null
             });
         });
 
@@ -2607,9 +2675,10 @@ function initNameSuggestions() {
                 const phones = JSON.parse(btn.dataset.phones || '[]');
                 const pacotes = parseInt(btn.dataset.pacotes) || 1;
                 const notes = btn.dataset.notes || '';
-                // Verifica se já está na rota
-                if (deliveries.some(d => d.endereco.toLowerCase() === address.toLowerCase())) {
-                    showToast("Endereço já está na rota!", true);
+                // Verifica se já está na rota (pendente / em rota)
+                const already = findActiveRouteByAddress(address);
+                if (already) {
+                    showToast(`Endereço já está na rota (ID: ${already.sequentialId})`, true);
                     suggestionsDiv.style.display = 'none';
                     return;
                 }
@@ -2630,9 +2699,10 @@ function initNameSuggestions() {
 function addDeliveryDirect(nome, endereco, telefones, pacotes, notes) {
     if (!nome || !endereco) { showToast("Nome e endereço obrigatórios", true); return; }
 
-    // Verifica se já está na rota
-    if (deliveries.some(d => d.endereco.toLowerCase() === endereco.toLowerCase())) {
-        showToast("Endereço já está na rota!", true);
+    // Verifica se já está na rota (pendente / em rota)
+    const already = findActiveRouteByAddress(endereco);
+    if (already) {
+        showToast(`Endereço já está na rota (ID: ${already.sequentialId})`, true);
         return;
     }
 
@@ -2687,9 +2757,11 @@ const MAX_WAYPOINTS = 23;
 let directionsService = null;
 let routeRenderers = [];
 let routeMetrics = null;
+let routeActive = false;
 let startPoint = null;
 let gpsDenied = false;
 let optimizing = false;
+let routeRefreshTimer = null;
 
 function isPendingStop(d) {
     return d.status !== 'entregue' && typeof d.lat === 'number' && typeof d.lng === 'number';
@@ -2815,6 +2887,7 @@ function clearRouteOverlay() {
     routeRenderers.forEach(r => r.setMap(null));
     routeRenderers = [];
     routeMetrics = null;
+    routeActive = false;
     deliveries.forEach(d => { delete d.legMeters; delete d.legSeconds; delete d.routeOrder; });
 }
 
@@ -2828,6 +2901,8 @@ function chunkPoints(points) {
 }
 
 async function renderRoute(ordered, precomputed) {
+    deliveries.forEach(d => { delete d.legMeters; delete d.legSeconds; delete d.routeOrder; });
+
     const points = ordered.map(s => ({ lat: s.lat, lng: s.lng }));
     if (startPoint) points.unshift(startPoint);
 
@@ -2865,6 +2940,7 @@ async function renderRoute(ordered, precomputed) {
     });
     ordered.forEach((s, i) => { s.routeOrder = i + 1; });
     routeMetrics = { signature: routeSignature(pendingStops()), meters: meters, seconds: seconds };
+    routeActive = true;
 }
 
 function fitMapToRoute() {
@@ -2919,6 +2995,42 @@ async function optimizeRoute() {
         optimizing = false;
         btn.disabled = false;
         btn.innerHTML = btnHtml;
+    }
+}
+
+// Redesenha a linha nas paradas que ainda faltam, sem mudar a ordem.
+// Usado ao marcar entregue para a otimização não sumir do mapa.
+async function refreshRouteKeepOrder() {
+    if (optimizing || !directionsService || !routeActive) return;
+    const stops = pendingStops();
+    if (stops.length < 2) {
+        clearRouteOverlay();
+        updateProgressAndEstimates();
+        renderDeliveriesList();
+        return;
+    }
+    try {
+        await renderRoute(stops, null);
+        renderDeliveriesList();
+        updateProgressAndEstimates();
+    } catch (e) {
+        clearRouteOverlay();
+        updateProgressAndEstimates();
+        renderDeliveriesList();
+    }
+}
+
+function scheduleRouteRefresh() {
+    if (!routeActive) return;
+    clearTimeout(routeRefreshTimer);
+    routeRefreshTimer = setTimeout(() => { refreshRouteKeepOrder(); }, 250);
+}
+
+function notifyRouteCompositionChanged({ keepRoute = false } = {}) {
+    if (keepRoute && routeActive) scheduleRouteRefresh();
+    else {
+        clearRouteOverlay();
+        updateProgressAndEstimates();
     }
 }
 
@@ -3072,6 +3184,7 @@ function markDelivered(id) {
         else rebuildMarkers(false);
         updateDeliveryStats();
         renderDeliveriesList();
+        notifyRouteCompositionChanged({ keepRoute: true });
         showToast(`✅ ${d.sequentialId} entregue!`);
         if (currentSelectedDelivery && currentSelectedDelivery.id === id) closeDeliveryPanel();
     }
@@ -3087,6 +3200,7 @@ function undoDelivered(id) {
         else rebuildMarkers(false);
         updateDeliveryStats();
         renderDeliveriesList();
+        notifyRouteCompositionChanged({ keepRoute: true });
         showToast(`↩️ Entrega ${d.sequentialId} reaberta (pendente)`);
         if (currentSelectedDelivery && currentSelectedDelivery.id === id) closeDeliveryPanel();
     }
@@ -3107,9 +3221,10 @@ document.addEventListener('DOMContentLoaded', function() {
         if (!nome || !end) { showToast("Preencha nome e endereço", true); return; }
         if (!geocoder) { showToast("Aguarde o mapa carregar", true); return; }
 
-        // Verifica se o endereço já está na rota
-        if (deliveries.some(d => d.endereco.toLowerCase() === end.toLowerCase())) {
-            showToast("Endereço já está na rota!", true);
+        // Verifica se o endereço já está na rota (pendente / em rota)
+        const already = findActiveRouteByAddress(end);
+        if (already) {
+            showToast(`Endereço já está na rota (ID: ${already.sequentialId})`, true);
             return;
         }
 
@@ -3175,7 +3290,7 @@ window.addEventListener('beforeunload', persistStorageNow);
 
 if ('serviceWorker' in navigator) {
     const swCode = `
-            const CACHE_NAME = 'rotaflow-v5';
+            const CACHE_NAME = 'rotaflow-v6';
             const ASSETS = [ './' ];
             self.addEventListener('install', event => {
                 event.waitUntil(caches.open(CACHE_NAME).then(cache => cache.addAll(ASSETS)));
