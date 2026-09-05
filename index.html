@@ -2158,7 +2158,12 @@ function attachDeliveryEvents() {
             let d = deliveries.find(d => d.id === id);
             if (!d) return;
             const oldStatus = d.status;
+            const normalsBefore = countNormalActiveStops();
             d.status = sel.value;
+            if (d.status === 'entregue' || d.status === 'falhou') {
+                d.voltarDepois = false;
+                if (d.status === 'entregue') delete d.failReason;
+            }
             saveStorage();
             if (oldStatus !== d.status) {
                 const marker = markersList.find(m => m.sequentialId === d.sequentialId);
@@ -2167,9 +2172,12 @@ function attachDeliveryEvents() {
             }
             updateDeliveryStats();
             renderDeliveriesList();
-            // Entregue/falhou: redesenha a rota nas que faltam. Outros status: só atualiza.
             if (oldStatus !== d.status && (d.status === 'entregue' || oldStatus === 'entregue' || d.status === 'falhou' || oldStatus === 'falhou')) {
                 notifyRouteCompositionChanged({ keepRoute: true });
+            }
+            if (oldStatus !== d.status && (d.status === 'entregue' || d.status === 'falhou')) {
+                if (d.status === 'entregue') playDeliveryFeedback();
+                maybeNotifyVoltarDepois(normalsBefore);
             }
         };
     });
@@ -3581,7 +3589,8 @@ function initMap() {
     });
     autocomplete.addListener("place_changed", () => { const place = autocomplete.getPlace(); if (place && place.formatted_address) addressInput.value = place.formatted_address; });
     loadStorage();
-    restoreVoltarDepoisReminders();
+    localStorage.removeItem('rotaflow_reminders');
+    voltarDepoisAlertShown = false;
     initNameSuggestions();
     setupNewDeliveryPhoneUI();
 
@@ -3713,10 +3722,10 @@ function geocodeAddressAndUpdate(delivery, newAddress, callback) {
 function markDelivered(id, { advance = false } = {}) {
     let d = deliveries.find(d => d.id === id);
     if (d && d.status !== 'entregue') {
+        const normalsBefore = countNormalActiveStops();
         d.status = 'entregue';
         d.voltarDepois = false;
         delete d.failReason;
-        cancelVoltarDepoisReminder(id);
         saveStorage();
         const marker = markersList.find(m => m.sequentialId === d.sequentialId);
         if (marker) updateMarkerIcon(marker, d);
@@ -3726,6 +3735,7 @@ function markDelivered(id, { advance = false } = {}) {
         notifyRouteCompositionChanged({ keepRoute: true });
         playDeliveryFeedback();
         showToast(`✅ ${d.sequentialId} entregue!`);
+        maybeNotifyVoltarDepois(normalsBefore);
         if (advance) {
             goToAdjacentDelivery(1, { preferPending: true });
         } else if (currentSelectedDelivery && currentSelectedDelivery.id === id) {
@@ -3755,7 +3765,6 @@ function undoDelivered(id, { keepPanel = false } = {}) {
 }
 
 // ========== NÃO ENTREGUE / VOLTAR DEPOIS ==========
-const VOLTAR_DEPOIS_MINUTES = 30;
 const FAIL_REASON_LABELS = {
     ausente: 'Ausente',
     'endereco-errado': 'Endereço errado',
@@ -3769,7 +3778,7 @@ const FAIL_REASON_OPTIONS = [
     { id: 'voltar-depois', label: 'Voltar depois', icon: 'fas fa-clock', iconColor: '#b45309' }
 ];
 
-let reminderTimers = {};
+let voltarDepoisAlertShown = false;
 
 function playDeliveryFeedback() {
     try {
@@ -3805,66 +3814,72 @@ async function ensureNotificationPermission() {
     }
 }
 
-function loadReminders() {
-    try { return JSON.parse(localStorage.getItem('rotaflow_reminders') || '[]'); }
-    catch (e) { return []; }
-}
-function saveReminders(list) {
-    localStorage.setItem('rotaflow_reminders', JSON.stringify(list));
+function countNormalActiveStops() {
+    return deliveries.filter(d => isActiveStop(d) && !d.voltarDepois).length;
 }
 
-function cancelVoltarDepoisReminder(deliveryId) {
-    if (reminderTimers[deliveryId]) {
-        clearTimeout(reminderTimers[deliveryId]);
-        delete reminderTimers[deliveryId];
+function getVoltarDepoisStops() {
+    return deliveries.filter(d => isActiveStop(d) && d.voltarDepois);
+}
+
+// Avisa ao terminar a penúltima (ou a última) entrega "normal",
+// para o motorista lembrar de voltar às paradas adiadas.
+function maybeNotifyVoltarDepois(normalsBefore) {
+    const postponed = getVoltarDepoisStops();
+    if (!postponed.length) {
+        voltarDepoisAlertShown = false;
+        return;
     }
-    saveReminders(loadReminders().filter(r => r.deliveryId !== deliveryId));
+    const normalsAfter = countNormalActiveStops();
+    // Penúltima: saiu de 2+ normais para 1 (ou 0).
+    if (!(normalsBefore > 1 && normalsAfter <= 1)) return;
+    if (voltarDepoisAlertShown) return;
+    voltarDepoisAlertShown = true;
+    notifyVoltarDepoisStops(postponed);
 }
 
-function fireVoltarDepoisReminder(reminder) {
-    cancelVoltarDepoisReminder(reminder.deliveryId);
-    const d = deliveries.find(x => x.id === reminder.deliveryId);
-    if (!d || d.status === 'entregue' || d.status === 'falhou' || !d.voltarDepois) return;
+function notifyVoltarDepoisStops(list) {
+    const items = list || getVoltarDepoisStops();
+    if (!items.length) return;
 
-    showToast(`⏰ Voltar depois: ${d.sequentialId} — ${d.nome}`, true);
+    const names = items.map(d => `${d.sequentialId} · ${d.nome}`).join(', ');
+    const msg = items.length === 1
+        ? `⏰ Voltar depois: ${names}`
+        : `⏰ Voltar depois (${items.length}): ${names}`;
+    showToast(msg, true);
+
     try {
         if (navigator.vibrate) navigator.vibrate([120, 60, 120, 60, 180]);
+    } catch (e) {}
+
+    try {
+        const Ctx = window.AudioContext || window.webkitAudioContext;
+        if (Ctx) {
+            const ctx = new Ctx();
+            const osc = ctx.createOscillator();
+            const gain = ctx.createGain();
+            osc.type = 'triangle';
+            osc.frequency.value = 660;
+            gain.gain.value = 0.08;
+            osc.connect(gain);
+            gain.connect(ctx.destination);
+            osc.start();
+            gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.25);
+            osc.stop(ctx.currentTime + 0.26);
+            setTimeout(() => { try { ctx.close(); } catch (e) {} }, 350);
+        }
     } catch (e) {}
 
     if ('Notification' in window && Notification.permission === 'granted') {
         try {
             new Notification('RotaFlow — Voltar depois', {
-                body: `${d.sequentialId} · ${d.nome}\n${d.endereco}`,
-                tag: 'voltar-' + d.id,
+                body: names,
+                tag: 'voltar-depois-penultima',
                 renotify: true,
                 icon: APP_ICON
             });
         } catch (e) {}
     }
-}
-
-function scheduleVoltarDepoisReminder(delivery, minutes = VOLTAR_DEPOIS_MINUTES) {
-    cancelVoltarDepoisReminder(delivery.id);
-    const when = Date.now() + minutes * 60 * 1000;
-    const reminder = {
-        deliveryId: delivery.id,
-        sequentialId: delivery.sequentialId,
-        nome: delivery.nome,
-        when
-    };
-    const list = loadReminders().filter(r => r.deliveryId !== delivery.id);
-    list.push(reminder);
-    saveReminders(list);
-    reminderTimers[delivery.id] = setTimeout(() => fireVoltarDepoisReminder(reminder), minutes * 60 * 1000);
-}
-
-function restoreVoltarDepoisReminders() {
-    const now = Date.now();
-    loadReminders().forEach(r => {
-        const delay = r.when - now;
-        if (delay <= 0) fireVoltarDepoisReminder(r);
-        else reminderTimers[r.deliveryId] = setTimeout(() => fireVoltarDepoisReminder(r), delay);
-    });
 }
 
 async function markNotDelivered(id) {
@@ -3883,20 +3898,20 @@ async function markNotDelivered(id) {
     });
     if (!choice) return;
 
+    const normalsBefore = countNormalActiveStops();
+
     if (choice === 'voltar-depois') {
         d.status = 'pendente';
         d.voltarDepois = true;
         d.failReason = 'voltar-depois';
-        const allowed = await ensureNotificationPermission();
-        scheduleVoltarDepoisReminder(d);
+        await ensureNotificationPermission();
         saveStorage();
         const marker = markersList.find(m => m.sequentialId === d.sequentialId);
         if (marker) updateMarkerIcon(marker, d);
         updateDeliveryStats();
         renderDeliveriesList();
-        showToast(allowed
-            ? `⏰ ${d.sequentialId} voltar depois — aviso em ${VOLTAR_DEPOIS_MINUTES} min`
-            : `⏰ ${d.sequentialId} voltar depois — aviso no app em ${VOLTAR_DEPOIS_MINUTES} min`);
+        voltarDepoisAlertShown = false;
+        showToast(`⏰ ${d.sequentialId} voltar depois — aviso na penúltima entrega`);
         goToAdjacentDelivery(1, { preferPending: true });
         return;
     }
@@ -3904,7 +3919,6 @@ async function markNotDelivered(id) {
     d.status = 'falhou';
     d.voltarDepois = false;
     d.failReason = choice;
-    cancelVoltarDepoisReminder(d.id);
     saveStorage();
     const marker = markersList.find(m => m.sequentialId === d.sequentialId);
     if (marker) updateMarkerIcon(marker, d);
@@ -3913,6 +3927,7 @@ async function markNotDelivered(id) {
     renderDeliveriesList();
     notifyRouteCompositionChanged({ keepRoute: true });
     showToast(`${d.sequentialId}: ${FAIL_REASON_LABELS[choice] || 'Não entregue'}`);
+    maybeNotifyVoltarDepois(normalsBefore);
     goToAdjacentDelivery(1, { preferPending: true });
 }
 
@@ -3999,7 +4014,7 @@ window.addEventListener('beforeunload', persistStorageNow);
 
 if ('serviceWorker' in navigator) {
     const swCode = `
-            const CACHE_NAME = 'rotaflow-v14';
+            const CACHE_NAME = 'rotaflow-v15';
             const ASSETS = [ './' ];
             self.addEventListener('install', event => {
                 event.waitUntil(caches.open(CACHE_NAME).then(cache => cache.addAll(ASSETS)));
