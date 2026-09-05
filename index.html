@@ -2606,7 +2606,6 @@ function addAgendaToRoute(item) {
     const already = findActiveRouteByAddress(item.endereco);
     if (already) {
         showToast(`Endereço já está na rota (ID: ${already.sequentialId})`, true);
-        switchSidebarTab('rota');
         return;
     }
 
@@ -2635,7 +2634,6 @@ function addAgendaToRoute(item) {
         updateLastIdDisplay(seqId);
         clearRouteOverlay();
         updateProgressAndEstimates();
-        switchSidebarTab('rota');
         showToast(`✅ ${item.nome} adicionado à rota (ID ${seqId})`);
     };
 
@@ -3811,7 +3809,7 @@ window.addEventListener('beforeunload', persistStorageNow);
 
 if ('serviceWorker' in navigator) {
     const swCode = `
-            const CACHE_NAME = 'rotaflow-v11';
+            const CACHE_NAME = 'rotaflow-v12';
             const ASSETS = [ './' ];
             self.addEventListener('install', event => {
                 event.waitUntil(caches.open(CACHE_NAME).then(cache => cache.addAll(ASSETS)));
