@@ -1,0 +1,175 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+    <meta name="theme-color" content="#0f172a">
+    <meta name="description" content="RotaFlow Pro — gestão de entregas com mapa, rota e agenda">
+    <title>RotaFlow Pro - Gestão de Entregas</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:opsz,wght@14..32,400;500;600;700;800&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
+    <link rel="stylesheet" href="css/styles.css">
+    <link rel="manifest" href="manifest.webmanifest">
+</head>
+<body>
+<div class="app-container" id="appContainer">
+    <aside class="sidebar" id="sidebar" aria-label="Painel de entregas">
+        <div class="sidebar-header">
+            <div class="brand">
+                <div class="brand-mark" aria-hidden="true"><i class="fas fa-route"></i></div>
+                <div>
+                    <h1>RotaFlow</h1>
+                    <p>Gestão de entregas</p>
+                </div>
+            </div>
+            <div class="last-id-container" id="lastIdContainer">
+                <span>Último ID</span>
+                <span class="last-id-value" id="lastIdValue">—</span>
+            </div>
+            <button type="button" id="installBtn" class="install-btn">Instalar</button>
+        </div>
+        <nav class="sidebar-tabs" aria-label="Seções">
+            <button type="button" class="active" data-tab="nova"><i class="fas fa-plus"></i> Nova</button>
+            <button type="button" data-tab="rota">Rota <span class="tab-count" id="deliveryCountBadge">0</span></button>
+            <button type="button" data-tab="agenda">Agenda <span class="tab-count" id="agendaCountBadge">0</span></button>
+        </nav>
+        <div class="sidebar-panels">
+            <section class="sidebar-panel active" data-panel="nova" id="panelNova">
+                <div class="section-card">
+                    <div class="section-title"><i class="fas fa-plus-circle"></i> Nova entrega</div>
+                    <div class="form-group">
+                        <label for="customerName"><i class="fas fa-user"></i> Nome do cliente</label>
+                        <input type="text" id="customerName" placeholder="Nome ou parte do endereço" autocomplete="off">
+                        <div id="nameSuggestions" class="name-suggestions" role="listbox"></div>
+                    </div>
+                    <div class="form-group">
+                        <label for="address"><i class="fas fa-location-dot"></i> Endereço completo</label>
+                        <input type="text" id="address" placeholder="Rua, número, bairro, cidade" autocomplete="off">
+                        <div id="addressWarning" class="address-warning">
+                            <i class="fas fa-exclamation-triangle"></i>
+                            <span id="addressWarningText">Endereço já está na rota (ID: A1)</span>
+                            <span style="font-size:0.7rem; margin-left:4px;">(clique para preencher)</span>
+                        </div>
+                    </div>
+                    <div class="form-row-2cols">
+                        <div class="form-group" style="flex:2;">
+                            <label for="newPhoneInput"><i class="fas fa-phone-alt"></i> Telefones</label>
+                            <div class="add-phone-row">
+                                <input type="tel" id="newPhoneInput" placeholder="(69) 99999-9999">
+                                <input type="text" id="newPhoneLabel" placeholder="Identificação" style="flex:1;">
+                                <button type="button" id="addPhoneBtn" aria-label="Adicionar telefone"><i class="fas fa-plus"></i></button>
+                            </div>
+                            <div id="phoneTagsContainer" class="phone-tags"></div>
+                        </div>
+                        <div class="form-group">
+                            <label for="pacotes"><i class="fas fa-box"></i> Pacotes</label>
+                            <input type="number" id="pacotes" min="1" value="1">
+                        </div>
+                    </div>
+                    <div class="checkbox-group">
+                        <input type="checkbox" id="saveToAgendaCheckbox">
+                        <label for="saveToAgendaCheckbox"><i class="fas fa-book"></i> Salvar também na agenda</label>
+                    </div>
+                    <button type="button" id="addDeliveryBtn" class="btn-primary"><i class="fas fa-map-marker-alt"></i> Adicionar entrega</button>
+                </div>
+            </section>
+            <section class="sidebar-panel" data-panel="rota" id="panelRota">
+                <div class="section-card" style="background:#fefce8; border-left: 4px solid #eab308;">
+                    <div class="section-title">Rota atual</div>
+                    <div class="search-box"><i class="fas fa-search"></i><input type="search" id="routeSearchInput" placeholder="Buscar na rota"></div>
+                    <div id="deliveriesList" class="list-scroll"></div>
+                </div>
+            </section>
+            <section class="sidebar-panel" data-panel="agenda" id="panelAgenda">
+                <div class="section-card">
+                    <div class="section-title"><i class="fas fa-book"></i> Biblioteca de paradas</div>
+                    <div class="search-box"><i class="fas fa-search"></i><input type="search" id="agendaSearchInput" placeholder="Buscar na agenda"></div>
+                    <div id="agendaList" class="list-scroll"></div>
+                    <div class="agenda-toolbar">
+                        <button type="button" id="copyFromRouteBtn" class="action-btn"><i class="fas fa-copy"></i> Copiar da rota</button>
+                        <button type="button" id="backupAgendaBtn" class="action-btn backup-agenda-btn"><i class="fas fa-download"></i> Backup</button>
+                        <button type="button" id="restoreAgendaBtn" class="action-btn restore-agenda-btn"><i class="fas fa-upload"></i> Restaurar</button>
+                    </div>
+                </div>
+            </section>
+        </div>
+    </aside>
+    <div class="map-area">
+        <div id="map" role="application" aria-label="Mapa das entregas"></div>
+        <div id="mapLoading" class="map-loading">Carregando mapa…</div>
+        <button type="button" id="toggleSidebarBtn" class="map-fab-btn btn-menu" aria-label="Abrir ou fechar painel"><i class="fas fa-bars"></i></button>
+        <button type="button" id="profileBtn" class="map-fab-btn btn-profile" title="Perfil e configurações" aria-label="Perfil e configurações"><i class="fas fa-user-cog"></i></button>
+        <div class="route-info-bar">
+            <div class="stats">
+                <div class="stat">📦 <span id="deliveryCount">0</span> entregas</div>
+                <div class="stat">✅ <span id="deliveredCount">0</span> entregues</div>
+                <div class="stat">⏳ <span id="pendingCount">0</span> faltam</div>
+                <div class="progress-container">
+                    <span class="stat" id="progressPercent">0%</span>
+                    <div class="progress-bar"><div class="progress-fill" id="progressFill" style="width:0%"></div></div>
+                </div>
+                <div class="stat" id="distanceEstimate">Dist: --</div>
+                <div class="stat" id="timeEstimate">Tempo: --</div>
+            </div>
+            <div class="action-buttons">
+                <button type="button" id="backupBtn" class="action-btn primary" title="Exportar dados (JSON)"><i class="fas fa-database"></i> Backup</button>
+                <button type="button" id="restoreBtn" class="action-btn success" title="Importar dados (JSON)"><i class="fas fa-upload"></i> Restaurar</button>
+                <button type="button" id="clearRouteBtn" class="action-btn danger"><i class="fas fa-trash-alt"></i> Limpar rota</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div id="deliveryPanel" class="delivery-bottom-panel">
+    <div class="panel-handle"></div>
+    <div class="panel-content">
+        <div class="panel-header">
+            <h3>
+                <span class="panel-id-badge" id="panelIdBadge">A1</span>
+                <span id="panelName"></span>
+            </h3>
+            <button type="button" class="close-panel-btn" id="closePanelBtn" aria-label="Fechar painel"><i class="fas fa-times"></i></button>
+        </div>
+        <div id="panelAddress" class="panel-address">
+            <i class="fas fa-location-dot"></i>
+            <span id="panelAddressText"></span>
+        </div>
+        <div class="panel-details">
+            <div class="panel-pacotes-control">
+                <button type="button" id="panelPacotesMinus" aria-label="Diminuir pacotes">-</button>
+                <span id="panelPacotesValue">0</span>
+                <button type="button" id="panelPacotesPlus" aria-label="Aumentar pacotes">+</button>
+            </div>
+            <div class="panel-phone-edit">
+                <i class="fas fa-phone-alt"></i>
+                <span id="panelPhone"></span>
+                <button type="button" id="editPhoneBtn" class="edit-phone-btn" aria-label="Editar telefones"><i class="fas fa-pen"></i></button>
+            </div>
+        </div>
+        <div class="panel-observacao">
+            <p id="panelObsText">Nenhuma observação</p>
+            <button type="button" class="edit-obs-btn" id="editObsBtn" aria-label="Editar observação"><i class="fas fa-edit"></i></button>
+        </div>
+        <div id="panelPhotos" class="panel-photos"></div>
+        <div class="panel-actions" id="panelActions"></div>
+    </div>
+</div>
+
+<div id="fullscreenGallery" class="fullscreen-gallery">
+    <button type="button" id="closeGalleryBtn" class="close-gallery" aria-label="Fechar galeria"><i class="fas fa-times"></i></button>
+    <img id="galleryImg" class="gallery-image" alt="Foto da entrega">
+    <div class="gallery-nav">
+        <button type="button" id="prevPhotoBtn"><i class="fas fa-chevron-left"></i> Anterior</button>
+        <button type="button" id="nextPhotoBtn">Próxima <i class="fas fa-chevron-right"></i></button>
+    </div>
+</div>
+
+<input type="file" id="importFileInput" accept=".json">
+<input type="file" id="restoreAgendaInput" accept=".json">
+
+<script src="js/app.js"></script>
+<script async defer src="https://maps.googleapis.com/maps/api/js?key=AIzaSyCRcCeryXHln-E84STTLlAl-oGrPh4mP8g&libraries=places&callback=initMap&loading=async"></script>
+</body>
+</html>
