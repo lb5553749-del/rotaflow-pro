@@ -63,6 +63,18 @@ body { font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Robo
 .map-fab-btn:hover { transform: scale(1.05); }
 .btn-menu { top: 20px; left: 20px; }
 .btn-profile { top: 20px; right: 20px; }
+.btn-gps {
+    right: 14px;
+    bottom: 110px;
+    color: #64748b;
+}
+.btn-gps.active {
+    background: #4338ca;
+    color: white;
+}
+.btn-gps.off {
+    color: #94a3b8;
+}
 .route-info-bar {
     background: white;
     padding: 12px 24px;
@@ -751,6 +763,10 @@ body {
 }
 .btn-menu { top: calc(12px + var(--safe-t)); left: 12px; }
 .btn-profile { top: calc(12px + var(--safe-t)); right: 12px; }
+.btn-gps {
+  right: 12px;
+  bottom: calc(100px + var(--safe-b));
+}
 .route-info-bar {
   padding: 10px 16px calc(10px + var(--safe-b));
   gap: 10px;
@@ -879,6 +895,7 @@ body {
         <div id="mapLoading" class="map-loading">Carregando mapa…</div>
         <button type="button" id="toggleSidebarBtn" class="map-fab-btn btn-menu" aria-label="Abrir ou fechar painel"><i class="fas fa-bars"></i></button>
         <button type="button" id="profileBtn" class="map-fab-btn btn-profile" title="Perfil e configurações" aria-label="Perfil e configurações"><i class="fas fa-user-cog"></i></button>
+        <button type="button" id="gpsBtn" class="map-fab-btn btn-gps" title="Ligar GPS" aria-label="Ligar ou desligar GPS" aria-pressed="false"><i class="fas fa-location-crosshairs"></i></button>
         <div class="route-info-bar">
             <div class="stats">
                 <div class="stat">📦 <span id="deliveryCount">0</span> entregas</div>
@@ -957,6 +974,7 @@ let map, geocoder, autocomplete;
 let deliveries = [], agenda = [];
 let nextSequenceNumber = 1, nextAgendaId = 1;
 let markersList = [], watchId = null, gpsMarker = null;
+let gpsEnabled = localStorage.getItem('rotaflow_gps') !== '0';
 let routeFilter = "", agendaFilter = "";
 let currentSelectedDelivery = null;
 let highlightedMarker = null;
@@ -2827,37 +2845,116 @@ function formatDuration(seconds) {
 
 // Sempre tenta a localização atual. Se GPS estiver desligado/negado,
 // a primeira entrega pendente vira o ponto de partida.
-function requestStartPoint() {
-    if (!navigator.geolocation) {
-        startPoint = null;
-        gpsDenied = true;
-        return Promise.resolve(null);
+function persistGpsPreference() {
+    localStorage.setItem('rotaflow_gps', gpsEnabled ? '1' : '0');
+}
+
+function updateGpsButton() {
+    const btn = document.getElementById('gpsBtn');
+    if (!btn) return;
+    const on = gpsEnabled && !!startPoint;
+    btn.classList.toggle('active', on);
+    btn.classList.toggle('off', !gpsEnabled);
+    btn.setAttribute('aria-pressed', gpsEnabled ? 'true' : 'false');
+    btn.title = gpsEnabled
+        ? (startPoint ? 'GPS ligado — clique para desligar' : 'GPS ligado — buscando…')
+        : 'GPS desligado — clique para ligar';
+    btn.innerHTML = gpsEnabled
+        ? '<i class="fas fa-location-crosshairs"></i>'
+        : '<i class="fas fa-location-slash"></i>';
+}
+
+function clearGpsTracking() {
+    if (watchId != null && navigator.geolocation) {
+        navigator.geolocation.clearWatch(watchId);
+        watchId = null;
     }
+    startPoint = null;
+    if (gpsMarker) {
+        gpsMarker.setMap(null);
+        gpsMarker = null;
+    }
+}
+
+function enableGpsTracking() {
+    if (!navigator.geolocation) return Promise.resolve(false);
     return new Promise(resolve => {
         navigator.geolocation.getCurrentPosition(
             pos => {
                 startPoint = { lat: pos.coords.latitude, lng: pos.coords.longitude };
                 gpsDenied = false;
-                resolve(startPoint);
+                showStartMarker();
+                updateGpsButton();
+                if (watchId != null) navigator.geolocation.clearWatch(watchId);
+                watchId = navigator.geolocation.watchPosition(
+                    p => {
+                        if (!gpsEnabled) return;
+                        startPoint = { lat: p.coords.latitude, lng: p.coords.longitude };
+                        if (gpsMarker) gpsMarker.setPosition(startPoint);
+                        else showStartMarker();
+                    },
+                    () => {},
+                    { enableHighAccuracy: true, maximumAge: 10000, timeout: 15000 }
+                );
+                resolve(true);
             },
             () => {
-                startPoint = null;
                 gpsDenied = true;
-                resolve(null);
+                startPoint = null;
+                resolve(false);
             },
-            { enableHighAccuracy: true, timeout: 8000, maximumAge: 15000 }
+            { enableHighAccuracy: true, timeout: 10000, maximumAge: 15000 }
         );
     });
+}
+
+async function toggleGps() {
+    if (gpsEnabled) {
+        gpsEnabled = false;
+        gpsDenied = true;
+        clearGpsTracking();
+        persistGpsPreference();
+        updateGpsButton();
+        showToast('GPS desligado — rota usa a 1ª entrega');
+        return;
+    }
+    gpsEnabled = true;
+    gpsDenied = false;
+    persistGpsPreference();
+    updateGpsButton();
+    showToast('Buscando localização…');
+    const ok = await enableGpsTracking();
+    if (!ok) {
+        gpsEnabled = false;
+        persistGpsPreference();
+        updateGpsButton();
+        showToast('Não foi possível obter o GPS', true);
+        return;
+    }
+    if (map && startPoint) {
+        map.panTo(startPoint);
+        if (map.getZoom() < 14) map.setZoom(15);
+    }
+    showToast('GPS ligado');
+}
+
+function requestStartPoint() {
+    if (!gpsEnabled) {
+        clearGpsTracking();
+        return Promise.resolve(null);
+    }
+    if (startPoint) return Promise.resolve(startPoint);
+    return enableGpsTracking().then(ok => (ok ? startPoint : null));
 }
 
 function showStartMarker() {
     if (gpsMarker) gpsMarker.setMap(null);
     gpsMarker = null;
-    if (!startPoint || !map) return;
+    if (!startPoint || !map || !gpsEnabled) return;
     gpsMarker = new google.maps.Marker({
         position: startPoint,
         map: map,
-        title: 'Ponto de partida',
+        title: 'Sua localização',
         zIndex: 999,
         icon: { path: google.maps.SymbolPath.CIRCLE, scale: 8, fillColor: '#4338ca', fillOpacity: 1, strokeColor: 'white', strokeWeight: 3 }
     });
@@ -3101,7 +3198,8 @@ function initMap() {
         center: PORTO_VELHO_CENTER, 
         zoom: 12, 
         mapTypeControl: false,
-        fullscreenControl: true, 
+        fullscreenControl: true,
+        streetViewControl: false,
         gestureHandling: "greedy", 
         rotateControl: false,
         styles: mapStyle
@@ -3160,6 +3258,9 @@ function initMap() {
     document.getElementById('clearRouteBtn').addEventListener('click', clearRoute);
     document.getElementById('toggleSidebarBtn').addEventListener('click', toggleSidebar);
     document.getElementById('copyFromRouteBtn').addEventListener('click', copyFromOtherRoute);
+    document.getElementById('gpsBtn').addEventListener('click', toggleGps);
+    updateGpsButton();
+    if (gpsEnabled) enableGpsTracking();
 
     document.querySelectorAll('.sidebar-tabs button').forEach(btn => {
         btn.addEventListener('click', () => switchSidebarTab(btn.dataset.tab));
@@ -3351,7 +3452,7 @@ window.addEventListener('beforeunload', persistStorageNow);
 
 if ('serviceWorker' in navigator) {
     const swCode = `
-            const CACHE_NAME = 'rotaflow-v7';
+            const CACHE_NAME = 'rotaflow-v8';
             const ASSETS = [ './' ];
             self.addEventListener('install', event => {
                 event.waitUntil(caches.open(CACHE_NAME).then(cache => cache.addAll(ASSETS)));
