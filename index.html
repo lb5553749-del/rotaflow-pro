@@ -187,7 +187,17 @@ body { font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Robo
 .edit-input { width: 100%; margin-bottom: 16px; padding: 12px; border-radius: 20px; border: 1.5px solid #e2e8f0; font-size: 0.9rem; }
 .modal-buttons { display: flex; gap: 12px; justify-content: center; margin-top: 20px; }
 .modal-confirm { background: #0f172a; color: white; padding: 8px 24px; border-radius: 40px; border: none; cursor: pointer; }
+.modal-confirm.danger { background: #dc2626; }
 .modal-cancel { background: #e2e8f0; color: #1e293b; padding: 8px 24px; border-radius: 40px; border: none; cursor: pointer; }
+.modal-message { color: #475569; font-size: 0.95rem; line-height: 1.45; margin: 8px 0 4px; text-align: left; }
+.modal-choice-list { display: flex; flex-direction: column; gap: 8px; margin: 12px 0 4px; }
+.modal-choice-btn {
+    display: flex; align-items: center; gap: 10px; width: 100%;
+    padding: 12px 16px; border-radius: 16px; border: 1.5px solid #e2e8f0;
+    background: #f8fafc; cursor: pointer; text-align: left; font-weight: 600; color: #0f172a;
+}
+.modal-choice-btn:hover { border-color: #25D366; background: #f0fdf4; }
+.modal-choice-btn i { color: #25D366; font-size: 1.1rem; }
 .last-id-container { display: flex; align-items: center; justify-content: flex-end; background: #f1f5f9; padding: 6px 16px; border-radius: 40px; font-size: 0.75rem; font-weight: 500; gap: 8px; }
 .last-id-value { background: #0f172a; color: white; padding: 2px 10px; border-radius: 30px; font-family: monospace; font-weight: bold; }
 .fullscreen-gallery {
@@ -1113,6 +1123,114 @@ function showToast(msg, err = false) {
     document.body.appendChild(t);
     setTimeout(() => t.remove(), 3000);
 }
+
+// ========== MODAIS (substitui prompt / confirm) ==========
+function openAppModal({ title, bodyHtml, buttons }) {
+    return new Promise(resolve => {
+        const overlay = document.createElement('div');
+        overlay.className = 'modal-overlay';
+        overlay.innerHTML = `
+            <div class="modal-container" style="max-width:420px; text-align:left;" role="dialog" aria-modal="true">
+                <h3 style="margin-bottom:8px; text-align:center;">${title}</h3>
+                <div class="modal-body">${bodyHtml || ''}</div>
+                <div class="modal-buttons"></div>
+            </div>`;
+        const btnRow = overlay.querySelector('.modal-buttons');
+        const finish = (value) => {
+            overlay.remove();
+            document.removeEventListener('keydown', onKey);
+            resolve(value);
+        };
+        const onKey = (e) => {
+            if (e.key === 'Escape') finish(null);
+        };
+        (buttons || []).forEach(btn => {
+            const el = document.createElement('button');
+            el.type = 'button';
+            el.className = btn.className || 'modal-cancel';
+            el.textContent = btn.label;
+            el.addEventListener('click', () => {
+                if (btn.getValue) finish(btn.getValue());
+                else finish(btn.value);
+            });
+            btnRow.appendChild(el);
+        });
+        overlay.addEventListener('click', (e) => { if (e.target === overlay) finish(null); });
+        document.addEventListener('keydown', onKey);
+        document.body.appendChild(overlay);
+        const focusEl = overlay.querySelector('textarea, input, .modal-choice-btn, .modal-confirm, .modal-cancel');
+        if (focusEl) setTimeout(() => focusEl.focus(), 30);
+    });
+}
+
+function showConfirmModal({ title = 'Confirmar', message, confirmText = 'Confirmar', cancelText = 'Cancelar', danger = false } = {}) {
+    return openAppModal({
+        title,
+        bodyHtml: `<p class="modal-message">${escapeHtml(message || '')}</p>`,
+        buttons: [
+            { label: confirmText, className: danger ? 'modal-confirm danger' : 'modal-confirm', value: true },
+            { label: cancelText, className: 'modal-cancel', value: false }
+        ]
+    }).then(v => v === true);
+}
+
+function showPromptModal({ title = 'Editar', message = '', defaultValue = '', placeholder = '', multiline = false } = {}) {
+    const field = multiline
+        ? `<textarea id="appModalInput" class="edit-input" rows="4" style="resize:vertical;" placeholder="${escapeHtml(placeholder)}">${escapeHtml(defaultValue)}</textarea>`
+        : `<input id="appModalInput" class="edit-input" type="text" value="${escapeHtml(defaultValue)}" placeholder="${escapeHtml(placeholder)}">`;
+    return openAppModal({
+        title,
+        bodyHtml: `${message ? `<p class="modal-message">${escapeHtml(message)}</p>` : ''}${field}`,
+        buttons: [
+            {
+                label: 'Salvar',
+                className: 'modal-confirm',
+                getValue: () => {
+                    const el = document.getElementById('appModalInput');
+                    return el ? el.value : '';
+                }
+            },
+            { label: 'Cancelar', className: 'modal-cancel', value: null }
+        ]
+    });
+}
+
+function showChoiceModal({ title = 'Escolher', message = '', options = [] } = {}) {
+    return new Promise(resolve => {
+        const overlay = document.createElement('div');
+        overlay.className = 'modal-overlay';
+        const list = options.map((opt, i) => `
+            <button type="button" class="modal-choice-btn" data-choice-index="${i}">
+                <i class="fab fa-whatsapp"></i>
+                <span>${escapeHtml(opt.label)}</span>
+            </button>`).join('');
+        overlay.innerHTML = `
+            <div class="modal-container" style="max-width:420px; text-align:left;" role="dialog" aria-modal="true">
+                <h3 style="margin-bottom:8px; text-align:center;">${title}</h3>
+                ${message ? `<p class="modal-message">${escapeHtml(message)}</p>` : ''}
+                <div class="modal-choice-list">${list}</div>
+                <div class="modal-buttons">
+                    <button type="button" class="modal-cancel">Cancelar</button>
+                </div>
+            </div>`;
+        const finish = (value) => {
+            overlay.remove();
+            document.removeEventListener('keydown', onKey);
+            resolve(value);
+        };
+        const onKey = (e) => { if (e.key === 'Escape') finish(null); };
+        overlay.querySelectorAll('.modal-choice-btn').forEach(btn => {
+            btn.addEventListener('click', () => {
+                const idx = parseInt(btn.dataset.choiceIndex, 10);
+                finish(options[idx] ? options[idx].value : null);
+            });
+        });
+        overlay.querySelector('.modal-cancel').addEventListener('click', () => finish(null));
+        overlay.addEventListener('click', (e) => { if (e.target === overlay) finish(null); });
+        document.addEventListener('keydown', onKey);
+        document.body.appendChild(overlay);
+    });
+}
 // Identificador único e crescente, mesmo com duas entregas no mesmo milissegundo.
 let lastGeneratedId = 0;
 function newId() {
@@ -1559,13 +1677,19 @@ function adjustPacotes(delta) {
     showToast(`Pacotes alterado para ${newValue}`);
 }
 
-function editObservation() {
+async function editObservation() {
     if (!currentSelectedDelivery) return;
     const currentObs = currentSelectedDelivery.notes || '';
-    const newObs = prompt("Digite a observação para esta entrega:", currentObs);
+    const newObs = await showPromptModal({
+        title: 'Observação',
+        message: 'Digite a observação para esta entrega:',
+        defaultValue: currentObs,
+        placeholder: 'Ex.: deixar com o porteiro',
+        multiline: true
+    });
     if (newObs !== null) {
-        currentSelectedDelivery.notes = newObs;
-        document.getElementById('panelObsText').innerText = newObs || 'Nenhuma observação';
+        currentSelectedDelivery.notes = newObs.trim();
+        document.getElementById('panelObsText').innerText = currentSelectedDelivery.notes || 'Nenhuma observação';
         saveStorage();
         renderDeliveriesList();
         showToast("Observação salva");
@@ -1707,23 +1831,22 @@ function getEtaForDelivery(delivery) {
     return { meters, seconds };
 }
 
-function sendWhatsApp(delivery) {
+async function sendWhatsApp(delivery) {
     if (!delivery.telefones || delivery.telefones.length === 0) {
         return showToast("Nenhum telefone cadastrado", true);
     }
     let phoneToUse = delivery.telefones[0];
     if (delivery.telefones.length > 1) {
-        const options = delivery.telefones.map((p, i) => {
-            const label = p.label ? p.label + ' ' : '';
-            return `${i+1}: ${label}(${formatPhoneShort(p.numero)})`;
-        }).join('\n');
-        const choice = prompt(`Escolha o número para WhatsApp:\n${options}\n\nDigite o número (1 a ${delivery.telefones.length}):`, '1');
-        if (choice === null) return;
-        const idx = parseInt(choice) - 1;
-        if (isNaN(idx) || idx < 0 || idx >= delivery.telefones.length) {
-            return showToast("Opção inválida", true);
-        }
-        phoneToUse = delivery.telefones[idx];
+        const choice = await showChoiceModal({
+            title: 'WhatsApp',
+            message: 'Escolha o número para enviar a mensagem:',
+            options: delivery.telefones.map(p => ({
+                label: (p.label ? p.label + ' · ' : '') + formatPhoneShort(p.numero),
+                value: p
+            }))
+        });
+        if (!choice) return;
+        phoneToUse = choice;
     }
     const eta = getEtaForDelivery(delivery);
     const kmTxt = eta ? formatKm(eta.meters) : '—';
@@ -1900,8 +2023,27 @@ function attachDeliveryEvents() {
     document.querySelectorAll(".edit-delivery").forEach(btn => { btn.onclick = () => { let id = parseInt(btn.dataset.id); let d = deliveries.find(d => d.id === id); if (d) showEditDeliveryModal(d, (updated) => editDeliveryInRoute(d, updated)); }; });
     document.querySelectorAll(".move-up").forEach(btn => { btn.onclick = () => { let id = parseInt(btn.dataset.id); let idx = deliveries.findIndex(d => d.id === id); if (idx > 0) { [deliveries[idx-1], deliveries[idx]] = [deliveries[idx], deliveries[idx-1]]; saveStorage(); clearRouteOverlay(); renderDeliveriesList(); updateProgressAndEstimates(); } }; });
     document.querySelectorAll(".move-down").forEach(btn => { btn.onclick = () => { let id = parseInt(btn.dataset.id); let idx = deliveries.findIndex(d => d.id === id); if (idx < deliveries.length-1) { [deliveries[idx+1], deliveries[idx]] = [deliveries[idx], deliveries[idx+1]]; saveStorage(); clearRouteOverlay(); renderDeliveriesList(); updateProgressAndEstimates(); } }; });
-    document.querySelectorAll(".remove-del").forEach(btn => { btn.onclick = () => { let id = parseInt(btn.dataset.id); const removed = deliveries.find(d => d.id === id);
-                deliveries = deliveries.filter(d => d.id !== id); persistStorageNow(); clearRouteOverlay(); renderDeliveriesList(); if (removed) removeMarkerById(removed.sequentialId); updateProgressAndEstimates(); showToast("Entrega removida"); }; });
+    document.querySelectorAll(".remove-del").forEach(btn => {
+        btn.onclick = async () => {
+            const id = parseInt(btn.dataset.id);
+            const removed = deliveries.find(d => d.id === id);
+            if (!removed) return;
+            const ok = await showConfirmModal({
+                title: 'Remover entrega',
+                message: `Remover ${removed.sequentialId} — ${removed.nome} da rota?`,
+                confirmText: 'Remover',
+                danger: true
+            });
+            if (!ok) return;
+            deliveries = deliveries.filter(d => d.id !== id);
+            persistStorageNow();
+            clearRouteOverlay();
+            renderDeliveriesList();
+            removeMarkerById(removed.sequentialId);
+            updateProgressAndEstimates();
+            showToast("Entrega removida");
+        };
+    });
     document.querySelectorAll(".save-agenda").forEach(btn => { btn.onclick = () => { let id = parseInt(btn.dataset.id); let d = deliveries.find(d => d.id === id); if (d) saveToAgenda(d, true); }; });
     document.querySelectorAll("[data-wa-phone]").forEach(el => {
         el.addEventListener('click', (e) => {
@@ -2180,7 +2322,24 @@ function renderAgendaList() {
 
 function attachAgendaEvents() {
     document.querySelectorAll(".add-agenda").forEach(btn => { btn.onclick = () => { let id = parseInt(btn.dataset.id); let item = agenda.find(i => i.agendaId === id); if (item) addAgendaToRoute(item); }; });
-    document.querySelectorAll(".remove-agenda").forEach(btn => { btn.onclick = () => { let id = parseInt(btn.dataset.id); agenda = agenda.filter(i => i.agendaId !== id); saveStorage(); renderAgendaList(); showToast("Item removido da agenda"); }; });
+    document.querySelectorAll(".remove-agenda").forEach(btn => {
+        btn.onclick = async () => {
+            const id = parseInt(btn.dataset.id);
+            const item = agenda.find(i => i.agendaId === id);
+            if (!item) return;
+            const ok = await showConfirmModal({
+                title: 'Remover da agenda',
+                message: `Remover "${item.nome}" da biblioteca de paradas?`,
+                confirmText: 'Remover',
+                danger: true
+            });
+            if (!ok) return;
+            agenda = agenda.filter(i => i.agendaId !== id);
+            saveStorage();
+            renderAgendaList();
+            showToast("Item removido da agenda");
+        };
+    });
     document.querySelectorAll(".edit-agenda").forEach(btn => { btn.onclick = () => { let id = parseInt(btn.dataset.id); let item = agenda.find(i => i.agendaId === id); if (item) showEditAgendaModal(item, (updated) => editAgendaItem(id, updated)); }; });
 }
 
@@ -2420,11 +2579,17 @@ function backupAgenda() {
 
 function restoreAgenda(file) {
     const reader = new FileReader();
-    reader.onload = (e) => {
+    reader.onload = async (e) => {
         try {
             const data = JSON.parse(e.target.result);
             if (!data.agenda) throw new Error("Formato inválido");
-            if (!confirm("Isso substituirá toda a agenda atual. Continuar?")) return;
+            const ok = await showConfirmModal({
+                title: 'Restaurar agenda',
+                message: 'Isso substituirá toda a agenda atual. Continuar?',
+                confirmText: 'Substituir',
+                danger: true
+            });
+            if (!ok) return;
             agenda = data.agenda;
             nextAgendaId = data.nextAgendaId || 1;
             agenda.forEach(a => { migrateTelefones(a); migrateFavorito(a); if (a.pacotes === undefined) a.pacotes = 1; if (!a.photos) a.photos = []; if (a.notes === undefined) a.notes = ''; });
@@ -2452,10 +2617,17 @@ function backupData() {
 
 function restoreData(file) {
     const reader = new FileReader();
-    reader.onload = (e) => {
+    reader.onload = async (e) => {
         try {
             const data = JSON.parse(e.target.result);
             if (!data.deliveries || !data.agenda) throw new Error("Formato inválido");
+            const ok = await showConfirmModal({
+                title: 'Restaurar backup',
+                message: 'Isso substituirá a rota, a agenda e o perfil atuais. Continuar?',
+                confirmText: 'Substituir',
+                danger: true
+            });
+            if (!ok) return;
             deliveries = data.deliveries;
             agenda = data.agenda;
             nextSequenceNumber = data.nextSequenceNumber || 1;
@@ -2464,6 +2636,7 @@ function restoreData(file) {
             deliveries.forEach(d => { migrateTelefones(d); migrateFavorito(d); if (d.pacotes === undefined) d.pacotes = 1; if (!d.photos) d.photos = []; if (d.notes === undefined) d.notes = ''; });
             agenda.forEach(a => { migrateTelefones(a); migrateFavorito(a); if (a.pacotes === undefined) a.pacotes = 1; if (!a.photos) a.photos = []; if (a.notes === undefined) a.notes = ''; });
             seedIdCounter();
+            clearRouteOverlay();
             persistStorageNow();
             renderDeliveriesList();
             renderAgendaList();
@@ -2478,18 +2651,23 @@ function restoreData(file) {
 }
 
 // ========== LIMPAR ROTA ==========
-function clearRoute() {
-    if (confirm("Limpar todas as entregas?")) {
-        deliveries = [];
-        nextSequenceNumber = 1;
-        clearRouteOverlay();
-        saveStorage();
-        renderDeliveriesList();
-        renderAgendaList();
-        rebuildMarkers(false);
-        updateLastIdDisplay(null);
-        showToast("Rota limpa");
-    }
+async function clearRoute() {
+    const ok = await showConfirmModal({
+        title: 'Limpar rota',
+        message: 'Limpar todas as entregas da rota atual? A agenda não será afetada.',
+        confirmText: 'Limpar',
+        danger: true
+    });
+    if (!ok) return;
+    deliveries = [];
+    nextSequenceNumber = 1;
+    clearRouteOverlay();
+    saveStorage();
+    renderDeliveriesList();
+    renderAgendaList();
+    rebuildMarkers(false);
+    updateLastIdDisplay(null);
+    showToast("Rota limpa");
 }
 
 function toggleSidebar() { document.getElementById("appContainer").classList.toggle("sidebar-hidden"); setTimeout(() => { if (map) google.maps.event.trigger(map, 'resize'); }, 200); }
@@ -3452,7 +3630,7 @@ window.addEventListener('beforeunload', persistStorageNow);
 
 if ('serviceWorker' in navigator) {
     const swCode = `
-            const CACHE_NAME = 'rotaflow-v8';
+            const CACHE_NAME = 'rotaflow-v9';
             const ASSETS = [ './' ];
             self.addEventListener('install', event => {
                 event.waitUntil(caches.open(CACHE_NAME).then(cache => cache.addAll(ASSETS)));
