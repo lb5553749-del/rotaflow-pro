@@ -964,7 +964,7 @@ let tempPhones = [];
 
 let userProfile = {
     motorista: "Motorista",
-    mensagemPadrao: "Olá {nome}! 🚚\nSua encomenda ({id} - {pacotes} pacote(s)) está a caminho.\n📍 Endereço: {endereco}\n{obs}\n⚠️ Estamos chegando em breve! Por favor, esteja disponível para receber.⚠️\n📦 Correx express"
+    mensagemPadrao: "Olá {nome}! 🚚\nSua encomenda ({id} - {pacotes} pacote(s)) está a caminho.\n📍 Endereço: {endereco}\n⏱ Faltam cerca de {km} ({min}) para a sua encomenda chegar.\n{obs}\n⚠️ Estamos chegando em breve! Por favor, esteja disponível para receber.⚠️\n📦 Correx express"
 };
 
 const APP_ICON = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 512 512'%3E%3Crect width='512' height='512' rx='104' fill='%230f172a'/%3E%3Cpath d='M148 388C148 300 372 330 372 200' fill='none' stroke='%233b82f6' stroke-width='30' stroke-linecap='round' stroke-dasharray='4 46'/%3E%3Ccircle cx='148' cy='388' r='46' fill='%2322c55e'/%3E%3Ccircle cx='372' cy='176' r='46' fill='%23ef4444'/%3E%3C/svg%3E";
@@ -1183,6 +1183,16 @@ function loadStorage() {
     if (savedAgenda) { try { const data = JSON.parse(savedAgenda); agenda = data.agenda || []; agenda.forEach(a => { migrateTelefones(a); migrateFavorito(a); if (a.pacotes === undefined) a.pacotes = 1; if (!a.photos) a.photos = []; if (a.notes === undefined) a.notes = ''; }); nextAgendaId = data.nextAgendaId || 1; } catch(e){} }
     const savedProfile = localStorage.getItem("rotaflow_profile");
     if (savedProfile) { try { userProfile = JSON.parse(savedProfile); } catch(e){} }
+    // Garante que a mensagem padrão tenha {km} e {min} se ainda for a versão antiga.
+    if (userProfile.mensagemPadrao && !/\{km\}|\{min\}/.test(userProfile.mensagemPadrao)) {
+        if (!userProfile.mensagemPadrao.includes('Faltam cerca de')) {
+            userProfile.mensagemPadrao = userProfile.mensagemPadrao.replace(
+                /\{obs\}/,
+                '⏱ Faltam cerca de {km} ({min}) para a sua encomenda chegar.\n{obs}'
+            );
+            saveStorage();
+        }
+    }
     seedIdCounter();
     document.getElementById("agendaCountBadge").innerHTML = agenda.length;
     updateDeliveryStats();
@@ -1655,6 +1665,30 @@ function editPhonesPanel() {
 }
 
 // ========== WHATSAPP ==========
+function getEtaForDelivery(delivery) {
+    if (!delivery || delivery.status === 'entregue' || delivery.status === 'falhou') return null;
+    if (typeof delivery.etaMeters === 'number' && typeof delivery.etaSeconds === 'number') {
+        return { meters: delivery.etaMeters, seconds: delivery.etaSeconds };
+    }
+    // Sem rota otimizada: estima em linha reta a partir do GPS (ou da 1ª pendente).
+    const stops = pendingStops();
+    const idx = stops.findIndex(d => d.id === delivery.id);
+    if (idx < 0) return null;
+    let meters = 0;
+    let prev = startPoint || (stops[0] ? { lat: stops[0].lat, lng: stops[0].lng } : null);
+    const from = startPoint ? 0 : 1;
+    if (!prev) return null;
+    for (let i = from; i <= idx; i++) {
+        const s = stops[i];
+        if (!s || typeof s.lat !== 'number') continue;
+        meters += haversineDistance(prev.lat, prev.lng, s.lat, s.lng) * 1000;
+        prev = s;
+    }
+    // ~30 km/h média urbana
+    const seconds = (meters / 1000) / 30 * 3600;
+    return { meters, seconds };
+}
+
 function sendWhatsApp(delivery) {
     if (!delivery.telefones || delivery.telefones.length === 0) {
         return showToast("Nenhum telefone cadastrado", true);
@@ -1673,12 +1707,23 @@ function sendWhatsApp(delivery) {
         }
         phoneToUse = delivery.telefones[idx];
     }
-    let msg = userProfile.mensagemPadrao
+    const eta = getEtaForDelivery(delivery);
+    const kmTxt = eta ? formatKm(eta.meters) : '—';
+    const minTxt = eta ? formatDuration(eta.seconds) : '—';
+    const template = userProfile.mensagemPadrao || '';
+    const hasEtaPlaceholders = /\{km\}|\{min\}/.test(template);
+    let msg = template
         .replace(/{nome}/g, phoneToUse.label || delivery.nome)
         .replace(/{id}/g, delivery.sequentialId)
         .replace(/{pacotes}/g, delivery.pacotes || 1)
         .replace(/{endereco}/g, delivery.endereco)
-        .replace(/{obs}/g, delivery.notes ? `📝 Obs: ${delivery.notes}\n` : '');
+        .replace(/{obs}/g, delivery.notes ? `📝 Obs: ${delivery.notes}\n` : '')
+        .replace(/{km}/g, kmTxt)
+        .replace(/{min}/g, minTxt);
+    // Mensagem antiga sem {km}/{min}: acrescenta a previsão no final.
+    if (!hasEtaPlaceholders && eta) {
+        msg += `\n⏱ Faltam cerca de ${kmTxt} (${minTxt}) para a sua encomenda chegar.`;
+    }
     const link = getWhatsAppLink(phoneToUse.numero, msg);
     link ? window.open(link, '_blank') : showToast("Número inválido", true);
 }
@@ -2445,7 +2490,7 @@ function showProfileModal() {
             <div class="form-group">
                 <label>Mensagem padrão do WhatsApp</label>
                 <textarea id="profileMensagem" class="edit-input" rows="4" style="resize:vertical;">${escapeHtml(userProfile.mensagemPadrao)}</textarea>
-                <span style="font-size:0.7rem; color:#64748b;">Use {nome}, {id}, {pacotes}, {endereco}, {obs}</span>
+                <span style="font-size:0.7rem; color:#64748b;">Use {nome}, {id}, {pacotes}, {endereco}, {obs}, {km}, {min}</span>
             </div>
             <div class="modal-buttons">
                 <button class="modal-confirm" id="saveProfileBtn">Salvar</button>
@@ -2780,15 +2825,27 @@ function formatDuration(seconds) {
     return `${Math.floor(min / 60)}h${String(min % 60).padStart(2, '0')}`;
 }
 
-// Uma tentativa de GPS por sessão: se o motorista recusar, a primeira parada
-// da lista passa a ser o ponto de partida.
+// Sempre tenta a localização atual. Se GPS estiver desligado/negado,
+// a primeira entrega pendente vira o ponto de partida.
 function requestStartPoint() {
-    if (startPoint || gpsDenied || !navigator.geolocation) return Promise.resolve(startPoint);
+    if (!navigator.geolocation) {
+        startPoint = null;
+        gpsDenied = true;
+        return Promise.resolve(null);
+    }
     return new Promise(resolve => {
         navigator.geolocation.getCurrentPosition(
-            pos => { startPoint = { lat: pos.coords.latitude, lng: pos.coords.longitude }; resolve(startPoint); },
-            () => { gpsDenied = true; resolve(null); },
-            { enableHighAccuracy: true, timeout: 8000, maximumAge: 60000 }
+            pos => {
+                startPoint = { lat: pos.coords.latitude, lng: pos.coords.longitude };
+                gpsDenied = false;
+                resolve(startPoint);
+            },
+            () => {
+                startPoint = null;
+                gpsDenied = true;
+                resolve(null);
+            },
+            { enableHighAccuracy: true, timeout: 8000, maximumAge: 15000 }
         );
     });
 }
@@ -2888,7 +2945,10 @@ function clearRouteOverlay() {
     routeRenderers = [];
     routeMetrics = null;
     routeActive = false;
-    deliveries.forEach(d => { delete d.legMeters; delete d.legSeconds; delete d.routeOrder; });
+    deliveries.forEach(d => {
+        delete d.legMeters; delete d.legSeconds; delete d.routeOrder;
+        delete d.etaMeters; delete d.etaSeconds;
+    });
 }
 
 function chunkPoints(points) {
@@ -2901,7 +2961,10 @@ function chunkPoints(points) {
 }
 
 async function renderRoute(ordered, precomputed) {
-    deliveries.forEach(d => { delete d.legMeters; delete d.legSeconds; delete d.routeOrder; });
+    deliveries.forEach(d => {
+        delete d.legMeters; delete d.legSeconds; delete d.routeOrder;
+        delete d.etaMeters; delete d.etaSeconds;
+    });
 
     const points = ordered.map(s => ({ lat: s.lat, lng: s.lng }));
     if (startPoint) points.unshift(startPoint);
@@ -2918,15 +2981,9 @@ async function renderRoute(ordered, precomputed) {
         }
     }
 
+    // Por enquanto não desenha a linha azul no mapa — só calcula km/tempo.
     routeRenderers.forEach(r => r.setMap(null));
-    routeRenderers = results.map(result => new google.maps.DirectionsRenderer({
-        map: map,
-        directions: result,
-        suppressMarkers: true,
-        suppressInfoWindows: true,
-        preserveViewport: true,
-        polylineOptions: { strokeColor: '#4338ca', strokeOpacity: 0.75, strokeWeight: 5 }
-    }));
+    routeRenderers = [];
 
     let meters = 0, seconds = 0;
     const legs = results.reduce((acc, r) => acc.concat(r.routes[0].legs), []);
@@ -2938,19 +2995,20 @@ async function renderRoute(ordered, precomputed) {
         const stop = ordered[startPoint ? i : i + 1];
         if (stop) { stop.legMeters = legMeters; stop.legSeconds = legSeconds; }
     });
-    ordered.forEach((s, i) => { s.routeOrder = i + 1; });
+    let cumM = 0, cumS = 0;
+    ordered.forEach((s, i) => {
+        s.routeOrder = i + 1;
+        cumM += s.legMeters || 0;
+        cumS += s.legSeconds || 0;
+        s.etaMeters = cumM;
+        s.etaSeconds = cumS;
+    });
     routeMetrics = { signature: routeSignature(pendingStops()), meters: meters, seconds: seconds };
     routeActive = true;
 }
 
 function fitMapToRoute() {
-    if (!map || !routeRenderers.length) return;
-    const bounds = new google.maps.LatLngBounds();
-    routeRenderers.forEach(r => {
-        const dirs = r.getDirections();
-        if (dirs && dirs.routes[0]) bounds.union(dirs.routes[0].bounds);
-    });
-    if (!bounds.isEmpty()) map.fitBounds(bounds);
+    centerMapOnMarkers();
 }
 
 async function optimizeRoute() {
@@ -2986,7 +3044,8 @@ async function optimizeRoute() {
         rebuildMarkers(false);
         fitMapToRoute();
         switchSidebarTab('rota');
-        showToast(`Rota pronta: ${formatKm(routeMetrics.meters)} · ${formatDuration(routeMetrics.seconds)}`);
+        const origem = startPoint ? 'sua localização' : 'a 1ª entrega';
+        showToast(`Rota pronta (partida: ${origem}): ${formatKm(routeMetrics.meters)} · ${formatDuration(routeMetrics.seconds)}`);
     } catch (e) {
         clearRouteOverlay();
         renderDeliveriesList();
@@ -3010,6 +3069,8 @@ async function refreshRouteKeepOrder() {
         return;
     }
     try {
+        await requestStartPoint();
+        showStartMarker();
         await renderRoute(stops, null);
         renderDeliveriesList();
         updateProgressAndEstimates();
@@ -3290,7 +3351,7 @@ window.addEventListener('beforeunload', persistStorageNow);
 
 if ('serviceWorker' in navigator) {
     const swCode = `
-            const CACHE_NAME = 'rotaflow-v6';
+            const CACHE_NAME = 'rotaflow-v7';
             const ASSETS = [ './' ];
             self.addEventListener('install', event => {
                 event.waitUntil(caches.open(CACHE_NAME).then(cache => cache.addAll(ASSETS)));
