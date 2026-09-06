@@ -10,6 +10,8 @@
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:opsz,wght@14..32,400;500;600;700;800&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
+    <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-app-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-auth-compat.js"></script>
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
     <meta name="apple-mobile-web-app-title" content="RotaFlow">
@@ -824,6 +826,50 @@ body {
   border: 0; background: var(--accent); color: white;
   border-radius: 999px; padding: 6px 10px; font-size: 0.7rem; font-weight: 700; cursor: pointer;
 }
+.login-screen {
+  position: fixed; inset: 0; z-index: 5000;
+  display: flex; align-items: center; justify-content: center;
+  padding: 24px;
+  background:
+    radial-gradient(ellipse at 20% 10%, rgba(37,99,235,0.25), transparent 50%),
+    radial-gradient(ellipse at 80% 90%, rgba(16,185,129,0.18), transparent 45%),
+    #0f172a;
+}
+.login-screen.hidden { display: none; }
+.login-card {
+  width: min(420px, 100%);
+  background: white;
+  border-radius: 28px;
+  padding: 28px 24px 24px;
+  box-shadow: 0 24px 60px rgba(0,0,0,0.35);
+  text-align: center;
+}
+.login-card .brand-mark {
+  width: 56px; height: 56px; margin: 0 auto 12px;
+  border-radius: 16px; background: #0f172a; color: #3b82f6;
+  display: grid; place-items: center; font-size: 1.4rem;
+}
+.login-card h1 { font-size: 1.5rem; margin-bottom: 4px; color: #0f172a; }
+.login-card p { color: #64748b; font-size: 0.9rem; margin-bottom: 20px; line-height: 1.4; }
+.login-btn {
+  width: 100%; border: 0; border-radius: 40px; padding: 14px 16px;
+  font-weight: 700; font-size: 0.95rem; cursor: pointer;
+  display: flex; align-items: center; justify-content: center; gap: 10px;
+  margin-bottom: 10px;
+}
+.login-btn.google { background: #fff; color: #1f2937; border: 1.5px solid #e5e7eb; }
+.login-btn.facebook { background: #1877f2; color: white; }
+.login-btn.local { background: #0f172a; color: white; }
+.login-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+.login-hint { font-size: 0.72rem; color: #94a3b8; margin-top: 8px; line-height: 1.35; }
+.login-user-chip {
+  display: none; align-items: center; gap: 8px;
+  background: #f1f5f9; border-radius: 40px; padding: 4px 10px 4px 4px;
+  font-size: 0.75rem; font-weight: 600; color: #334155; max-width: 160px;
+}
+.login-user-chip.show { display: inline-flex; }
+.login-user-chip img { width: 28px; height: 28px; border-radius: 50%; object-fit: cover; }
+.login-user-chip span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .delivery-item, .agenda-item { box-shadow: 0 1px 2px rgba(15,23,42,0.04); }
 .delivery-item { cursor: pointer; }
 .delivery-item:hover, .agenda-item:hover { border-color: #dbeafe; }
@@ -847,6 +893,17 @@ body {
     </style>
 </head>
 <body>
+<div id="loginScreen" class="login-screen" aria-label="Tela de login">
+    <div class="login-card">
+        <div class="brand-mark" aria-hidden="true"><i class="fas fa-route"></i></div>
+        <h1>RotaFlow</h1>
+        <p>Entre com sua conta para salvar rota, agenda e fotos separadas por motorista.</p>
+        <button type="button" id="loginGoogleBtn" class="login-btn google"><i class="fab fa-google"></i> Entrar com Google</button>
+        <button type="button" id="loginFacebookBtn" class="login-btn facebook"><i class="fab fa-facebook-f"></i> Entrar com Facebook</button>
+        <button type="button" id="loginLocalBtn" class="login-btn local"><i class="fas fa-mobile-screen"></i> Continuar neste aparelho</button>
+        <p class="login-hint" id="loginHint">Google/Facebook precisam do Firebase configurado e do app em HTTPS.</p>
+    </div>
+</div>
 <div class="app-container" id="appContainer">
     <aside class="sidebar" id="sidebar" aria-label="Painel de entregas">
         <div class="sidebar-header">
@@ -860,6 +917,10 @@ body {
             <div class="last-id-container" id="lastIdContainer">
                 <span>Último ID</span>
                 <span class="last-id-value" id="lastIdValue">—</span>
+            </div>
+            <div class="login-user-chip" id="userChip" title="Conta atual">
+                <img id="userChipPhoto" alt="">
+                <span id="userChipName">Conta</span>
             </div>
             <button type="button" id="installBtn" class="install-btn">Instalar</button>
         </div>
@@ -1010,6 +1071,20 @@ body {
 //  RotaFlow Pro - Sugestões sem badge "(na agenda)"
 // ============================================================
 
+// --- Firebase (Google / Facebook) ---
+// 1) Crie um projeto em https://console.firebase.google.com
+// 2) Ative Authentication → Google e/ou Facebook
+// 3) Cole aqui o objeto de configuração do app Web
+// 4) Publique o app em HTTPS (obrigatório para login social)
+const FIREBASE_CONFIG = {
+    apiKey: "",
+    authDomain: "",
+    projectId: "",
+    storageBucket: "",
+    messagingSenderId: "",
+    appId: ""
+};
+
 let map, geocoder, autocomplete;
 let deliveries = [], agenda = [];
 let nextSequenceNumber = 1, nextAgendaId = 1;
@@ -1019,6 +1094,9 @@ let routeFilter = "", agendaFilter = "";
 let currentSelectedDelivery = null;
 let highlightedMarker = null;
 let tempPhones = [];
+let currentUser = null; // { uid, displayName, email, photoURL, provider }
+let authReady = false;
+let saveTimer = null;
 
 let userProfile = {
     motorista: "Motorista",
@@ -1097,8 +1175,6 @@ function statusKeyFromLabel(value) {
     const map = { 'Pendente': 'pendente', 'Em rota': 'em-rota', 'Entregue': 'entregue', 'Falhou': 'falhou' };
     return map[value] || value;
 }
-
-let saveTimer = null;
 
 // ========== UTILITÁRIOS ==========
 function getDigits(phone) { return phone ? String(phone).replace(/\D/g, '') : ""; }
@@ -1317,22 +1393,163 @@ function migrateFavorito(obj) {
 }
 
 let storageFull = false;
+
+function currentUid() {
+    return (currentUser && currentUser.uid) ? currentUser.uid : 'guest';
+}
+function storageKey(base) {
+    return `rotaflow_${base}_${currentUid()}`;
+}
+function isFirebaseConfigured() {
+    return !!(FIREBASE_CONFIG && FIREBASE_CONFIG.apiKey && FIREBASE_CONFIG.projectId && FIREBASE_CONFIG.appId);
+}
+
+// ---------- Fotos em IndexedDB (não entram no localStorage) ----------
+function openPhotoDb() {
+    return new Promise((resolve, reject) => {
+        const req = indexedDB.open('rotaflow_photos_v1', 1);
+        req.onupgradeneeded = () => {
+            const db = req.result;
+            if (!db.objectStoreNames.contains('photos')) db.createObjectStore('photos');
+        };
+        req.onsuccess = () => resolve(req.result);
+        req.onerror = () => reject(req.error);
+    });
+}
+function photoDbKey(photoId) {
+    return `${currentUid()}::${photoId}`;
+}
+function newPhotoId() {
+    return 'p_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 8);
+}
+async function idbPutPhoto(photoId, dataUrl) {
+    const db = await openPhotoDb();
+    return new Promise((resolve, reject) => {
+        const tx = db.transaction('photos', 'readwrite');
+        tx.objectStore('photos').put(dataUrl, photoDbKey(photoId));
+        tx.oncomplete = () => resolve(true);
+        tx.onerror = () => reject(tx.error);
+    });
+}
+async function idbGetPhoto(photoId) {
+    const db = await openPhotoDb();
+    return new Promise((resolve, reject) => {
+        const tx = db.transaction('photos', 'readonly');
+        const req = tx.objectStore('photos').get(photoDbKey(photoId));
+        req.onsuccess = () => resolve(req.result || null);
+        req.onerror = () => reject(req.error);
+    });
+}
+async function idbDeletePhoto(photoId) {
+    const db = await openPhotoDb();
+    return new Promise((resolve, reject) => {
+        const tx = db.transaction('photos', 'readwrite');
+        tx.objectStore('photos').delete(photoDbKey(photoId));
+        tx.oncomplete = () => resolve(true);
+        tx.onerror = () => reject(tx.error);
+    });
+}
+
+function compressImageFile(file, maxSide = 1280, quality = 0.72) {
+    return new Promise((resolve, reject) => {
+        const url = URL.createObjectURL(file);
+        const img = new Image();
+        img.onload = () => {
+            try {
+                const scale = Math.min(1, maxSide / Math.max(img.width, img.height));
+                const canvas = document.createElement('canvas');
+                canvas.width = Math.max(1, Math.round(img.width * scale));
+                canvas.height = Math.max(1, Math.round(img.height * scale));
+                canvas.getContext('2d').drawImage(img, 0, 0, canvas.width, canvas.height);
+                URL.revokeObjectURL(url);
+                resolve(canvas.toDataURL('image/jpeg', quality));
+            } catch (e) {
+                URL.revokeObjectURL(url);
+                reject(e);
+            }
+        };
+        img.onerror = () => { URL.revokeObjectURL(url); reject(new Error('image')); };
+        img.src = url;
+    });
+}
+
+async function persistPhotoDataUrl(dataUrl) {
+    const id = newPhotoId();
+    await idbPutPhoto(id, dataUrl);
+    return id;
+}
+
+async function hydrateItemPhotos(item) {
+    if (!item) return item;
+    if (!Array.isArray(item.photoIds)) item.photoIds = [];
+    // Migra fotos antigas (base64 no localStorage) para IndexedDB.
+    if (Array.isArray(item.photos) && item.photos.length && item.photos.some(p => typeof p === 'string' && p.startsWith('data:'))) {
+        const ids = [];
+        const urls = [];
+        for (const p of item.photos) {
+            if (typeof p === 'string' && p.startsWith('data:')) {
+                const id = await persistPhotoDataUrl(p);
+                ids.push(id);
+                urls.push(p);
+            } else if (typeof p === 'string' && item.photoIds) {
+                // ignore
+            }
+        }
+        if (ids.length) {
+            item.photoIds = ids;
+            item.photos = urls;
+        }
+    }
+    if ((!item.photos || !item.photos.length) && item.photoIds.length) {
+        const urls = [];
+        for (const id of item.photoIds) {
+            const url = await idbGetPhoto(id);
+            if (url) urls.push(url);
+        }
+        item.photos = urls;
+    }
+    if (!item.photos) item.photos = [];
+    return item;
+}
+
+async function hydrateAllPhotos() {
+    for (const d of deliveries) await hydrateItemPhotos(d);
+    for (const a of agenda) await hydrateItemPhotos(a);
+}
+
+function cloneWithoutHeavyPhotos(list) {
+    return list.map(item => {
+        const copy = { ...item };
+        if (Array.isArray(item.photos)) {
+            // Garante photoIds alinhados quando ainda há dataURLs em memória.
+            copy.photoIds = Array.isArray(item.photoIds) ? [...item.photoIds] : [];
+        }
+        delete copy.photos; // nunca grava base64 no localStorage
+        return copy;
+    });
+}
+
 function persistStorageNow() {
+    if (!authReady || !currentUser) return false;
     try {
-        localStorage.setItem("rotaflow_data", JSON.stringify({ deliveries, nextSequenceNumber }));
-        localStorage.setItem("rotaflow_agenda", JSON.stringify({ agenda, nextAgendaId }));
-        localStorage.setItem("rotaflow_profile", JSON.stringify(userProfile));
+        localStorage.setItem(storageKey('data'), JSON.stringify({
+            deliveries: cloneWithoutHeavyPhotos(deliveries),
+            nextSequenceNumber
+        }));
+        localStorage.setItem(storageKey('agenda'), JSON.stringify({
+            agenda: cloneWithoutHeavyPhotos(agenda),
+            nextAgendaId
+        }));
+        localStorage.setItem(storageKey('profile'), JSON.stringify(userProfile));
         if (storageFull) {
             storageFull = false;
             showToast("Armazenamento liberado, dados salvos");
         }
         return true;
     } catch (e) {
-        // Quota estourada: o que já estava salvo continua íntegro, mas as
-        // alterações desta sessão só existem em memória até liberar espaço.
         if (!storageFull) {
             storageFull = true;
-            showToast("Memória cheia! Faça Backup agora e remova fotos antigas", true);
+            showToast("Memória cheia! Remova dados antigos ou faça Backup", true);
         }
         return false;
     }
@@ -1342,29 +1559,229 @@ function saveStorage() {
     saveTimer = setTimeout(persistStorageNow, 80);
 }
 
-function loadStorage() {
-    const saved = localStorage.getItem("rotaflow_data");
-    if (saved) { try { const data = JSON.parse(saved); deliveries = data.deliveries || []; deliveries.forEach(d => { migrateTelefones(d); migrateFavorito(d); if (d.pacotes === undefined) d.pacotes = 1; if (d.savedToAgenda === undefined) d.savedToAgenda = false; if (!d.photos) d.photos = []; if (d.notes === undefined) d.notes = ''; }); nextSequenceNumber = data.nextSequenceNumber || (deliveries.length + 1); } catch(e){} }
-    const savedAgenda = localStorage.getItem("rotaflow_agenda");
-    if (savedAgenda) { try { const data = JSON.parse(savedAgenda); agenda = data.agenda || []; agenda.forEach(a => { migrateTelefones(a); migrateFavorito(a); if (a.pacotes === undefined) a.pacotes = 1; if (!a.photos) a.photos = []; if (a.notes === undefined) a.notes = ''; }); nextAgendaId = data.nextAgendaId || 1; } catch(e){} }
-    const savedProfile = localStorage.getItem("rotaflow_profile");
-    if (savedProfile) { try { userProfile = JSON.parse(savedProfile); } catch(e){} }
-    // Garante que a mensagem padrão tenha {km} e {min} se ainda for a versão antiga.
+async function loadStorage() {
+    deliveries = [];
+    agenda = [];
+    nextSequenceNumber = 1;
+    nextAgendaId = 1;
+
+    // Migração: dados antigos sem usuário → conta local/guest na primeira vez.
+    if (currentUid() === 'guest' || (currentUser && currentUser.provider === 'local')) {
+        if (!localStorage.getItem(storageKey('data')) && localStorage.getItem('rotaflow_data')) {
+            localStorage.setItem(storageKey('data'), localStorage.getItem('rotaflow_data'));
+            if (localStorage.getItem('rotaflow_agenda')) localStorage.setItem(storageKey('agenda'), localStorage.getItem('rotaflow_agenda'));
+            if (localStorage.getItem('rotaflow_profile')) localStorage.setItem(storageKey('profile'), localStorage.getItem('rotaflow_profile'));
+        }
+    }
+
+    const saved = localStorage.getItem(storageKey('data'));
+    if (saved) {
+        try {
+            const data = JSON.parse(saved);
+            deliveries = data.deliveries || [];
+            deliveries.forEach(d => {
+                migrateTelefones(d); migrateFavorito(d);
+                if (d.pacotes === undefined) d.pacotes = 1;
+                if (d.savedToAgenda === undefined) d.savedToAgenda = false;
+                if (!d.photos) d.photos = [];
+                if (!d.photoIds) d.photoIds = [];
+                if (d.notes === undefined) d.notes = '';
+            });
+            nextSequenceNumber = data.nextSequenceNumber || (deliveries.length + 1);
+        } catch (e) {}
+    }
+    const savedAgenda = localStorage.getItem(storageKey('agenda'));
+    if (savedAgenda) {
+        try {
+            const data = JSON.parse(savedAgenda);
+            agenda = data.agenda || [];
+            agenda.forEach(a => {
+                migrateTelefones(a); migrateFavorito(a);
+                if (a.pacotes === undefined) a.pacotes = 1;
+                if (!a.photos) a.photos = [];
+                if (!a.photoIds) a.photoIds = [];
+                if (a.notes === undefined) a.notes = '';
+            });
+            nextAgendaId = data.nextAgendaId || 1;
+        } catch (e) {}
+    }
+    const savedProfile = localStorage.getItem(storageKey('profile'));
+    if (savedProfile) { try { userProfile = JSON.parse(savedProfile); } catch (e) {} }
+
     if (userProfile.mensagemPadrao && !/\{km\}|\{min\}/.test(userProfile.mensagemPadrao)) {
         if (!userProfile.mensagemPadrao.includes('Faltam cerca de')) {
             userProfile.mensagemPadrao = userProfile.mensagemPadrao.replace(
                 /\{obs\}/,
                 '⏱ Faltam cerca de {km} ({min}) para a sua encomenda chegar.\n{obs}'
             );
-            saveStorage();
         }
     }
+
+    await hydrateAllPhotos();
+    // Após migrar fotos pesadas, regrava sem base64.
+    persistStorageNow();
+
     seedIdCounter();
     document.getElementById("agendaCountBadge").innerHTML = agenda.length;
     updateDeliveryStats();
-    renderDeliveriesList(); renderAgendaList();
+    renderDeliveriesList();
+    renderAgendaList();
     if (map) rebuildMarkers(false);
     updateProgressAndEstimates();
+}
+
+// ========== AUTH / LOGIN ==========
+function updateUserChip() {
+    const chip = document.getElementById('userChip');
+    const name = document.getElementById('userChipName');
+    const photo = document.getElementById('userChipPhoto');
+    if (!chip || !currentUser) return;
+    name.textContent = currentUser.displayName || currentUser.email || 'Conta local';
+    if (currentUser.photoURL) {
+        photo.src = currentUser.photoURL;
+        photo.style.display = 'block';
+    } else {
+        photo.removeAttribute('src');
+        photo.style.display = 'none';
+    }
+    chip.classList.add('show');
+}
+
+function hideLoginScreen() {
+    document.getElementById('loginScreen')?.classList.add('hidden');
+}
+function showLoginScreen() {
+    document.getElementById('loginScreen')?.classList.remove('hidden');
+}
+
+async function enterAsUser(user) {
+    currentUser = user;
+    authReady = true;
+    updateUserChip();
+    hideLoginScreen();
+    await loadStorage();
+    showToast(`Olá, ${user.displayName || 'motorista'}!`);
+}
+
+async function continueLocally() {
+    let localId = localStorage.getItem('rotaflow_local_uid');
+    if (!localId) {
+        localId = 'local_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+        localStorage.setItem('rotaflow_local_uid', localId);
+    }
+    await enterAsUser({
+        uid: localId,
+        displayName: 'Neste aparelho',
+        email: '',
+        photoURL: '',
+        provider: 'local'
+    });
+}
+
+async function loginWithGoogle() {
+    if (!isFirebaseConfigured() || !window.firebase) {
+        showToast('Configure o Firebase para usar Google', true);
+        return;
+    }
+    try {
+        const provider = new firebase.auth.GoogleAuthProvider();
+        const result = await firebase.auth().signInWithPopup(provider);
+        const u = result.user;
+        await enterAsUser({
+            uid: u.uid,
+            displayName: u.displayName || u.email || 'Google',
+            email: u.email || '',
+            photoURL: u.photoURL || '',
+            provider: 'google'
+        });
+    } catch (e) {
+        showToast(e.code === 'auth/popup-closed-by-user' ? 'Login cancelado' : 'Falha no login Google', true);
+    }
+}
+
+async function loginWithFacebook() {
+    if (!isFirebaseConfigured() || !window.firebase) {
+        showToast('Configure o Firebase para usar Facebook', true);
+        return;
+    }
+    try {
+        const provider = new firebase.auth.FacebookAuthProvider();
+        const result = await firebase.auth().signInWithPopup(provider);
+        const u = result.user;
+        await enterAsUser({
+            uid: u.uid,
+            displayName: u.displayName || 'Facebook',
+            email: u.email || '',
+            photoURL: u.photoURL || '',
+            provider: 'facebook'
+        });
+    } catch (e) {
+        showToast(e.code === 'auth/popup-closed-by-user' ? 'Login cancelado' : 'Falha no login Facebook', true);
+    }
+}
+
+async function logoutUser() {
+    const ok = await showConfirmModal({
+        title: 'Sair da conta',
+        message: 'Sair agora? Seus dados desta conta ficam salvos e voltam ao entrar de novo.',
+        confirmText: 'Sair',
+        danger: true
+    });
+    if (!ok) return;
+    persistStorageNow();
+    try {
+        if (isFirebaseConfigured() && window.firebase && currentUser?.provider !== 'local') {
+            await firebase.auth().signOut();
+        }
+    } catch (e) {}
+    currentUser = null;
+    authReady = false;
+    deliveries = [];
+    agenda = [];
+    clearRouteOverlay();
+    rebuildMarkers(false);
+    renderDeliveriesList();
+    renderAgendaList();
+    document.getElementById('userChip')?.classList.remove('show');
+    showLoginScreen();
+}
+
+function initAuthUi() {
+    const googleBtn = document.getElementById('loginGoogleBtn');
+    const facebookBtn = document.getElementById('loginFacebookBtn');
+    const localBtn = document.getElementById('loginLocalBtn');
+    const hint = document.getElementById('loginHint');
+    const configured = isFirebaseConfigured();
+
+    if (!configured) {
+        googleBtn.disabled = true;
+        facebookBtn.disabled = true;
+        hint.textContent = 'Google/Facebook: cole o FIREBASE_CONFIG no código e publique em HTTPS. Enquanto isso, use “Continuar neste aparelho” (fotos já salvam no IndexedDB).';
+    } else {
+        hint.textContent = 'Cada conta guarda rota, agenda e fotos separadas neste aparelho.';
+        try {
+            if (!firebase.apps.length) firebase.initializeApp(FIREBASE_CONFIG);
+            firebase.auth().onAuthStateChanged(async (u) => {
+                if (u) {
+                    await enterAsUser({
+                        uid: u.uid,
+                        displayName: u.displayName || u.email || 'Usuário',
+                        email: u.email || '',
+                        photoURL: u.photoURL || '',
+                        provider: (u.providerData[0] && u.providerData[0].providerId) || 'firebase'
+                    });
+                }
+            });
+        } catch (e) {
+            googleBtn.disabled = true;
+            facebookBtn.disabled = true;
+            hint.textContent = 'Erro ao iniciar Firebase. Verifique o FIREBASE_CONFIG.';
+        }
+    }
+
+    googleBtn.addEventListener('click', loginWithGoogle);
+    facebookBtn.addEventListener('click', loginWithFacebook);
+    localBtn.addEventListener('click', continueLocally);
 }
 
 // ========== SINCRONIZAÇÃO DE FAVORITOS ==========
@@ -1766,8 +2183,13 @@ function refreshPanelPhotos(delivery) {
             const removeBtn = document.createElement('button');
             removeBtn.className = 'remove-panel-photo';
             removeBtn.innerHTML = '<i class="fas fa-times"></i>';
-            removeBtn.addEventListener('click', (e) => {
+            removeBtn.addEventListener('click', async (e) => {
                 e.stopPropagation();
+                const pid = delivery.photoIds && delivery.photoIds[idx];
+                if (pid) {
+                    try { await idbDeletePhoto(pid); } catch (err) {}
+                    delivery.photoIds.splice(idx, 1);
+                }
                 delivery.photos.splice(idx, 1);
                 saveStorage();
                 refreshPanelPhotos(delivery);
@@ -2324,6 +2746,10 @@ function showEditDeliveryModal(delivery, onSave) {
     });
 
     let newPhotosArray = [...currentPhotos];
+    let newPhotoIdsArray = Array.isArray(delivery.photoIds) ? [...delivery.photoIds] : [];
+    // Se só há dataURLs antigas sem ids, alinha com vazios (migração no save).
+    while (newPhotoIdsArray.length < newPhotosArray.length) newPhotoIdsArray.push(null);
+
     const cameraInput = overlay.querySelector('#editCameraInput');
     const galleryInput = overlay.querySelector('#editGalleryInput');
     const previewContainer = overlay.querySelector('#editPhotosPreview');
@@ -2338,8 +2764,13 @@ function showEditDeliveryModal(delivery, onSave) {
             const removeBtn = document.createElement('div');
             removeBtn.className = 'remove-photo-btn';
             removeBtn.innerHTML = '<i class="fas fa-times"></i>';
-            removeBtn.onclick = () => {
+            removeBtn.onclick = async () => {
+                const pid = newPhotoIdsArray[idx];
+                if (pid) {
+                    try { await idbDeletePhoto(pid); } catch (e) {}
+                }
                 newPhotosArray.splice(idx, 1);
+                newPhotoIdsArray.splice(idx, 1);
                 updateEditPreview();
             };
             div.appendChild(img);
@@ -2349,30 +2780,31 @@ function showEditDeliveryModal(delivery, onSave) {
     }
     updateEditPreview();
 
+    async function addPhotoFromFile(file) {
+        if (!file) return;
+        try {
+            showToast('Comprimindo foto…');
+            const dataUrl = await compressImageFile(file);
+            const id = await persistPhotoDataUrl(dataUrl);
+            newPhotosArray.push(dataUrl);
+            newPhotoIdsArray.push(id);
+            updateEditPreview();
+            showToast('Foto adicionada');
+        } catch (e) {
+            showToast('Não foi possível salvar a foto', true);
+        }
+    }
+
     overlay.querySelector('#editCameraBtn').addEventListener('click', () => cameraInput.click());
     overlay.querySelector('#editGalleryBtn').addEventListener('click', () => galleryInput.click());
-    cameraInput.addEventListener('change', (e) => {
+    cameraInput.addEventListener('change', async (e) => {
         const file = e.target.files[0];
-        if (file) {
-            const reader = new FileReader();
-            reader.onload = (ev) => {
-                newPhotosArray.push(ev.target.result);
-                updateEditPreview();
-            };
-            reader.readAsDataURL(file);
-            cameraInput.value = '';
-        }
+        await addPhotoFromFile(file);
+        cameraInput.value = '';
     });
-    galleryInput.addEventListener('change', (e) => {
-        const files = Array.from(e.target.files);
-        files.forEach(file => {
-            const reader = new FileReader();
-            reader.onload = (ev) => {
-                newPhotosArray.push(ev.target.result);
-                updateEditPreview();
-            };
-            reader.readAsDataURL(file);
-        });
+    galleryInput.addEventListener('change', async (e) => {
+        const files = Array.from(e.target.files || []);
+        for (const file of files) await addPhotoFromFile(file);
         galleryInput.value = '';
     });
 
@@ -2382,14 +2814,19 @@ function showEditDeliveryModal(delivery, onSave) {
     overlay.querySelector('#modalPacotesPlus').addEventListener('click', () => { editPacotes++; updatePacotesDisplay(); });
 
     overlay.querySelectorAll('.remove-existing-photo').forEach(btn => {
-        btn.addEventListener('click', () => {
+        btn.addEventListener('click', async () => {
             const idx = parseInt(btn.dataset.index);
+            const pid = newPhotoIdsArray[idx];
+            if (pid) {
+                try { await idbDeletePhoto(pid); } catch (e) {}
+            }
             newPhotosArray.splice(idx, 1);
+            newPhotoIdsArray.splice(idx, 1);
             updateEditPreview();
         });
     });
 
-    overlay.querySelector('#saveEdit').onclick = () => {
+    overlay.querySelector('#saveEdit').onclick = async () => {
         const list = overlay.querySelector('#editPhonesList');
         const labels = list.querySelectorAll('.edit-phone-label-modal');
         const numbers = list.querySelectorAll('.edit-phone-number-modal');
@@ -2408,7 +2845,22 @@ function showEditDeliveryModal(delivery, onSave) {
         let newStatus = overlay.querySelector('#editStatus').value;
         let newNotes = overlay.querySelector('#editNotes').value.trim();
         if (!newNome || !newEndereco) return showToast("Nome e endereço obrigatórios", true);
-        onSave({ nome: newNome, endereco: newEndereco, telefones: finalPhones, pacotes: editPacotes, status: newStatus, photos: newPhotosArray, notes: newNotes });
+        // Garante ids para qualquer foto dataURL restante.
+        for (let i = 0; i < newPhotosArray.length; i++) {
+            if (!newPhotoIdsArray[i] && typeof newPhotosArray[i] === 'string' && newPhotosArray[i].startsWith('data:')) {
+                newPhotoIdsArray[i] = await persistPhotoDataUrl(newPhotosArray[i]);
+            }
+        }
+        onSave({
+            nome: newNome,
+            endereco: newEndereco,
+            telefones: finalPhones,
+            pacotes: editPacotes,
+            status: newStatus,
+            photos: newPhotosArray,
+            photoIds: newPhotoIdsArray.filter(Boolean),
+            notes: newNotes
+        });
         overlay.remove();
     };
     overlay.querySelector('#cancelEdit').onclick = () => overlay.remove();
@@ -2422,6 +2874,7 @@ function editDeliveryInRoute(delivery, updatedData) {
     delivery.pacotes = updatedData.pacotes;
     delivery.status = updatedData.status;
     if (updatedData.photos) delivery.photos = updatedData.photos;
+    if (updatedData.photoIds) delivery.photoIds = updatedData.photoIds;
     if (updatedData.notes !== undefined) delivery.notes = updatedData.notes;
     if (updatedData.endereco !== oldAddress) {
         geocodeAddressAndUpdate(delivery, updatedData.endereco, (success) => {
@@ -2653,6 +3106,7 @@ function addAgendaToRoute(item) {
             lng,
             savedToAgenda: true,
             photos: [...(item.photos || [])],
+            photoIds: [...(item.photoIds || [])],
             notes: item.notes || '',
             favorito: item.favorito || false
         });
@@ -2751,7 +3205,8 @@ function restoreAgenda(file) {
             if (!ok) return;
             agenda = data.agenda;
             nextAgendaId = data.nextAgendaId || 1;
-            agenda.forEach(a => { migrateTelefones(a); migrateFavorito(a); if (a.pacotes === undefined) a.pacotes = 1; if (!a.photos) a.photos = []; if (a.notes === undefined) a.notes = ''; });
+            agenda.forEach(a => { migrateTelefones(a); migrateFavorito(a); if (a.pacotes === undefined) a.pacotes = 1; if (!a.photos) a.photos = []; if (!a.photoIds) a.photoIds = []; if (a.notes === undefined) a.notes = ''; });
+            await hydrateAllPhotos();
             persistStorageNow();
             renderAgendaList();
             showToast("Agenda restaurada com sucesso!");
@@ -2792,10 +3247,11 @@ function restoreData(file) {
             nextSequenceNumber = data.nextSequenceNumber || 1;
             nextAgendaId = data.nextAgendaId || 1;
             if (data.userProfile) userProfile = data.userProfile;
-            deliveries.forEach(d => { migrateTelefones(d); migrateFavorito(d); if (d.pacotes === undefined) d.pacotes = 1; if (!d.photos) d.photos = []; if (d.notes === undefined) d.notes = ''; });
-            agenda.forEach(a => { migrateTelefones(a); migrateFavorito(a); if (a.pacotes === undefined) a.pacotes = 1; if (!a.photos) a.photos = []; if (a.notes === undefined) a.notes = ''; });
+            deliveries.forEach(d => { migrateTelefones(d); migrateFavorito(d); if (d.pacotes === undefined) d.pacotes = 1; if (!d.photos) d.photos = []; if (!d.photoIds) d.photoIds = []; if (d.notes === undefined) d.notes = ''; });
+            agenda.forEach(a => { migrateTelefones(a); migrateFavorito(a); if (a.pacotes === undefined) a.pacotes = 1; if (!a.photos) a.photos = []; if (!a.photoIds) a.photoIds = []; if (a.notes === undefined) a.notes = ''; });
             seedIdCounter();
             clearRouteOverlay();
+            await hydrateAllPhotos();
             persistStorageNow();
             renderDeliveriesList();
             renderAgendaList();
@@ -2835,9 +3291,16 @@ function toggleSidebar() { document.getElementById("appContainer").classList.tog
 function showProfileModal() {
     const overlay = document.createElement('div');
     overlay.className = 'modal-overlay';
+    const accountLabel = currentUser
+        ? (currentUser.provider === 'local' ? 'Conta neste aparelho' : (currentUser.email || currentUser.displayName || 'Conta'))
+        : 'Sem conta';
     overlay.innerHTML = `
         <div class="modal-container" style="max-width:450px; text-align:left;">
             <h3 style="text-align:center; margin-bottom:20px;"><i class="fas fa-user-cog"></i> Perfil</h3>
+            <div class="form-group">
+                <label>Conta</label>
+                <div style="padding:10px 14px; background:#f8fafc; border-radius:16px; font-size:0.9rem; color:#334155;">${escapeHtml(accountLabel)}</div>
+            </div>
             <div class="form-group">
                 <label>Nome do motorista</label>
                 <input type="text" id="profileMotorista" value="${escapeHtml(userProfile.motorista)}" class="edit-input">
@@ -2847,9 +3310,10 @@ function showProfileModal() {
                 <textarea id="profileMensagem" class="edit-input" rows="4" style="resize:vertical;">${escapeHtml(userProfile.mensagemPadrao)}</textarea>
                 <span style="font-size:0.7rem; color:#64748b;">Use {nome}, {id}, {pacotes}, {endereco}, {obs}, {km}, {min}</span>
             </div>
-            <div class="modal-buttons">
+            <div class="modal-buttons" style="flex-wrap:wrap;">
                 <button class="modal-confirm" id="saveProfileBtn">Salvar</button>
                 <button class="modal-cancel" id="cancelProfileBtn">Cancelar</button>
+                <button class="modal-confirm danger" id="logoutProfileBtn" type="button">Sair da conta</button>
             </div>
         </div>
     `;
@@ -2863,6 +3327,10 @@ function showProfileModal() {
         overlay.remove();
     };
     document.getElementById('cancelProfileBtn').onclick = () => overlay.remove();
+    document.getElementById('logoutProfileBtn').onclick = () => {
+        overlay.remove();
+        logoutUser();
+    };
 }
 
 // ========== SUGESTÕES (SEM BADGE "NA AGENDA") ==========
@@ -3588,9 +4056,8 @@ function initMap() {
         strictBounds: false 
     });
     autocomplete.addListener("place_changed", () => { const place = autocomplete.getPlace(); if (place && place.formatted_address) addressInput.value = place.formatted_address; });
-    loadStorage();
-    localStorage.removeItem('rotaflow_reminders');
-    voltarDepoisAlertShown = false;
+    // Dados só carregam depois do login (enterAsUser → loadStorage).
+    if (authReady) loadStorage();
     initNameSuggestions();
     setupNewDeliveryPhoneUI();
 
@@ -3933,6 +4400,9 @@ async function markNotDelivered(id) {
 
 // ========== EVENTO DO BOTÃO "ADICIONAR ENTREGA" (FORMULÁRIO MANUAL) ==========
 document.addEventListener('DOMContentLoaded', function() {
+    initAuthUi();
+    localStorage.removeItem('rotaflow_reminders');
+    voltarDepoisAlertShown = false;
     document.getElementById("routeSearchInput").addEventListener("input", debounce((e) => { routeFilter = e.target.value.toLowerCase(); renderDeliveriesList(); }, 150));
     document.getElementById("agendaSearchInput").addEventListener("input", debounce((e) => { agendaFilter = e.target.value.toLowerCase(); renderAgendaList(); }, 150));
 
@@ -4014,7 +4484,7 @@ window.addEventListener('beforeunload', persistStorageNow);
 
 if ('serviceWorker' in navigator) {
     const swCode = `
-            const CACHE_NAME = 'rotaflow-v15';
+            const CACHE_NAME = 'rotaflow-v16';
             const ASSETS = [ './' ];
             self.addEventListener('install', event => {
                 event.waitUntil(caches.open(CACHE_NAME).then(cache => cache.addAll(ASSETS)));
