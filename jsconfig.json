@@ -1,0 +1,27 @@
+{
+  // B4 (etapa 1): tipos via JSDoc + checkJs sem mudar o build (esbuild ignora comentários).
+  // Começa cobrindo lib/ — onde o contrato de dados vive — e os módulos já
+  // extraídos de src/js/. O monolito src/js/main.js entra por último, à medida
+  // que cada seção ganhar @typedefs (ver docs/AUDITORIA-TECNICA.md B4).
+  "compilerOptions": {
+    "target": "es2020",
+    "module": "esnext",
+    "moduleResolution": "node",
+    "checkJs": true,
+    "strict": false,
+    "noEmit": true
+  },
+  "include": [
+    "lib/**/*.js",
+    "src/js/photo-store.js",
+    "src/js/backup-store.js",
+    "src/js/firebase-loader.js",
+    "src/js/gallery.js",
+    "src/js/track-shared.js",
+    "src/js/tracking.js",
+    "src/js/history.js",
+    "src/js/backup-ui.js",
+    "test/**/*.js"
+  ],
+  "exclude": ["node_modules", "build", "www", "dist", "functions/node_modules"]
+}

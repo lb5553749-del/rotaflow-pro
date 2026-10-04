@@ -301,10 +301,28 @@
         </section>
     </div>
 
+    <script src="/build/track-shared.js"></script>
     <script src="/firebase-config.js"></script>
     <script src="https://www.gstatic.com/firebasejs/11.6.0/firebase-app-compat.js"></script>
     <script src="https://www.gstatic.com/firebasejs/11.6.0/firebase-firestore-compat.js"></script>
     <script>
+        const Track = window.RotaFlowTrack || {};
+        function readToken() {
+            return Track.readTrackTokenFromLocation
+                ? Track.readTrackTokenFromLocation(location)
+                : '';
+        }
+        function haversineKm(a, b) {
+            return Track.haversineKm(a, b);
+        }
+        function formatDistance(km) {
+            return Track.formatDistance(km);
+        }
+        function formatDuration(seconds) {
+            return Track.formatClientDuration
+                ? Track.formatClientDuration(seconds)
+                : Track.formatDuration(seconds);
+        }
         const NEAR_METERS = 100;
         const NEAR_KM = NEAR_METERS / 1000;
         const token = readToken();
@@ -328,36 +346,6 @@
         let deferredInstall = null;
         const installedKey = token ? ('rf_installed_' + token) : '';
         const pushKey = token ? ('rf_push_' + token) : '';
-
-        function readToken() {
-            const q = new URLSearchParams(location.search).get('t');
-            if (q && /^[a-f0-9]{32}$/i.test(q.trim())) return q.trim().toLowerCase();
-            const m = location.pathname.match(/\/r\/([a-f0-9]{32})/i);
-            return m ? m[1].toLowerCase() : '';
-        }
-
-        function haversineKm(a, b) {
-            const R = 6371;
-            const dLat = (b.lat - a.lat) * Math.PI / 180;
-            const dLon = (b.lng - a.lng) * Math.PI / 180;
-            const x = Math.sin(dLat / 2) ** 2 +
-                Math.cos(a.lat * Math.PI / 180) * Math.cos(b.lat * Math.PI / 180) *
-                Math.sin(dLon / 2) ** 2;
-            return R * 2 * Math.atan2(Math.sqrt(x), Math.sqrt(1 - x));
-        }
-
-        function formatDistance(km) {
-            if (km == null || !isFinite(km)) return '—';
-            if (km < 1) return Math.max(10, Math.round(km * 1000)) + ' m';
-            return km.toFixed(1).replace('.', ',') + ' km';
-        }
-
-        function formatDuration(seconds) {
-            if (seconds == null || !isFinite(seconds) || seconds < 0) return '';
-            const min = Math.max(1, Math.round(seconds / 60));
-            if (min < 60) return min + ' min';
-            return Math.floor(min / 60) + 'h' + String(min % 60).padStart(2, '0');
-        }
 
         function formatAgo(ts) {
             if (!ts) return '';

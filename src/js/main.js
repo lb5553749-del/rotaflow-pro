@@ -22,8 +22,53 @@ import {
     formatDuration as formatDurationShared,
     publicFirstName as publicFirstNameShared,
     trackStatusFor as trackStatusForShared,
-    stripTrackEtaFields as stripTrackEtaFieldsShared
+    stripTrackEtaFields as stripTrackEtaFieldsShared,
+    newTrackToken as newTrackTokenFromCrypto,
+    buildTrackPayload as buildTrackPayloadShared,
+    stopsAheadOf as stopsAheadOfShared,
+    isWithinNearKm as isWithinNearKmShared,
+    shouldPublishTrack as shouldPublishTrackShared,
+    TRACK_NEAR_METERS
 } from '../../lib/track-schema.js';
+import {
+    MAX_WAYPOINTS,
+    isPendingStop,
+    pendingStops as pendingStopsOf,
+    hasMapCoords,
+    normalizeDeliveryCoords,
+    routeSignature as routeSignatureOf,
+    farthestFrom,
+    orderByProximity as orderByProximityOf,
+    chunkPoints,
+    applyStopOrder as applyStopOrderOn
+} from '../../lib/routing-helpers.js';
+import {
+    HISTORY_MAX_DAYS,
+    localDateKey,
+    formatHistoryDate,
+    routeDayStats,
+    snapshotDeliveriesForHistory as snapshotDeliveriesOf,
+    prependHistoryDay
+} from '../../lib/history-helpers.js';
+import { escapeHtml } from '../../lib/html.js';
+import { getSequentialId, nextGeneratedId, seedIdCounterFromLists } from '../../lib/ids.js';
+import {
+    formatPhoneNumber,
+    formatPhoneShort,
+    normalizeStoredPhone,
+    getWhatsAppPhoneDigits,
+    getWhatsAppLink,
+    getWhatsAppAppLink
+} from '../../lib/phone-helpers.js';
+import { parseBackupPayload, parseAgendaBackup } from '../../lib/backup-schema.js';
+import {
+    openGallery,
+    closeGallery,
+    nextPhoto,
+    prevPhoto,
+    isGalleryOpen,
+    bindGalleryChrome
+} from './gallery.js';
 import { loadFirebaseSdk } from './firebase-loader.js';
 import {
     configurePhotoStore,
@@ -573,62 +618,7 @@ function setupOverflowMenus() {
 }
 
 // ========== UTILITÁRIOS ==========
-function getDigits(phone) { return phone ? String(phone).replace(/\D/g, '') : ""; }
-
-// Número local (sem DDD) recebe este DDD. Os demais são preservados.
-const DDD_PADRAO = "69";
-
-// Devolve só o DDD + número, sem o código do país.
-function getNationalDigits(phone) {
-    let d = getDigits(phone);
-    if (d.length > 11 && d.startsWith('55')) d = d.slice(2);
-    return d;
-}
-
-function formatPhoneNumber(raw) {
-    let d = getNationalDigits(raw);
-    if (d.length === 8 || d.length === 9) d = DDD_PADRAO + d;
-    if (d.length !== 10 && d.length !== 11) return "";
-    const ddd = d.slice(0, 2);
-    const num = d.slice(2);
-    return num.length === 9
-        ? `+55 ${ddd} ${num.slice(0,1)} ${num.slice(1,5)}-${num.slice(5)}`
-        : `+55 ${ddd} ${num.slice(0,4)}-${num.slice(4)}`;
-}
-
-function formatPhoneShort(phone) {
-    if (!phone) return "";
-    const d = getNationalDigits(phone);
-    if (d.length === 11) return `${d.slice(0,2)} ${d.slice(2,3)} ${d.slice(3,7)}-${d.slice(7)}`;
-    if (d.length === 10) return `${d.slice(0,2)} ${d.slice(2,6)}-${d.slice(6)}`;
-    return d;
-}
-
-// Recupera números que a versão antiga salvou com o DDD 69 grudado na frente
-// de um DDD válido. Se não der para consertar, mantém o original.
-function normalizeStoredPhone(numero) {
-    let d = getNationalDigits(numero);
-    while (d.length > 11 && d.startsWith(DDD_PADRAO)) d = d.slice(2);
-    return formatPhoneNumber(d) || numero;
-}
-function getWhatsAppPhoneDigits(phone) {
-    let d = getNationalDigits(phone);
-    if (d.length === 8 || d.length === 9) d = DDD_PADRAO + d;
-    if (d.length === 10 || d.length === 11) return '55' + d;
-    d = getDigits(phone);
-    if (d.length > 11 && d.startsWith('55')) return d;
-    return d;
-}
-
-function getWhatsAppLink(phone, msg) {
-    const d = getWhatsAppPhoneDigits(phone);
-    return d ? `https://wa.me/${d}?text=${encodeURIComponent(msg)}` : null;
-}
-
-function getWhatsAppAppLink(phone, msg) {
-    const d = getWhatsAppPhoneDigits(phone);
-    return d ? `whatsapp://send?phone=${d}&text=${encodeURIComponent(msg)}` : null;
-}
+// Telefone, escape HTML e ids sequenciais vivem em lib/ (testáveis, sem DOM).
 
 async function openExternalUrl(url) {
     if (!url) return false;
@@ -812,11 +802,9 @@ function showChoiceModal({ title = 'Escolher', message = '', options = [] } = {}
     });
 }
 // Identificador único e crescente, mesmo com duas entregas no mesmo milissegundo.
-let lastGeneratedId = 0;
+const idState = { lastGeneratedId: 0 };
 function newId() {
-    const now = Date.now();
-    lastGeneratedId = now > lastGeneratedId ? now : lastGeneratedId + 1;
-    return lastGeneratedId;
+    return nextGeneratedId(idState);
 }
 
 // Impede que um backup restaurado gere IDs repetidos.
@@ -825,43 +813,21 @@ function seedIdCounter() {
     for (const r of routes) {
         if (r && Array.isArray(r.deliveries) && r.deliveries !== deliveries) lists.push(r.deliveries);
     }
-    for (const list of lists) {
-        (list || []).forEach(d => {
-            if (typeof d.id === 'number' && d.id > lastGeneratedId) lastGeneratedId = d.id;
-        });
-    }
+    seedIdCounterFromLists(idState, lists);
 }
 
-// A1..A10, B1..B10, ... Z10, depois AA1 em diante (estilo planilha).
-function getSequentialId(seq) {
-    const number = ((seq - 1) % 10) + 1;
-    let block = Math.floor((seq - 1) / 10);
-    let letter = '';
-    do {
-        letter = String.fromCharCode(65 + (block % 26)) + letter;
-        block = Math.floor(block / 26) - 1;
-    } while (block >= 0);
-    return `${letter}${number}`;
-}
-function escapeHtml(str) { if (!str) return ''; return String(str).replace(/[&<>"']/g, m => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[m])); }
 function haversineDistance(lat1, lon1, lat2, lon2) {
     return haversineDistanceShared(lat1, lon1, lat2, lon2);
 }
 
 // ========== RASTREIO DO CLIENTE (v1) ==========
-const TRACK_NEAR_METERS = 100;
-const TRACK_NEAR_KM = TRACK_NEAR_METERS / 1000;
-const TRACK_PUBLISH_MIN_MS = 4000;
-const TRACK_PUBLISH_MIN_KM = 0.02;
 let trackDb = null;
 let trackDbPromise = null;
 let lastTrackPublishAt = 0;
 let lastTrackPublishPos = null;
 
 function newTrackToken() {
-    const bytes = new Uint8Array(16);
-    (window.crypto || window.msCrypto).getRandomValues(bytes);
-    return Array.from(bytes, b => b.toString(16).padStart(2, '0')).join('');
+    return newTrackTokenFromCrypto(window.crypto || window.msCrypto);
 }
 
 function publicFirstName(name, fallback) {
@@ -904,44 +870,17 @@ async function ensureFirebaseTrack() {
 }
 
 function stopsAheadOf(delivery) {
-    if (!delivery) return 0;
-    const idx = pendingStops().findIndex(d => d.id === delivery.id);
-    return idx >= 0 ? idx : 0;
+    return stopsAheadOfShared(delivery, pendingStops());
 }
 
 function buildTrackPayload(delivery, extras) {
-    const status = extras && extras.status ? extras.status : trackStatusFor(delivery);
-    const payload = {
-        destLat: Number(delivery.lat),
-        destLng: Number(delivery.lng),
-        destName: publicFirstName(delivery.nome, 'Cliente'),
-        sequentialId: String(delivery.sequentialId || '').slice(0, 16),
-        status,
-        motorista: publicFirstName(userProfile && userProfile.motorista, 'Motorista'),
-        updatedAt: Date.now(),
-        nearNotified: !!delivery.nearNotified,
-        deliveredNotified: !!delivery.deliveredNotified,
-        absentNotified: !!delivery.absentNotified,
-        failReason: (status === 'falhou' && ['ausente', 'endereco-errado', 'recusou'].includes(delivery.failReason))
-            ? delivery.failReason
-            : '',
-        etaSeconds: 0,
-        stopsAhead: 0
-    };
-    if (status === 'active') {
-        payload.stopsAhead = stopsAheadOf(delivery);
-        const eta = estimateStopEta(delivery);
-        if (eta && typeof eta.seconds === 'number' && eta.seconds >= 0) {
-            payload.etaSeconds = Math.min(172800, Math.round(eta.seconds));
-        }
-    }
-    const pos = extras && extras.pos ? extras.pos : startPoint;
-    if (pos && typeof pos.lat === 'number' && typeof pos.lng === 'number') {
-        payload.driverLat = Number(pos.lat);
-        payload.driverLng = Number(pos.lng);
-        payload.accuracy = typeof gpsAccuracyMeters === 'number' ? gpsAccuracyMeters : 0;
-    }
-    return payload;
+    return buildTrackPayloadShared(delivery, extras, {
+        motorista: userProfile && userProfile.motorista,
+        pendingStops: pendingStops(),
+        estimateStopEta,
+        startPoint,
+        gpsAccuracyMeters
+    });
 }
 
 /** Republica tracks ativos + alvos do GPS em 2º plano (após otimizar / mudar assinatura). */
@@ -1054,9 +993,7 @@ async function closeTrackingSession(delivery, status) {
 }
 
 function isWithinNearKm(delivery, pos) {
-    if (!delivery || !pos) return false;
-    if (typeof delivery.lat !== 'number' || typeof delivery.lng !== 'number') return false;
-    return haversineDistance(pos.lat, pos.lng, delivery.lat, delivery.lng) <= TRACK_NEAR_KM;
+    return isWithinNearKmShared(delivery, pos);
 }
 
 function maybeMarkNearCustomer(delivery, pos, opts) {
@@ -1135,11 +1072,7 @@ function sendAbsentPush(delivery) {
 }
 
 function shouldPublishTrack(pos) {
-    const now = Date.now();
-    if (!lastTrackPublishPos) return true;
-    if (now - lastTrackPublishAt >= TRACK_PUBLISH_MIN_MS) return true;
-    const moved = haversineDistance(lastTrackPublishPos.lat, lastTrackPublishPos.lng, pos.lat, pos.lng);
-    return moved >= TRACK_PUBLISH_MIN_KM;
+    return shouldPublishTrackShared(pos, lastTrackPublishPos, lastTrackPublishAt, Date.now());
 }
 
 function publishDriverGpsFromWatch(position) {
@@ -2392,37 +2325,7 @@ function saveStorage() {
 }
 
 // ========== HISTÓRICO DE DIAS ==========
-const HISTORY_MAX_DAYS = 30;
 let routeHistory = [];
-
-function localDateKey(d = new Date()) {
-    const y = d.getFullYear();
-    const m = String(d.getMonth() + 1).padStart(2, '0');
-    const day = String(d.getDate()).padStart(2, '0');
-    return `${y}-${m}-${day}`;
-}
-
-function formatHistoryDate(key) {
-    const [y, m, d] = String(key || '').split('-').map(Number);
-    if (!y || !m || !d) return key || '—';
-    try {
-        return new Date(y, m - 1, d).toLocaleDateString('pt-BR', {
-            weekday: 'short', day: '2-digit', month: 'short', year: 'numeric'
-        });
-    } catch (_) {
-        return key;
-    }
-}
-
-function routeDayStats(list) {
-    const arr = list || [];
-    return {
-        total: arr.length,
-        entregue: arr.filter(x => x.status === 'entregue').length,
-        falhou: arr.filter(x => x.status === 'falhou').length,
-        pendente: arr.filter(x => x.status !== 'entregue' && x.status !== 'falhou').length
-    };
-}
 
 function persistHistory() {
     if (!authReady || !currentUser) return;
@@ -2445,12 +2348,7 @@ function loadHistory() {
 }
 
 function snapshotDeliveriesForHistory() {
-    return cloneWithoutHeavyPhotos(deliveries).map(d => ({
-        ...d,
-        status: d.status,
-        voltarDepois: !!d.voltarDepois,
-        failReason: d.failReason || undefined
-    }));
+    return snapshotDeliveriesOf(deliveries);
 }
 
 function archiveCurrentRouteDay({ silent = false, clearAfter = false } = {}) {
@@ -2467,7 +2365,7 @@ function archiveCurrentRouteDay({ silent = false, clearAfter = false } = {}) {
         nextSequenceNumber,
         stats: routeDayStats(deliveries)
     };
-    routeHistory = [entry, ...routeHistory.filter(h => h.date !== dateKey)].slice(0, HISTORY_MAX_DAYS);
+    routeHistory = prependHistoryDay(routeHistory, entry);
     persistHistory();
     renderHistoryList();
     if (!silent) showToast(`Dia ${formatHistoryDate(dateKey)} salvo no histórico`);
@@ -4291,14 +4189,14 @@ function buildDeliveryListItemHtml(del) {
     const legHtml = (del.legMeters === undefined || del.status === 'entregue' || del.status === 'falhou') ? '' :
         `<div class="leg-info"><i class="fas fa-car"></i> ${formatKm(del.legMeters)} · ${formatDuration(del.legSeconds)}</div>`;
 
-    return `<div class="delivery-item" data-id="${del.id}">
+    return `<div class="delivery-item" data-id="${escapeHtml(del.id)}">
                     <div class="delivery-header">
                         <div class="delivery-title-row">
-                            <span class="delivery-id">${del.sequentialId}</span>
-                            <button type="button" class="fav-btn ${del.favorito ? 'active' : ''}" data-action="fav" data-id="${del.id}" title="Favorito" aria-label="Favorito"><i class="fas fa-star"></i></button>
+                            <span class="delivery-id">${escapeHtml(del.sequentialId)}</span>
+                            <button type="button" class="fav-btn ${del.favorito ? 'active' : ''}" data-action="fav" data-id="${escapeHtml(del.id)}" title="Favorito" aria-label="Favorito"><i class="fas fa-star"></i></button>
                             <strong>${escapeHtml(del.nome)}</strong>
                         </div>
-                        <span class="status-badge ${statusClass}">${statusText}</span>
+                        <span class="status-badge ${escapeHtml(statusClass)}">${escapeHtml(statusText)}</span>
                     </div>
                     ${metaHtml}
                     <div class="delivery-body-line"><i class="fas fa-location-dot"></i>${escapeHtml(del.endereco)}</div>
@@ -4307,7 +4205,7 @@ function buildDeliveryListItemHtml(del) {
                     <div class="delivery-links">${hasPhone ? '<a href="#" class="whatsapp-link" data-action="whatsapp"><i class="fab fa-whatsapp"></i> WhatsApp</a>' : ''}<a href="#" class="track-link" data-action="track"><i class="fas fa-map-location-dot"></i> Rastreio</a></div>
                     ${del.notes ? `<div class="delivery-body-line"><i class="fas fa-pen"></i>${escapeHtml(del.notes)}</div>` : ''}
                     <div class="delivery-actions">
-                        <select class="select-status" data-action="status" data-id="${del.id}" aria-label="Status da entrega">
+                        <select class="select-status" data-action="status" data-id="${escapeHtml(del.id)}" aria-label="Status da entrega">
                             <option value="pendente" ${del.status === 'pendente' ? 'selected' : ''}>Pendente</option>
                             <option value="em-rota" ${del.status === 'em-rota' ? 'selected' : ''}>Em rota</option>
                             <option value="entregue" ${del.status === 'entregue' ? 'selected' : ''}>Entregue</option>
@@ -4316,11 +4214,11 @@ function buildDeliveryListItemHtml(del) {
                         <div class="overflow-wrap">
                             <button type="button" class="icon-btn overflow-trigger" data-action="menu" aria-label="Mais ações" title="Mais ações">⋯</button>
                             <div class="overflow-panel" role="menu">
-                                <button type="button" data-action="edit" data-id="${del.id}" role="menuitem"><i class="fas fa-edit"></i> Editar</button>
-                                <button type="button" data-action="up" data-id="${del.id}" role="menuitem"><i class="fas fa-arrow-up"></i> Subir</button>
-                                <button type="button" data-action="down" data-id="${del.id}" role="menuitem"><i class="fas fa-arrow-down"></i> Descer</button>
-                                <button type="button" data-action="agenda" data-id="${del.id}" role="menuitem"><i class="fas fa-bookmark"></i> Salvar na agenda</button>
-                                <button type="button" class="danger" data-action="remove" data-id="${del.id}" role="menuitem"><i class="fas fa-trash-can"></i> Remover</button>
+                                <button type="button" data-action="edit" data-id="${escapeHtml(del.id)}" role="menuitem"><i class="fas fa-edit"></i> Editar</button>
+                                <button type="button" data-action="up" data-id="${escapeHtml(del.id)}" role="menuitem"><i class="fas fa-arrow-up"></i> Subir</button>
+                                <button type="button" data-action="down" data-id="${escapeHtml(del.id)}" role="menuitem"><i class="fas fa-arrow-down"></i> Descer</button>
+                                <button type="button" data-action="agenda" data-id="${escapeHtml(del.id)}" role="menuitem"><i class="fas fa-bookmark"></i> Salvar na agenda</button>
+                                <button type="button" class="danger" data-action="remove" data-id="${escapeHtml(del.id)}" role="menuitem"><i class="fas fa-trash-can"></i> Remover</button>
                             </div>
                         </div>
                     </div>
@@ -5695,8 +5593,9 @@ function restoreAgenda(file) {
     const reader = new FileReader();
     reader.onload = async (e) => {
         try {
-            const data = JSON.parse(e.target.result);
-            if (!data.agenda) throw new Error("Formato inválido");
+            const parsed = parseAgendaBackup(JSON.parse(e.target.result));
+            if (!parsed.ok) throw new Error(parsed.error);
+            const data = parsed.data;
             const ok = await showConfirmModal({
                 title: 'Restaurar agenda',
                 message: 'A agenda atual será substituída pelos dados do arquivo. Deseja continuar?',
@@ -5811,8 +5710,9 @@ function restoreData(file) {
     const reader = new FileReader();
     reader.onload = async (e) => {
         try {
-            const data = JSON.parse(e.target.result);
-            if (!data.agenda || (!data.deliveries && !data.routes)) throw new Error("Formato inválido");
+            const parsed = parseBackupPayload(JSON.parse(e.target.result));
+            if (!parsed.ok) throw new Error(parsed.error);
+            const data = parsed.data;
             const ok = await showConfirmModal({
                 title: 'Restaurar backup',
                 message: 'As rotas, a agenda e o perfil atuais serão substituídos. Deseja continuar?',
@@ -6376,8 +6276,8 @@ function addDeliveryDirect(nome, endereco, telefones, pacotes, notes) {
 }
 
 // ========== ROTA OTIMIZADA (Directions API) ==========
-// A Directions API aceita no máximo 25 pontos intermediários por requisição.
-const MAX_WAYPOINTS = 23;
+// Geometria (ordem, assinatura, blocos) está em lib/routing-helpers.js.
+// A Directions API aceita no máximo 25 pontos intermediários por requisição (MAX_WAYPOINTS = 23).
 let directionsService = null;
 let routeRenderers = [];
 let optimizing = false;
@@ -6385,34 +6285,10 @@ let startPoint = null;
 let gpsDenied = false;
 let routeRefreshTimer = null;
 
-function isPendingStop(d) {
-    return !!d && d.status !== 'entregue' && d.status !== 'falhou' && hasMapCoords(d);
-}
-function pendingStops() { return deliveries.filter(isPendingStop); }
-
-/** Coerce lat/lng from storage/backup strings so pendingStops() / FAB don't stay empty. */
-function hasMapCoords(d) {
-    if (!d) return false;
-    const lat = Number(d.lat);
-    const lng = Number(d.lng);
-    return Number.isFinite(lat) && Number.isFinite(lng);
-}
-function normalizeDeliveryCoords(d) {
-    if (!d) return d;
-    if (d.lat != null && d.lat !== '') {
-        const lat = Number(d.lat);
-        if (Number.isFinite(lat)) d.lat = lat;
-    }
-    if (d.lng != null && d.lng !== '') {
-        const lng = Number(d.lng);
-        if (Number.isFinite(lng)) d.lng = lng;
-    }
-    return d;
-}
+function pendingStops() { return pendingStopsOf(deliveries); }
 
 function routeSignature(stops) {
-    const start = startPoint ? `${startPoint.lat.toFixed(3)},${startPoint.lng.toFixed(3)}` : 'lista';
-    return start + '|' + stops.map(d => d.id).join('>');
+    return routeSignatureOf(stops, startPoint);
 }
 
 function formatKm(meters) { return formatKmShared(meters); }
@@ -6762,17 +6638,6 @@ function directionsErrorMessage(err) {
     }
 }
 
-// Sem destino fixo, a parada mais distante da partida é o melhor ponto final:
-// a otimização resolve o caminho no meio.
-function farthestFrom(point, stops) {
-    let best = stops[0], bestDist = -1;
-    stops.forEach(s => {
-        const dist = haversineDistance(point.lat, point.lng, s.lat, s.lng);
-        if (dist > bestDist) { bestDist = dist; best = s; }
-    });
-    return best;
-}
-
 async function orderByDirections(stops) {
     const fixedStart = startPoint ? null : stops[0];
     const origin = startPoint || { lat: fixedStart.lat, lng: fixedStart.lng };
@@ -6791,33 +6656,15 @@ async function orderByDirections(stops) {
     return { ordered: fixedStart ? [fixedStart, ...middle, end] : [...middle, end], result: result };
 }
 
-// Acima do limite da API: vizinho mais próximo, sempre indo para a parada
-// pendente mais perto da atual.
+// Acima do limite da API: vizinho mais próximo, sempre indo para a parada pendente mais perto.
 function orderByProximity(stops) {
-    const fixedStart = startPoint ? null : stops[0];
-    let current = startPoint || { lat: fixedStart.lat, lng: fixedStart.lng };
-    const remaining = fixedStart ? stops.slice(1) : stops.slice();
-    const ordered = fixedStart ? [fixedStart] : [];
-    while (remaining.length) {
-        let bestIdx = 0, bestDist = Infinity;
-        remaining.forEach((s, i) => {
-            const dist = haversineDistance(current.lat, current.lng, s.lat, s.lng);
-            if (dist < bestDist) { bestDist = dist; bestIdx = i; }
-        });
-        current = remaining.splice(bestIdx, 1)[0];
-        ordered.push(current);
-    }
-    return ordered;
+    return orderByProximityOf(stops, startPoint);
 }
 
 // Reposiciona as pendentes nos lugares que já ocupavam, sem mexer nas
 // entregues nem renumerar os IDs colados nos pacotes.
 function applyStopOrder(ordered) {
-    const slots = [];
-    deliveries.forEach((d, i) => { if (isPendingStop(d)) slots.push(i); });
-    // Reordenar com uma lista incompleta deixaria buracos na rota e no backup.
-    if (ordered.length !== slots.length) throw new Error('ORDER_MISMATCH');
-    ordered.forEach((d, i) => { deliveries[slots[i]] = d; });
+    applyStopOrderOn(deliveries, ordered);
 }
 
 function clearRouteOverlay() {
@@ -6879,15 +6726,6 @@ function updateOptimizeFabVisibility() {
             if (icon) icon.className = idleIcon;
         }
     }
-}
-
-function chunkPoints(points) {
-    const perRequest = MAX_WAYPOINTS + 2;
-    const chunks = [];
-    for (let i = 0; i < points.length - 1; i += perRequest - 1) {
-        chunks.push(points.slice(i, i + perRequest));
-    }
-    return chunks;
 }
 
 async function renderRoute(ordered, precomputed) {
@@ -7191,19 +7029,26 @@ async function initMap() {
         if (storageLoadedUid === currentUid()) refreshMapAfterStorageLoad();
         else loadStorage();
     }
+    if (gpsEnabled && startPoint) showStartMarker();
+    document.getElementById('mapLoading')?.classList.add('hidden');
+}
+
+/** Interface do motorista. Roda no DOMContentLoaded, sem esperar o callback do Google Maps. */
+function initAppUi() {
+    if (initAppUi.done) return;
+    initAppUi.done = true;
     initNameSuggestions();
     setupNewDeliveryPhoneUI();
 
-    addressInput.addEventListener('input', function() {
-        clearTimeout(duplicateCheckTimer);
-        duplicateCheckTimer = setTimeout(checkAddressDuplicate, 300);
-    });
+    const addressInput = document.getElementById('address');
+    if (addressInput) {
+        addressInput.addEventListener('input', function() {
+            clearTimeout(duplicateCheckTimer);
+            duplicateCheckTimer = setTimeout(checkAddressDuplicate, 300);
+        });
+    }
 
-    document.getElementById('closeGalleryBtn').addEventListener('click', closeGallery);
-    document.getElementById('prevPhotoBtn').addEventListener('click', prevPhoto);
-    document.getElementById('nextPhotoBtn').addEventListener('click', nextPhoto);
-    document.getElementById('fullscreenGallery').addEventListener('click', (e) => { if (e.target === document.getElementById('fullscreenGallery')) closeGallery(); });
-    setupGallerySwipe();
+    bindGalleryChrome();
     document.getElementById('closePanelBtn').addEventListener('click', closeDeliveryPanel);
     document.getElementById('panelPacotesPlus').addEventListener('click', () => adjustPacotes(1));
     document.getElementById('panelPacotesMinus').addEventListener('click', () => adjustPacotes(-1));
@@ -7268,17 +7113,14 @@ async function initMap() {
     document.querySelectorAll('.sidebar-tabs button').forEach(btn => {
         btn.addEventListener('click', () => switchSidebarTab(btn.dataset.tab));
     });
-    document.getElementById('mapLoading')?.classList.add('hidden');
 
     document.addEventListener('keydown', (e) => {
-        const gallery = document.getElementById('fullscreenGallery');
-        const galleryOpen = gallery && gallery.style.display === 'flex';
         if (e.key === 'Escape') {
-            if (galleryOpen) closeGallery();
+            if (isGalleryOpen()) closeGallery();
             else closeDeliveryPanel();
         }
-        if (galleryOpen && e.key === 'ArrowRight') nextPhoto();
-        if (galleryOpen && e.key === 'ArrowLeft') prevPhoto();
+        if (isGalleryOpen() && e.key === 'ArrowRight') nextPhoto();
+        if (isGalleryOpen() && e.key === 'ArrowLeft') prevPhoto();
     });
 }
 
@@ -7304,120 +7146,6 @@ function setupNewDeliveryPhoneUI() {
         if (e.key === 'Enter') addBtn.click();
     });
     renderTempPhones();
-}
-
-// ========== GALERIA ==========
-let currentGalleryPhotos = null, currentGalleryIndex = 0;
-let gallerySwipeBound = false;
-
-function updateGalleryChrome() {
-    const counter = document.getElementById('galleryCounter');
-    const prevBtn = document.getElementById('prevPhotoBtn');
-    const nextBtn = document.getElementById('nextPhotoBtn');
-    const total = currentGalleryPhotos ? currentGalleryPhotos.length : 0;
-    const idx = currentGalleryIndex;
-    if (counter) {
-        if (total > 1) {
-            counter.hidden = false;
-            counter.textContent = `${idx + 1} / ${total}`;
-        } else {
-            counter.hidden = true;
-            counter.textContent = '';
-        }
-    }
-    if (prevBtn) prevBtn.disabled = !(total > 1 && idx > 0);
-    if (nextBtn) nextBtn.disabled = !(total > 1 && idx < total - 1);
-}
-
-function showGalleryPhotoAt(index, direction = 0) {
-    const img = document.getElementById('galleryImg');
-    if (!currentGalleryPhotos || !img) return;
-    if (index < 0 || index >= currentGalleryPhotos.length) return;
-    currentGalleryIndex = index;
-    if (direction !== 0) {
-        img.classList.remove('gallery-swipe-out-left', 'gallery-swipe-out-right');
-        // Force reflow so the next class transition runs.
-        void img.offsetWidth;
-        img.classList.add(direction > 0 ? 'gallery-swipe-out-left' : 'gallery-swipe-out-right');
-        requestAnimationFrame(() => {
-            img.src = currentGalleryPhotos[currentGalleryIndex];
-            img.classList.remove('gallery-swipe-out-left', 'gallery-swipe-out-right');
-            updateGalleryChrome();
-        });
-    } else {
-        img.src = currentGalleryPhotos[index];
-        updateGalleryChrome();
-    }
-}
-
-function openGallery(photos, index) {
-    const gallery = document.getElementById('fullscreenGallery');
-    if (!photos || photos.length === 0) return;
-    currentGalleryPhotos = photos;
-    currentGalleryIndex = Math.max(0, Math.min(index || 0, photos.length - 1));
-    showGalleryPhotoAt(currentGalleryIndex, 0);
-    gallery.style.display = 'flex';
-}
-function closeGallery() {
-    document.getElementById('fullscreenGallery').style.display = 'none';
-    currentGalleryPhotos = null;
-    const img = document.getElementById('galleryImg');
-    if (img) {
-        img.classList.remove('gallery-swipe-out-left', 'gallery-swipe-out-right');
-        img.removeAttribute('src');
-    }
-    updateGalleryChrome();
-}
-function nextPhoto() {
-    if (!currentGalleryPhotos || currentGalleryIndex >= currentGalleryPhotos.length - 1) return;
-    showGalleryPhotoAt(currentGalleryIndex + 1, 1);
-}
-function prevPhoto() {
-    if (!currentGalleryPhotos || currentGalleryIndex <= 0) return;
-    showGalleryPhotoAt(currentGalleryIndex - 1, -1);
-}
-
-function setupGallerySwipe() {
-    const gallery = document.getElementById('fullscreenGallery');
-    if (!gallery || gallerySwipeBound) return;
-    gallerySwipeBound = true;
-    let startX = 0;
-    let startY = 0;
-    let tracking = false;
-    let moved = false;
-
-    gallery.addEventListener('touchstart', (e) => {
-        if (!currentGalleryPhotos || e.touches.length !== 1) return;
-        const t = e.touches[0];
-        startX = t.clientX;
-        startY = t.clientY;
-        tracking = true;
-        moved = false;
-    }, { passive: true });
-
-    gallery.addEventListener('touchmove', (e) => {
-        if (!tracking || e.touches.length !== 1) return;
-        const t = e.touches[0];
-        const dx = t.clientX - startX;
-        const dy = t.clientY - startY;
-        if (Math.abs(dx) > 12 && Math.abs(dx) > Math.abs(dy)) moved = true;
-    }, { passive: true });
-
-    gallery.addEventListener('touchend', (e) => {
-        if (!tracking) return;
-        tracking = false;
-        if (!moved || !currentGalleryPhotos || currentGalleryPhotos.length < 2) return;
-        const t = e.changedTouches[0];
-        if (!t) return;
-        const dx = t.clientX - startX;
-        const dy = t.clientY - startY;
-        if (Math.abs(dx) < 48 || Math.abs(dx) < Math.abs(dy) * 1.15) return;
-        // Deslizar para a esquerda → próxima; para a direita → anterior
-        if (dx < 0) nextPhoto();
-        else prevPhoto();
-    }, { passive: true });
-
-    gallery.addEventListener('touchcancel', () => { tracking = false; moved = false; }, { passive: true });
 }
 
 function geocodeAddressAndUpdate(delivery, newAddress, callback) {
@@ -7718,6 +7446,7 @@ async function markNotDelivered(id) {
 // ========== EVENTO DO BOTÃO "ADICIONAR ENTREGA" (FORMULÁRIO MANUAL) ==========
 document.addEventListener('DOMContentLoaded', function() {
     initAuthUi();
+    initAppUi();
     localStorage.removeItem('rotaflow_reminders');
     voltarDepoisAlertShown = false;
     document.getElementById("routeSearchInput").addEventListener("input", debounce((e) => { routeFilter = e.target.value.toLowerCase(); renderDeliveriesList(); }, 150));

@@ -57,6 +57,14 @@ async function main() {
     platform: 'browser'
   });
 
+  await esbuild.build({
+    ...common,
+    entryPoints: [path.join(root, 'src/js/track-shared.js')],
+    outfile: path.join(outDir, 'track-shared.js'),
+    format: 'iife',
+    platform: 'browser'
+  });
+
   const files = [];
   const walk = (dir) => {
     for (const ent of fs.readdirSync(dir, { withFileTypes: true })) {
