@@ -67,7 +67,8 @@ let activeRouteId = null;
 let nextSequenceNumber = 1, nextAgendaId = 1;
 let routeMetrics = null;
 let routeActive = false;
-let markersList = [], markersBySeq = new Map(), watchId = null, gpsMarker = null;
+const markersList = [], markersBySeq = new Map();
+let watchId = null, gpsMarker = null;
 let gpsAccuracyCircle = null, gpsAccuracyMeters = 0;
 let useNativeMap = false, nativeGoogleMap = null, nativeMarkerById = new Map();
 let nativeMapZoom = 12;
@@ -661,7 +662,7 @@ async function openWhatsAppChat(phone, msg) {
 }
 
 function showToast(msg, err = false) {
-    let t = document.createElement('div'); t.className = 'toast-message' + (err ? ' err' : '');
+    const t = document.createElement('div'); t.className = 'toast-message' + (err ? ' err' : '');
     const icon = document.createElement('i');
     icon.className = `fas ${err ? 'fa-exclamation-circle' : 'fa-check'}`;
     t.appendChild(icon);
@@ -1567,7 +1568,7 @@ async function openNativeMultiCameraCapture(opts = {}) {
  */
 function openMultiCameraCapture(opts = {}) {
     const maxPhotos = Math.max(1, Math.min(PHOTO_MAX_PER_ITEM, Number(opts.maxPhotos) || PHOTO_MAX_PER_ITEM));
-    return new Promise(async (resolve) => {
+    return new Promise((resolve) => {
         let settled = false;
         let stream = null;
         const captured = [];
@@ -1706,22 +1707,26 @@ function openMultiCameraCapture(opts = {}) {
             finish(captured.slice());
         });
 
-        try {
-            stream = await navigator.mediaDevices.getUserMedia({
-                audio: false,
-                video: {
-                    facingMode: { ideal: 'environment' },
-                    width: { ideal: 1280 },
-                    height: { ideal: 960 }
-                }
-            });
-            video.srcObject = stream;
-            try { await video.play(); } catch (_) {}
-            updateUi();
-        } catch (e) {
-            console.warn('multi-cam start', e);
-            await finish(null, true);
-        }
+        // A abertura da câmera é assíncrona, mas o executor da Promise não pode ser:
+        // um `throw` dentro dele ficaria pendurado em vez de rejeitar.
+        (async () => {
+            try {
+                stream = await navigator.mediaDevices.getUserMedia({
+                    audio: false,
+                    video: {
+                        facingMode: { ideal: 'environment' },
+                        width: { ideal: 1280 },
+                        height: { ideal: 960 }
+                    }
+                });
+                video.srcObject = stream;
+                try { await video.play(); } catch (_) {}
+                updateUi();
+            } catch (e) {
+                console.warn('multi-cam start', e);
+                await finish(null, true);
+            }
+        })();
     });
 }
 
@@ -2955,7 +2960,7 @@ function centerMapOnMarkers() {
         });
         return;
     }
-    let bounds = new google.maps.LatLngBounds();
+    const bounds = new google.maps.LatLngBounds();
     pts.forEach(p => bounds.extend(p));
     map.fitBounds(bounds);
 }
@@ -3663,7 +3668,7 @@ async function saveDeliveryPhotoToAgenda(delivery, photoIndex = null) {
         return false;
     }
 
-    let agendaItem = findAgendaItemForDelivery(delivery);
+    const agendaItem = findAgendaItemForDelivery(delivery);
     if (!agendaItem) {
         // Fluxo existente: cria o cliente na agenda com as fotos da entrega.
         return !!(await saveToAgenda(delivery, true));
@@ -4267,7 +4272,7 @@ function renderDeliveriesList() {
 const DELIVERY_LIST_FULL_RENDER_MAX = 40;
 const DELIVERY_LIST_ROW_EST = 168;
 const DELIVERY_LIST_BUFFER = 6;
-let deliveryListVirtual = { filtered: [], start: -1, end: -1, scrollBound: false };
+const deliveryListVirtual = { filtered: [], start: -1, end: -1, scrollBound: false };
 
 function getDeliveryListScrollParent(container) {
     return container?.closest('.sidebar-panel') || container;
@@ -4369,7 +4374,7 @@ function paintDeliveryListWindow(container, force) {
     const scrollEl = getDeliveryListScrollParent(container);
     const scrollTop = scrollEl.scrollTop || 0;
     const viewH = scrollEl.clientHeight || 600;
-    let start = Math.max(0, Math.floor(scrollTop / DELIVERY_LIST_ROW_EST) - DELIVERY_LIST_BUFFER);
+    const start = Math.max(0, Math.floor(scrollTop / DELIVERY_LIST_ROW_EST) - DELIVERY_LIST_BUFFER);
     let end = Math.min(total, Math.ceil((scrollTop + viewH) / DELIVERY_LIST_ROW_EST) + DELIVERY_LIST_BUFFER);
     if (end <= start) end = Math.min(total, start + 1);
     if (!force && start === deliveryListVirtual.start && end === deliveryListVirtual.end) return;
@@ -4564,10 +4569,10 @@ function ensureDeliveryListDelegation(container) {
 
 // ========== MODAL DE EDIÇÃO DE ENTREGA ==========
 function showEditDeliveryModal(delivery, onSave) {
-    let overlay = document.createElement('div'); overlay.className = 'modal-overlay';
-    let currentPhotos = delivery.photos || [];
-    let currentPhones = delivery.telefones || [];
-    let currentPacotes = delivery.pacotes || 1;
+    const overlay = document.createElement('div'); overlay.className = 'modal-overlay';
+    const currentPhotos = delivery.photos || [];
+    const currentPhones = delivery.telefones || [];
+    const currentPacotes = delivery.pacotes || 1;
     overlay.innerHTML = `<div class="modal-container modal-edit-dense">
         <h3 class="modal-title">Editar entrega</h3>
         <div class="modal-form-group">
@@ -4624,7 +4629,7 @@ function showEditDeliveryModal(delivery, onSave) {
     </div>`;
     document.body.appendChild(overlay);
 
-    let editPhones = [...currentPhones];
+    const editPhones = [...currentPhones];
     function renderEditPhones() {
         const list = overlay.querySelector('#editPhonesList');
         list.innerHTML = editPhones.map((p, i) => `
@@ -4673,8 +4678,8 @@ function showEditDeliveryModal(delivery, onSave) {
         if (e.key === 'Enter') overlay.querySelector('#editAddPhoneBtn').click();
     });
 
-    let newPhotosArray = [...currentPhotos];
-    let newPhotoIdsArray = Array.isArray(delivery.photoIds) ? [...delivery.photoIds] : [];
+    const newPhotosArray = [...currentPhotos];
+    const newPhotoIdsArray = Array.isArray(delivery.photoIds) ? [...delivery.photoIds] : [];
     // Se só há dataURLs antigas sem ids, alinha com vazios (migração no save).
     while (newPhotoIdsArray.length < newPhotosArray.length) newPhotoIdsArray.push(null);
 
@@ -4808,10 +4813,10 @@ function showEditDeliveryModal(delivery, onSave) {
                 }
             }
         });
-        let newNome = overlay.querySelector('#editNome').value.trim();
-        let newEndereco = overlay.querySelector('#editEndereco').value.trim();
-        let newStatus = overlay.querySelector('#editStatus').value;
-        let newNotes = overlay.querySelector('#editNotes').value.trim();
+        const newNome = overlay.querySelector('#editNome').value.trim();
+        const newEndereco = overlay.querySelector('#editEndereco').value.trim();
+        const newStatus = overlay.querySelector('#editStatus').value;
+        const newNotes = overlay.querySelector('#editNotes').value.trim();
         if (!newNome || !newEndereco) return showToast("Preencha nome e endereço para continuar", true);
         // Garante ids para qualquer foto dataURL restante.
         for (let i = 0; i < newPhotosArray.length; i++) {
@@ -4835,7 +4840,7 @@ function showEditDeliveryModal(delivery, onSave) {
 }
 
 function editDeliveryInRoute(delivery, updatedData) {
-    let oldAddress = delivery.endereco;
+    const oldAddress = delivery.endereco;
     delivery.nome = updatedData.nome;
     delivery.endereco = updatedData.endereco;
     delivery.telefones = updatedData.telefones || [];
@@ -4869,7 +4874,7 @@ function editDeliveryInRoute(delivery, updatedData) {
 // ========== AGENDA ==========
 function renderAgendaList() {
     const container = document.getElementById("agendaList");
-    let filtered = agendaFilter ? agenda.filter(i => i.nome.toLowerCase().includes(agendaFilter) || i.endereco.toLowerCase().includes(agendaFilter)) : agenda;
+    const filtered = agendaFilter ? agenda.filter(i => i.nome.toLowerCase().includes(agendaFilter) || i.endereco.toLowerCase().includes(agendaFilter)) : agenda;
     if (filtered.length === 0) {
         const isFilter = !!agendaFilter;
         container.innerHTML = isFilter
@@ -4957,8 +4962,8 @@ function attachAgendaEvents() {
     document.querySelectorAll(".add-agenda").forEach(btn => {
         btn.onclick = () => {
             closeAllOverflowMenus();
-            let id = parseInt(btn.dataset.id);
-            let item = agenda.find(i => i.agendaId === id);
+            const id = parseInt(btn.dataset.id);
+            const item = agenda.find(i => i.agendaId === id);
             if (item) addAgendaToRoute(item);
         };
     });
@@ -4984,8 +4989,8 @@ function attachAgendaEvents() {
     document.querySelectorAll(".edit-agenda").forEach(btn => {
         btn.onclick = async () => {
             closeAllOverflowMenus();
-            let id = parseInt(btn.dataset.id);
-            let item = agenda.find(i => i.agendaId === id);
+            const id = parseInt(btn.dataset.id);
+            const item = agenda.find(i => i.agendaId === id);
             if (item) {
                 await ensureItemPhotos(item);
                 showEditAgendaModal(item, (updated) => editAgendaItem(id, updated));
@@ -5077,7 +5082,7 @@ function attachAgendaEvents() {
 }
 
 function editAgendaItem(agendaId, updatedData) {
-    let idx = agenda.findIndex(i => i.agendaId === agendaId);
+    const idx = agenda.findIndex(i => i.agendaId === agendaId);
     if (idx === -1) return;
     if (updatedData.endereco !== agenda[idx].endereco) {
         showToast("Atualizando coordenadas…");
@@ -5091,8 +5096,8 @@ function editAgendaItem(agendaId, updatedData) {
 }
 
 function showEditAgendaModal(item, onSave) {
-    let overlay = document.createElement('div'); overlay.className = 'modal-overlay';
-    let currentPhones = item.telefones || [];
+    const overlay = document.createElement('div'); overlay.className = 'modal-overlay';
+    const currentPhones = item.telefones || [];
     overlay.innerHTML = `<div class="modal-container modal-edit-dense">
         <h3 class="modal-title">Editar na agenda</h3>
         <div class="modal-form-group">
@@ -5136,7 +5141,7 @@ function showEditAgendaModal(item, onSave) {
     </div>`;
     document.body.appendChild(overlay);
 
-    let editPhones = [...currentPhones];
+    const editPhones = [...currentPhones];
     function renderEditAgendaPhones() {
         const list = overlay.querySelector('#editAgendaPhonesList');
         list.innerHTML = editPhones.map((p, i) => `
@@ -5182,8 +5187,8 @@ function showEditAgendaModal(item, onSave) {
         numInput.value = '';
     });
 
-    let newPhotosArray = Array.isArray(item.photos) ? [...item.photos] : [];
-    let newPhotoIdsArray = Array.isArray(item.photoIds) ? [...item.photoIds] : [];
+    const newPhotosArray = Array.isArray(item.photos) ? [...item.photos] : [];
+    const newPhotoIdsArray = Array.isArray(item.photoIds) ? [...item.photoIds] : [];
     while (newPhotoIdsArray.length < newPhotosArray.length) newPhotoIdsArray.push(null);
 
     const cameraInput = overlay.querySelector('#editAgendaCameraInput');
@@ -5298,10 +5303,10 @@ function showEditAgendaModal(item, onSave) {
                 }
             }
         });
-        let newNome = overlay.querySelector('#editNome').value.trim();
-        let newEndereco = overlay.querySelector('#editEndereco').value.trim();
-        let newPacotes = parseInt(overlay.querySelector('#editPacotes').value) || 1;
-        let newNotes = overlay.querySelector('#editNotes').value.trim();
+        const newNome = overlay.querySelector('#editNome').value.trim();
+        const newEndereco = overlay.querySelector('#editEndereco').value.trim();
+        const newPacotes = parseInt(overlay.querySelector('#editPacotes').value) || 1;
+        const newNotes = overlay.querySelector('#editNotes').value.trim();
         if (!newNome || !newEndereco) return showToast("Preencha nome e endereço para continuar", true);
         for (let i = 0; i < newPhotosArray.length; i++) {
             if (!newPhotoIdsArray[i] && typeof newPhotosArray[i] === 'string' && newPhotosArray[i].startsWith('data:')) {
@@ -6095,17 +6100,17 @@ function initNameSuggestions() {
         const query = this.value.trim().toLowerCase();
         if (query.length < 1) { suggestionsDiv.style.display = 'none'; return; }
 
-        let agendaMatches = agenda.filter(item => 
+        const agendaMatches = agenda.filter(item => 
             item.nome.toLowerCase().includes(query) || 
             item.endereco.toLowerCase().includes(query)
         );
 
-        let routeMatches = deliveries.filter(del => 
+        const routeMatches = deliveries.filter(del => 
             del.nome.toLowerCase().includes(query) || 
             del.endereco.toLowerCase().includes(query)
         );
 
-        let combined = [];
+        const combined = [];
 
         routeMatches.forEach(del => {
             combined.push({
@@ -6264,7 +6269,6 @@ function initNameSuggestions() {
                 const address = el.dataset.address;
                 const phones = JSON.parse(el.dataset.phones || '[]');
                 const pacotes = parseInt(el.dataset.pacotes) || 1;
-                const notes = el.dataset.notes || '';
 
                 document.getElementById('customerName').value = name;
                 document.getElementById('address').value = address;
@@ -6340,8 +6344,8 @@ function addDeliveryDirect(nome, endereco, telefones, pacotes, notes) {
 
     const known = agenda.find(a => a.endereco.toLowerCase() === endereco.toLowerCase());
     const finish = (lat, lng) => {
-        let seqId = getSequentialId(nextSequenceNumber);
-        let newDelivery = { 
+        const seqId = getSequentialId(nextSequenceNumber);
+        const newDelivery = { 
             id: newId(), 
             sequentialId: seqId, 
             nome, 
@@ -6390,7 +6394,6 @@ let directionsService = null;
 let routeRenderers = [];
 let optimizing = false;
 let startPoint = null;
-let gpsDenied = false;
 let routeRefreshTimer = null;
 
 function isPendingStop(d) {
@@ -6594,12 +6597,19 @@ async function stopBackgroundGpsWatch() {
     try { await bg.stop(); } catch (_) {}
 }
 
+/** Erro no formato do GeolocationPositionError: `gpsErrorMessage` lê `code`. */
+function gpsError(code, message) {
+    const err = new Error(message || 'geolocation');
+    err.code = code;
+    return err;
+}
+
 function readGpsPosition(options) {
     if (isNativeApp() && window.RotaFlowCap?.Geolocation) {
         return window.RotaFlowCap.Geolocation.getCurrentPosition(options);
     }
     return new Promise((resolve, reject) => {
-        if (!navigator.geolocation) return reject({ code: 0, message: 'unsupported' });
+        if (!navigator.geolocation) return reject(gpsError(0, 'unsupported'));
         navigator.geolocation.getCurrentPosition(resolve, reject, options);
     });
 }
@@ -6608,13 +6618,12 @@ async function enableGpsTracking() {
     const canWeb = window.isSecureContext && navigator.geolocation;
     const canNative = isNativeApp() && window.RotaFlowCap?.Geolocation;
     if (!canNative && !canWeb) {
-        gpsDenied = true;
         return false;
     }
     try {
         if (canNative) {
             const perm = await window.RotaFlowCap.Geolocation.requestPermissions();
-            if (perm.location === 'denied') throw { code: 1 };
+            if (perm.location === 'denied') throw gpsError(1, 'permission denied');
         }
         let pos;
         try {
@@ -6629,7 +6638,6 @@ async function enableGpsTracking() {
         }
         startPoint = { lat: pos.coords.latitude, lng: pos.coords.longitude };
         gpsAccuracyMeters = typeof pos.coords.accuracy === 'number' ? pos.coords.accuracy : 0;
-        gpsDenied = false;
         showStartMarker();
         updateGpsButton();
         updateOptimizeFabVisibility();
@@ -6647,7 +6655,6 @@ async function enableGpsTracking() {
         }
         return true;
     } catch (err) {
-        gpsDenied = true;
         startPoint = null;
         updateGpsButton();
         updateOptimizeFabVisibility();
@@ -6659,7 +6666,6 @@ async function enableGpsTracking() {
 async function toggleGps() {
     if (gpsEnabled) {
         gpsEnabled = false;
-        gpsDenied = true;
         clearGpsTracking();
         persistGpsPreference();
         updateGpsButton();
@@ -6672,7 +6678,6 @@ async function toggleGps() {
         return;
     }
     gpsEnabled = true;
-    gpsDenied = false;
     persistGpsPreference();
     updateGpsButton();
     showToast('Obtendo localização…');
@@ -6910,7 +6915,7 @@ async function renderRoute(ordered, precomputed) {
     const points = ordered.map(s => ({ lat: s.lat, lng: s.lng }));
     if (startPoint) points.unshift(startPoint);
 
-    let results = precomputed ? [precomputed] : [];
+    const results = precomputed ? [precomputed] : [];
     if (!precomputed) {
         for (const chunk of chunkPoints(points)) {
             results.push(await routeDirections({
@@ -7461,7 +7466,7 @@ function geocodeAddressAndUpdate(delivery, newAddress, callback) {
 
 async function markDelivered(id, { advance = false } = {}) {
     try {
-        let d = deliveries.find(x => x.id === id);
+        const d = deliveries.find(x => x.id === id);
         if (!d || d.status === 'entregue') return;
         const normalsBefore = countNormalActiveStops();
         d.status = 'entregue';
@@ -7518,7 +7523,7 @@ function releaseInMemoryPhotosExcept(keepDeliveryId) {
 }
 
 function undoDeliveryStatus(id, { keepPanel = false, keepMinimized = false } = {}) {
-    let d = deliveries.find(d => d.id === id);
+    const d = deliveries.find(d => d.id === id);
     if (!d) return;
     if (d.status !== 'entregue' && d.status !== 'falhou') return;
     d.status = 'pendente';
@@ -7734,12 +7739,12 @@ document.addEventListener('DOMContentLoaded', function() {
     document.getElementById("agendaSearchInput").addEventListener("input", debounce((e) => { agendaFilter = e.target.value.toLowerCase(); renderAgendaList(); }, 150));
 
     document.getElementById("addDeliveryBtn").addEventListener('click', function() {
-        let nome = document.getElementById("customerName").value.trim();
-        let end = document.getElementById("address").value.trim();
-        let pacotes = parseInt(document.getElementById("pacotes").value) || 1;
-        let saveAgenda = document.getElementById("saveToAgendaCheckbox").checked;
-        let telefones = [...tempPhones];
-        let notes = "";
+        const nome = document.getElementById("customerName").value.trim();
+        const end = document.getElementById("address").value.trim();
+        const pacotes = parseInt(document.getElementById("pacotes").value) || 1;
+        const saveAgenda = document.getElementById("saveToAgendaCheckbox").checked;
+        const telefones = [...tempPhones];
+        const notes = "";
         if (!nome || !end) { showToast("Preencha nome e endereço para continuar", true); return; }
         if (!geocoder) { showToast("Aguarde o mapa carregar completamente", true); return; }
 
@@ -7765,8 +7770,8 @@ document.addEventListener('DOMContentLoaded', function() {
             } else {
                 showToast("Endereço não encontrado. Usando o centro do mapa", true);
             }
-            let seqId = getSequentialId(nextSequenceNumber);
-            let newDelivery = { 
+            const seqId = getSequentialId(nextSequenceNumber);
+            const newDelivery = { 
                 id: newId(), 
                 sequentialId: seqId, 
                 nome, 

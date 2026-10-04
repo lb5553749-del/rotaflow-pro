@@ -5,6 +5,10 @@
   "main": "index.js",
   "scripts": {
     "test": "node --test test/*.test.js",
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix",
+    "typecheck": "tsc --noEmit -p jsconfig.json",
+    "verify": "npm run lint && npm test && npm run build",
     "build": "node scripts/build-web.js",
     "build:dev": "node scripts/build-web.js --dev",
     "icons": "node scripts/build-icons.js",
@@ -27,8 +31,11 @@
   "devDependencies": {
     "@fortawesome/fontawesome-free": "6.5.1",
     "esbuild": "^0.28.2",
+    "eslint": "^9.39.5",
     "firebase-tools": "^15.29.0",
-    "subset-font": "^2.9.0"
+    "globals": "^17.13.0",
+    "subset-font": "^2.9.0",
+    "typescript": "^7.0.2"
   },
   "dependencies": {
     "@capacitor-firebase/crashlytics": "^8.5.2",
