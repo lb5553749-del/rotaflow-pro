@@ -1,5 +1,5 @@
 /* RotaFlow Pro — service worker (app shell offline) */
-const CACHE_NAME = 'rotaflow-shell-v90';
+const CACHE_NAME = 'rotaflow-shell-v90.743a4b1445';
 /* Shell gerado por `npm run build` (build/). Fontes/ícones são locais: o app abre offline sem CDN. */
 const PRECACHE = [
   './',
