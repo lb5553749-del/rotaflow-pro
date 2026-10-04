@@ -5,6 +5,7 @@
   "main": "index.js",
   "scripts": {
     "test": "node --test test/*.test.js",
+    "lint": "eslint lib test src/js/gallery.js src/js/track-shared.js src/js/tracking.js src/js/history.js src/js/backup-ui.js",
     "build": "node scripts/build-web.js",
     "build:dev": "node scripts/build-web.js --dev",
     "icons": "node scripts/build-icons.js",
@@ -27,7 +28,9 @@
   "devDependencies": {
     "@fortawesome/fontawesome-free": "6.5.1",
     "esbuild": "^0.28.2",
+    "eslint": "9.39.5",
     "firebase-tools": "^15.29.0",
+    "globals": "17.13.0",
     "subset-font": "^2.9.0"
   },
   "dependencies": {

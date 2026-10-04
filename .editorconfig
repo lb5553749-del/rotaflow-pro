@@ -1,0 +1,25 @@
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = true
+indent_style = space
+
+# src/ e os arquivos de página seguem o recuo de 4 que o main.js já usa.
+[*.{js,css,html,json,java,gradle}]
+indent_size = 4
+
+# lib/, scripts/ e test/ foram escritos com 2 — mantido para não poluir o diff.
+[{lib,scripts,test,functions}/**.js]
+indent_size = 2
+
+[eslint.config.js]
+indent_size = 2
+
+[*.{yml,yaml,rules,webmanifest}]
+indent_size = 2
+
+[*.md]
+trim_trailing_whitespace = false

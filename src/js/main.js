@@ -7029,7 +7029,7 @@ async function initMap() {
         if (storageLoadedUid === currentUid()) refreshMapAfterStorageLoad();
         else loadStorage();
     }
-    if (gpsEnabled && startPoint) showStartMarker();
+    showStartMarker();
     document.getElementById('mapLoading')?.classList.add('hidden');
 }
 
@@ -7122,6 +7122,12 @@ function initAppUi() {
         if (isGalleryOpen() && e.key === 'ArrowRight') nextPhoto();
         if (isGalleryOpen() && e.key === 'ArrowLeft') prevPhoto();
     });
+
+    setTimeout(() => {
+        if (geocoder) return;
+        const loading = document.getElementById('mapLoading');
+        if (loading) loading.textContent = 'Mapa indisponível. Lista, agenda e backup continuam funcionando.';
+    }, 8000);
 }
 
 function setupNewDeliveryPhoneUI() {
