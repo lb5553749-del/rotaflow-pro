@@ -12,9 +12,11 @@ import {
     prependHistoryDay
 } from '../../lib/history-helpers.js';
 
+let routeHistory = [];
+
 let deps = {
-    getRouteHistory: () => [],
-    setRouteHistory: () => {},
+    getRouteHistory: () => routeHistory,
+    setRouteHistory: (h) => { routeHistory = Array.isArray(h) ? h : []; },
     getDeliveries: () => [],
     setDeliveries: () => {},
     getNextSequenceNumber: () => 1,
@@ -54,6 +56,10 @@ export function configureHistory(opts) {
 }
 
 export { HISTORY_MAX_DAYS, localDateKey, formatHistoryDate, routeDayStats };
+
+export function getRouteHistory() {
+    return deps.getRouteHistory();
+}
 
 export function persistHistory() {
     if (!deps.getAuthReady() || !deps.getCurrentUser()) return;

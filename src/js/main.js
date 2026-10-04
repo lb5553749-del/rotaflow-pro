@@ -7,7 +7,6 @@ import '../../native/bridge.js';
 import '../../native/push-sender.js';
 import {
     buildPersistPayload,
-    cloneWithoutHeavyPhotos,
     hydrateRoutesFromData as hydrateRoutesState
 } from '../../lib/persist-helpers.js';
 import {
@@ -19,16 +18,7 @@ import {
 import {
     haversineDistance as haversineDistanceShared,
     formatKm as formatKmShared,
-    formatDuration as formatDurationShared,
-    publicFirstName as publicFirstNameShared,
-    trackStatusFor as trackStatusForShared,
-    stripTrackEtaFields as stripTrackEtaFieldsShared,
-    newTrackToken as newTrackTokenFromCrypto,
-    buildTrackPayload as buildTrackPayloadShared,
-    stopsAheadOf as stopsAheadOfShared,
-    isWithinNearKm as isWithinNearKmShared,
-    shouldPublishTrack as shouldPublishTrackShared,
-    TRACK_NEAR_METERS
+    formatDuration as formatDurationShared
 } from '../../lib/track-schema.js';
 import {
     MAX_WAYPOINTS,
@@ -42,14 +32,7 @@ import {
     chunkPoints,
     applyStopOrder as applyStopOrderOn
 } from '../../lib/routing-helpers.js';
-import {
-    HISTORY_MAX_DAYS,
-    localDateKey,
-    formatHistoryDate,
-    routeDayStats,
-    snapshotDeliveriesForHistory as snapshotDeliveriesOf,
-    prependHistoryDay
-} from '../../lib/history-helpers.js';
+import { routeDayStats } from '../../lib/history-helpers.js';
 import { escapeHtml } from '../../lib/html.js';
 import { getSequentialId, nextGeneratedId, seedIdCounterFromLists } from '../../lib/ids.js';
 import {
@@ -60,7 +43,6 @@ import {
     getWhatsAppLink,
     getWhatsAppAppLink
 } from '../../lib/phone-helpers.js';
-import { parseBackupPayload, parseAgendaBackup } from '../../lib/backup-schema.js';
 import {
     openGallery,
     closeGallery,
@@ -69,7 +51,39 @@ import {
     isGalleryOpen,
     bindGalleryChrome
 } from './gallery.js';
-import { loadFirebaseSdk } from './firebase-loader.js';
+import {
+    configureTracking,
+    TRACK_NEAR_METERS,
+    prepareTrackingUrl,
+    publishTrackingSession,
+    syncTrackingStatus,
+    closeTrackingSession,
+    maybeMarkNearCustomer,
+    sendDeliveredPush,
+    sendAbsentPush,
+    publishDriverGpsFromWatch,
+    shareTrackingLink,
+    refreshActiveTrackSessions,
+    trackStatusFor
+} from './tracking.js';
+import {
+    configureHistory,
+    loadHistory,
+    archiveCurrentRouteDay,
+    startNewRoute,
+    renderHistoryList,
+    setupHistoryListDelegation
+} from './history.js';
+import {
+    configureBackupUi,
+    maybeShowBackupReminder,
+    setupBackupReminderUi,
+    noteDeliveryCompletedForBackup,
+    maybeAutoBackupOnDayChange,
+    setupAutoBackupScheduler,
+    backupData,
+    bindBackupButtons
+} from './backup-ui.js';
 import {
     configurePhotoStore,
     PHOTO_MULTICAM_MAX_SIDE,
@@ -94,18 +108,7 @@ import {
 } from './photo-store.js';
 import {
     configureBackupStore,
-    BACKUP_REMIND_DAYS,
-    BACKUP_DISMISS_DAYS,
-    BACKUP_AUTO_DELIVERIES,
-    BACKUP_AUTO_IDLE_MS,
-    BACKUP_AUTO_MIN_GAP_MS,
-    CLOUD_BACKUP_ENABLED,
-    readBackupMeta,
-    writeBackupMeta,
-    daysSince,
-    todayBackupDayKey,
-    writeSilentLocalBackup,
-    uploadCloudBackup
+    readBackupMeta
 } from './backup-store.js';
 
 // --- App local ---
@@ -820,365 +823,8 @@ function haversineDistance(lat1, lon1, lat2, lon2) {
     return haversineDistanceShared(lat1, lon1, lat2, lon2);
 }
 
-// ========== RASTREIO DO CLIENTE (v1) ==========
-let trackDb = null;
-let trackDbPromise = null;
-let lastTrackPublishAt = 0;
-let lastTrackPublishPos = null;
-
-function newTrackToken() {
-    return newTrackTokenFromCrypto(window.crypto || window.msCrypto);
-}
-
-function publicFirstName(name, fallback) {
-    return publicFirstNameShared(name, fallback);
-}
-
-function trackingPublicBase() {
-    const hosted = window.ROTAFLOW_TRACK_HOST || 'https://rotaflow-83610.web.app';
-    try {
-        if (!isNativeApp() && /^https?:$/.test(location.protocol)
-            && location.hostname && location.hostname !== 'localhost' && location.hostname !== '127.0.0.1') {
-            return location.origin;
-        }
-    } catch (e) {}
-    return hosted;
-}
-
-function trackingUrl(token) {
-    return `${trackingPublicBase()}/r/${token}`;
-}
-
-function trackStatusFor(delivery) {
-    return trackStatusForShared(delivery);
-}
-
-async function ensureFirebaseTrack() {
-    if (trackDb) return trackDb;
-    if (!trackDbPromise) {
-        trackDbPromise = loadFirebaseSdk(['firestore'])
-            .then((fb) => {
-                trackDb = fb.firestore();
-                return trackDb;
-            })
-            .catch((err) => {
-                trackDbPromise = null;
-                throw err;
-            });
-    }
-    return trackDbPromise;
-}
-
-function stopsAheadOf(delivery) {
-    return stopsAheadOfShared(delivery, pendingStops());
-}
-
-function buildTrackPayload(delivery, extras) {
-    return buildTrackPayloadShared(delivery, extras, {
-        motorista: userProfile && userProfile.motorista,
-        pendingStops: pendingStops(),
-        estimateStopEta,
-        startPoint,
-        gpsAccuracyMeters
-    });
-}
-
-/** Republica tracks ativos + alvos do GPS em 2º plano (após otimizar / mudar assinatura). */
-let lastPublishedTrackRouteSig = '';
-function trackRoutePublishSignature() {
-    const pending = pendingStops();
-    if (routeActive && routeMetrics && routeMetrics.signature) return routeMetrics.signature;
-    return 'idle|' + pending.map(d => d.id).join('>');
-}
-
-async function refreshActiveTrackSessions(opts) {
-    const force = !!(opts && opts.force);
-    const sig = trackRoutePublishSignature();
-    if (!force && sig === lastPublishedTrackRouteSig) {
-        syncBackgroundGpsTargets();
-        return false;
-    }
-    syncBackgroundGpsTargets();
-    const targets = deliveries.filter(d => d.trackToken && isActiveStop(d));
-    if (!targets.length) {
-        lastPublishedTrackRouteSig = sig;
-        return false;
-    }
-    try {
-        const db = await ensureFirebaseTrack();
-        const pos = (opts && opts.pos) || startPoint;
-        const payloads = targets.map((delivery) => ({
-            token: delivery.trackToken,
-            payload: buildTrackPayload(delivery, pos ? { pos } : null)
-        }));
-        const commitBatch = (stripEta) => {
-            const batch = db.batch();
-            payloads.forEach(({ token, payload }) => {
-                batch.set(
-                    db.collection('tracks').doc(token),
-                    stripEta ? stripTrackEtaFields(payload) : payload,
-                    { merge: true }
-                );
-            });
-            return batch.commit();
-        };
-        try {
-            await commitBatch(false);
-        } catch (err) {
-            await commitBatch(true);
-        }
-        lastPublishedTrackRouteSig = sig;
-        lastTrackPublishAt = Date.now();
-        if (pos && typeof pos.lat === 'number') lastTrackPublishPos = pos;
-        return true;
-    } catch (err) {
-        console.warn('track refresh', err);
-        return false;
-    }
-}
-
-function stripTrackEtaFields(payload) {
-    return stripTrackEtaFieldsShared(payload);
-}
-
-async function writeTrackDoc(token, payload) {
-    const db = await ensureFirebaseTrack();
-    try {
-        await db.collection('tracks').doc(token).set(payload, { merge: true });
-    } catch (err) {
-        // Rules antigas (sem etaSeconds/stopsAhead): republica sem os campos novos.
-        if (payload && ('etaSeconds' in payload || 'stopsAhead' in payload)) {
-            await db.collection('tracks').doc(token).set(stripTrackEtaFields(payload), { merge: true });
-            return;
-        }
-        throw err;
-    }
-}
-
-function prepareTrackingUrl(delivery) {
-    if (!delivery || typeof delivery.lat !== 'number' || typeof delivery.lng !== 'number') return null;
-    if (!delivery.trackToken) {
-        delivery.trackToken = newTrackToken();
-        saveStorage();
-    }
-    return trackingUrl(delivery.trackToken);
-}
-
-function publishTrackingSession(delivery) {
-    if (!delivery || !delivery.trackToken) return Promise.resolve(false);
-    return writeTrackDoc(delivery.trackToken, buildTrackPayload(delivery))
-        .then(() => true)
-        .catch((err) => {
-            console.warn('track publish', err);
-            return false;
-        });
-}
-
-async function syncTrackingStatus(delivery, statusOverride) {
-    if (!delivery || !delivery.trackToken) return;
-    try {
-        await writeTrackDoc(delivery.trackToken, buildTrackPayload(delivery, { status: statusOverride }));
-    } catch (err) {
-        console.warn('track sync', err);
-    }
-}
-
-async function closeTrackingSession(delivery, status) {
-    if (!delivery || !delivery.trackToken) return;
-    try {
-        await writeTrackDoc(delivery.trackToken, buildTrackPayload(delivery, { status: status || 'encerrado' }));
-    } catch (err) {
-        console.warn('track close', err);
-    }
-}
-
-function isWithinNearKm(delivery, pos) {
-    return isWithinNearKmShared(delivery, pos);
-}
-
-function maybeMarkNearCustomer(delivery, pos, opts) {
-    if (!delivery || delivery.nearNotified || !isActiveStop(delivery)) return false;
-    if (!isWithinNearKm(delivery, pos)) return false;
-    delivery.nearNotified = true;
-    saveStorage();
-    showToast(`A ~${TRACK_NEAR_METERS} m de ${delivery.sequentialId} — aviso enviado ao cliente`);
-    // Push near via Cloud Function quando nearNotified chega ao Firestore.
-    syncTrackingStatus(delivery).catch(() => {});
-    if (!(opts && opts.skipPush)) sendNearPush(delivery);
-    return true;
-}
-
-function trackPushAssets() {
-    const host = 'https://rotaflow-83610.web.app';
-    return {
-        silent: false,
-        sound: host + '/track-notify.wav?v=campainha',
-        icon: host + '/track-icon-192.png',
-        badge: host + '/track-badge-96.png',
-        image: host + '/track-notify-banner.png'
-    };
-}
-
-async function sendTrackPush(delivery, extra) {
-    // Push real: Cloud Functions onTrackNotify (nearNotified / status / failReason).
-    // Cliente não tem VAPID private — RotaFlowPush.send é no-op de segurança.
-    if (!delivery || !delivery.trackToken) return;
-    try {
-        if (window.RotaFlowPush && typeof window.RotaFlowPush.send === 'function') {
-            await window.RotaFlowPush.send(null, Object.assign({
-                url: trackingUrl(delivery.trackToken)
-            }, trackPushAssets(), extra || {}));
-        }
-    } catch (err) {
-        console.warn('push track', err);
-    }
-}
-
-async function sendNearPush(delivery) {
-    return sendTrackPush(delivery, {
-        title: 'Sua entrega está chegando',
-        body: `O motorista está a cerca de ${TRACK_NEAR_METERS} m.`,
-        tag: 'rf-near-' + delivery.trackToken,
-        kind: 'near'
-    });
-}
-
-function sendDeliveredPush(delivery) {
-    if (!delivery || !delivery.trackToken || delivery.deliveredNotified) return;
-    delivery.deliveredNotified = true;
-    saveStorage();
-    syncTrackingStatus(delivery);
-    sendTrackPush(delivery, {
-        title: 'Sua encomenda foi entregue',
-        body: 'O motorista confirmou a entrega.',
-        tag: 'rf-delivered-' + delivery.trackToken,
-        kind: 'delivered',
-        actionTitle: 'Abrir'
-    });
-}
-
-function sendAbsentPush(delivery) {
-    if (!delivery || !delivery.trackToken || delivery.failReason !== 'ausente' || delivery.absentNotified) return;
-    delivery.absentNotified = true;
-    saveStorage();
-    syncTrackingStatus(delivery);
-    sendTrackPush(delivery, {
-        title: 'Cliente ausente',
-        body: 'O motorista passou no endereço e não havia ninguém para receber.',
-        tag: 'rf-absent-' + delivery.trackToken,
-        kind: 'absent',
-        actionTitle: 'Abrir'
-    });
-}
-
-function shouldPublishTrack(pos) {
-    return shouldPublishTrackShared(pos, lastTrackPublishPos, lastTrackPublishAt, Date.now());
-}
-
-function publishDriverGpsFromWatch(position) {
-    if (!gpsEnabled || !position || !position.coords) return;
-    const pos = { lat: position.coords.latitude, lng: position.coords.longitude };
-    const targets = deliveries.filter(d => d.trackToken && isActiveStop(d));
-    if (!targets.length) return;
-    const becomingNear = targets.some(d => !d.nearNotified && isWithinNearKm(d, pos));
-    if (!shouldPublishTrack(pos) && !becomingNear) return;
-    lastTrackPublishAt = Date.now();
-    lastTrackPublishPos = pos;
-    ensureFirebaseTrack().then(db => {
-        const batch = db.batch();
-        const entries = [];
-        targets.forEach((delivery) => {
-            const becameNear = maybeMarkNearCustomer(delivery, pos, { skipPush: bgGpsStarted });
-            const payload = buildTrackPayload(delivery, { pos });
-            if (becameNear) payload.nearNotified = true;
-            entries.push({ token: delivery.trackToken, payload });
-            batch.set(db.collection('tracks').doc(delivery.trackToken), payload, { merge: true });
-            // Live push removido do cliente (VAPID private só nas Functions).
-            // Mapa do cliente continua via Firestore GPS; near/entregue/ausente via CF.
-        });
-        return batch.commit().catch(() => {
-            const retry = db.batch();
-            entries.forEach(({ token, payload }) => {
-                retry.set(db.collection('tracks').doc(token), stripTrackEtaFields(payload), { merge: true });
-            });
-            return retry.commit();
-        });
-    }).catch((err) => {
-        console.warn('track publish', err);
-    });
-}
-
-async function pickDeliveryPhone(delivery) {
-    if (!delivery || !delivery.telefones || !delivery.telefones.length) return null;
-    if (delivery.telefones.length === 1) return delivery.telefones[0];
-    return showChoiceModal({
-        title: 'WhatsApp',
-        message: 'Selecione o número do cliente:',
-        options: delivery.telefones.map(p => ({
-            label: (p.label ? p.label + ' · ' : '') + formatPhoneShort(p.numero),
-            value: p,
-            icon: 'fab fa-whatsapp',
-            iconColor: '#25D366'
-        }))
-    });
-}
-
-async function openWhatsAppToDelivery(delivery, msg) {
-    const phone = await pickDeliveryPhone(delivery);
-    if (!phone) {
-        showToast('Cadastre o telefone do cliente para enviar o rastreio', true);
-        return false;
-    }
-    const opened = await openWhatsAppChat(phone.numero, msg);
-    if (!opened) {
-        showToast('Não foi possível abrir o WhatsApp', true);
-        return false;
-    }
-    return true;
-}
-
-async function shareTrackingLink(delivery) {
-    const url = prepareTrackingUrl(delivery);
-    if (!url) {
-        showToast('Não foi possível criar o link de rastreio', true);
-        return;
-    }
-    publishTrackingSession(delivery).then((ok) => {
-        if (!ok) showToast('Link enviado. Se o mapa do cliente falhar, tente de novo com internet', true);
-    });
-    if (!gpsEnabled || !startPoint) {
-        showToast('Link pronto. Ligue o GPS para o cliente ver você no mapa');
-    }
-    const nome = publicFirstName(delivery.nome, 'cliente');
-    const msg = buildDeliveryWhatsAppMessage(delivery, { nome, trackUrl: url });
-    if (delivery.telefones && delivery.telefones.length) {
-        await openWhatsAppToDelivery(delivery, msg);
-        return;
-    }
-    try {
-        if (isNativeApp() && window.RotaFlowCap && window.RotaFlowCap.Share) {
-            await window.RotaFlowCap.Share.share({
-                title: 'Rastreio RotaFlow',
-                text: msg,
-                url,
-                dialogTitle: 'Compartilhar rastreio'
-            });
-            return;
-        }
-        if (navigator.share) {
-            await navigator.share({ title: 'Rastreio RotaFlow', text: msg, url });
-            return;
-        }
-    } catch (err) {
-        if (err && (err.name === 'AbortError' || /cancel/i.test(err.message || ''))) return;
-    }
-    try {
-        await navigator.clipboard.writeText(url);
-        showToast('Sem telefone salvo — link de rastreio copiado');
-    } catch (e) {
-        showToast(url);
-    }
-}
+// ========== RASTREIO DO CLIENTE ==========
+// Implementação em src/js/tracking.js (configureTracking no boot).
 
 // ========== MIGRAÇÃO E PERSISTÊNCIA ==========
 function migrateTelefones(obj) {
@@ -2324,197 +1970,101 @@ function saveStorage() {
     saveTimer = setTimeout(persistStorageNow, 80);
 }
 
+function configureExtractedModules() {
+    configureTracking({
+        isNativeApp,
+        getDeliveries: () => deliveries,
+        getUserProfile: () => userProfile,
+        getStartPoint: () => startPoint,
+        getGpsAccuracyMeters: () => gpsAccuracyMeters,
+        getGpsEnabled: () => gpsEnabled,
+        getRouteActive: () => routeActive,
+        getRouteMetrics: () => routeMetrics,
+        pendingStops,
+        isActiveStop,
+        estimateStopEta,
+        saveStorage,
+        showToast,
+        showChoiceModal,
+        formatPhoneShort,
+        openWhatsAppChat,
+        buildDeliveryWhatsAppMessage,
+        syncBackgroundGpsTargets,
+        isBgGpsStarted: () => bgGpsStarted
+    });
+    configureHistory({
+        getDeliveries: () => deliveries,
+        setDeliveries: (next) => { deliveries = Array.isArray(next) ? next : []; },
+        getNextSequenceNumber: () => nextSequenceNumber,
+        setNextSequenceNumber: (n) => { nextSequenceNumber = n; },
+        setRouteActive: (v) => { routeActive = !!v; },
+        setRouteMetrics: (m) => { routeMetrics = m; },
+        getAuthReady: () => authReady,
+        getCurrentUser: () => currentUser,
+        storageKey,
+        showToast,
+        showConfirmModal,
+        persistStorageNow,
+        saveStorage,
+        getSequentialId,
+        newId,
+        seedIdCounter,
+        closeTrackingSession,
+        trackStatusFor,
+        clearRouteOverlay,
+        renderDeliveriesList,
+        renderRouteSwitcher,
+        rebuildMarkers,
+        updateLastIdDisplay,
+        closeDeliveryPanel,
+        clearActiveStopNotification,
+        renderAgendaList,
+        switchSidebarTab,
+        syncActiveRouteIntoRoutes,
+        createEmptyRoute,
+        applyLoadedRouteState,
+        getRoutes: () => routes,
+        getActiveRouteId: () => activeRouteId
+    });
+    configureBackupUi({
+        getDeliveries: () => deliveries,
+        getAgenda: () => agenda,
+        setAgenda: (a) => { agenda = Array.isArray(a) ? a : []; },
+        getRoutes: () => routes,
+        getActiveRouteId: () => activeRouteId,
+        getNextSequenceNumber: () => nextSequenceNumber,
+        setNextAgendaId: (n) => { nextAgendaId = n; },
+        getNextAgendaId: () => nextAgendaId,
+        getUserProfile: () => userProfile,
+        setUserProfile: (p) => { if (p) userProfile = p; },
+        persistStorageNow,
+        syncActiveRouteIntoRoutes,
+        isNativeApp,
+        showToast,
+        showConfirmModal,
+        showChoiceModal,
+        hydrateRoutesFromData,
+        migrateTelefones,
+        migrateFavorito,
+        normalizeDeliveryCoords,
+        hydrateAllPhotos,
+        seedIdCounter,
+        clearRouteOverlay,
+        renderDeliveriesList,
+        renderRouteSwitcher,
+        renderAgendaList,
+        rebuildMarkers,
+        updateDeliveryStats,
+        updateOptimizeFabVisibility,
+        updateLastIdDisplay,
+        getAuthReady: () => authReady,
+        recoverUiAfterResume
+    });
+}
+configureExtractedModules();
+
 // ========== HISTÓRICO DE DIAS ==========
-let routeHistory = [];
-
-function persistHistory() {
-    if (!authReady || !currentUser) return;
-    try {
-        localStorage.setItem(storageKey('history'), JSON.stringify(routeHistory.slice(0, HISTORY_MAX_DAYS)));
-    } catch (e) {
-        console.warn('history save', e);
-    }
-}
-
-function loadHistory() {
-    routeHistory = [];
-    try {
-        const raw = localStorage.getItem(storageKey('history'));
-        if (raw) routeHistory = JSON.parse(raw) || [];
-        if (!Array.isArray(routeHistory)) routeHistory = [];
-    } catch (_) {
-        routeHistory = [];
-    }
-}
-
-function snapshotDeliveriesForHistory() {
-    return snapshotDeliveriesOf(deliveries);
-}
-
-function archiveCurrentRouteDay({ silent = false, clearAfter = false } = {}) {
-    if (!deliveries.length) {
-        if (!silent) showToast('Não há entregas para arquivar', true);
-        return false;
-    }
-    const dateKey = localDateKey();
-    const entry = {
-        id: `h_${dateKey}_${Date.now()}`,
-        date: dateKey,
-        savedAt: Date.now(),
-        deliveries: snapshotDeliveriesForHistory(),
-        nextSequenceNumber,
-        stats: routeDayStats(deliveries)
-    };
-    routeHistory = prependHistoryDay(routeHistory, entry);
-    persistHistory();
-    renderHistoryList();
-    if (!silent) showToast(`Dia ${formatHistoryDate(dateKey)} salvo no histórico`);
-    if (clearAfter) {
-        deliveries.forEach((d) => closeTrackingSession(d, d.status === 'entregue' || d.status === 'falhou' ? trackStatusFor(d) : 'encerrado'));
-        deliveries = [];
-        nextSequenceNumber = 1;
-        routeActive = false;
-        routeMetrics = null;
-        clearRouteOverlay();
-        saveStorage();
-        renderDeliveriesList();
-        renderRouteSwitcher();
-        rebuildMarkers(false);
-        updateLastIdDisplay(null);
-        closeDeliveryPanel();
-        clearActiveStopNotification();
-        renderAgendaList();
-    }
-    return true;
-}
-
-async function startNewRoute() {
-    syncActiveRouteIntoRoutes();
-    if (!deliveries.length) {
-        showToast('A rota atual já está vazia — adicione paradas ou troque de rota', true);
-        return;
-    }
-    const ok = await showConfirmModal({
-        title: 'Nova rota',
-        message: 'Criar outra rota vazia? A rota atual permanece intacta (entregas, status, fotos e otimização). A agenda não muda.',
-        confirmText: 'Criar rota'
-    });
-    if (!ok) return;
-    syncActiveRouteIntoRoutes();
-    const previousName = (routes.find(r => r.id === activeRouteId) || {}).name || 'Rota atual';
-    const route = createEmptyRoute();
-    routes.push(route);
-    applyLoadedRouteState(route);
-    persistStorageNow();
-    showToast(`${route.name} criada — ${previousName} continua disponível`);
-}
-
-async function duplicateHistoryDay(historyId) {
-    const entry = routeHistory.find(h => h.id === historyId);
-    if (!entry || !entry.deliveries?.length) return;
-    const ok = await showConfirmModal({
-        title: 'Duplicar dia',
-        message: `Adicionar ${entry.deliveries.length} parada(s) de ${formatHistoryDate(entry.date)} na rota de hoje como pendentes?`,
-        confirmText: 'Duplicar'
-    });
-    if (!ok) return;
-
-    let added = 0;
-    for (const src of entry.deliveries) {
-        const seqId = getSequentialId(nextSequenceNumber);
-        nextSequenceNumber++;
-        const copy = {
-            id: newId(),
-            sequentialId: seqId,
-            nome: src.nome || '',
-            endereco: src.endereco || '',
-            lat: src.lat,
-            lng: src.lng,
-            telefones: Array.isArray(src.telefones) ? src.telefones.map(p => ({ ...p })) : [],
-            pacotes: src.pacotes || 1,
-            notes: src.notes || '',
-            status: 'pendente',
-            favorito: !!src.favorito,
-            savedToAgenda: !!src.savedToAgenda,
-            photos: [],
-            photoIds: [],
-            voltarDepois: false
-        };
-        deliveries.push(copy);
-        added++;
-    }
-    seedIdCounter();
-    clearRouteOverlay();
-    persistStorageNow();
-    renderDeliveriesList();
-    rebuildMarkers(true);
-    switchSidebarTab('rota');
-    showToast(`${added} parada(s) adicionada(s) à rota de hoje`);
-}
-
-async function deleteHistoryDay(historyId) {
-    const entry = routeHistory.find(h => h.id === historyId);
-    if (!entry) return;
-    const ok = await showConfirmModal({
-        title: 'Excluir dia',
-        message: `Remover ${formatHistoryDate(entry.date)} do histórico?`,
-        confirmText: 'Excluir',
-        danger: true
-    });
-    if (!ok) return;
-    routeHistory = routeHistory.filter(h => h.id !== historyId);
-    persistHistory();
-    renderHistoryList();
-    showToast('Dia removido do histórico');
-}
-
-function renderHistoryList() {
-    const container = document.getElementById('historyList');
-    if (!container) return;
-    if (!routeHistory.length) {
-        container.innerHTML = `<div class="empty-state">
-            <span class="empty-state-mark" aria-hidden="true"></span>
-            <span class="empty-state-title">Nenhum dia arquivado</span>
-            <span class="empty-state-msg">Quando o dia terminar, arquive a rota para consultar depois.</span>
-            <button type="button" class="empty-state-cta" data-empty-cta="rota"><i class="fas fa-route"></i> Ir para a rota</button>
-        </div>`;
-        return;
-    }
-    container.innerHTML = routeHistory.map(h => {
-        const s = h.stats || routeDayStats(h.deliveries || []);
-        return `<div class="history-item" data-history-id="${escapeHtml(h.id)}">
-            <div class="history-item-header">
-                <div>
-                    <div class="history-item-title">${escapeHtml(formatHistoryDate(h.date))}</div>
-                    <div class="history-item-meta">${s.total} parada(s)</div>
-                </div>
-            </div>
-            <div class="history-stats">
-                <span class="history-stat ok">${s.entregue} entregues</span>
-                <span class="history-stat warn">${s.falhou} falhas</span>
-                <span class="history-stat">${s.pendente} pendentes</span>
-            </div>
-            <div class="history-actions">
-                <button type="button" class="action-btn" data-history-action="duplicate"><i class="fas fa-copy"></i> Duplicar p/ hoje</button>
-                <button type="button" class="action-btn danger-ghost" data-history-action="delete"><i class="fas fa-trash"></i> Excluir</button>
-            </div>
-        </div>`;
-    }).join('');
-}
-
-function setupHistoryListDelegation() {
-    const container = document.getElementById('historyList');
-    if (!container || container.dataset.ready) return;
-    container.dataset.ready = '1';
-    container.addEventListener('click', (e) => {
-        const btn = e.target.closest('[data-history-action]');
-        const item = e.target.closest('.history-item');
-        if (!btn || !item) return;
-        const id = item.dataset.historyId;
-        if (btn.dataset.historyAction === 'duplicate') duplicateHistoryDay(id);
-        if (btn.dataset.historyAction === 'delete') deleteHistoryDay(id);
-    });
-}
+// Implementação em src/js/history.js (configureHistory no boot).
 
 // ========== DESFAZER RÁPIDO (SNACKBAR) ==========
 let undoSnackbarTimer = null;
@@ -5347,409 +4897,7 @@ async function copyFromOtherRoute() {
 }
 
 // ========== BACKUP E RESTORE ==========
-let backupAutoTimer = null;
-let backupAutoRunning = false;
-let backupDeliveriesSinceAuto = 0;
-let backupDayKey = '';
-
-function hideBackupReminder() {
-    const el = document.getElementById('backupReminder');
-    if (el) el.classList.remove('is-visible');
-}
-
-function maybeShowBackupReminder() {
-    const el = document.getElementById('backupReminder');
-    const text = document.getElementById('backupReminderText');
-    if (!el) return;
-
-    const hasData = (deliveries && deliveries.length) || (agenda && agenda.length);
-    if (!hasData) {
-        hideBackupReminder();
-        return;
-    }
-
-    const meta = readBackupMeta();
-    const sinceBackup = daysSince(meta.lastBackupAt);
-    const sinceDismiss = daysSince(meta.lastDismissAt);
-    const needsRemind = sinceBackup >= BACKUP_REMIND_DAYS;
-    const coolDownOk = sinceDismiss >= BACKUP_DISMISS_DAYS;
-
-    if (!needsRemind || !coolDownOk) {
-        hideBackupReminder();
-        return;
-    }
-
-    if (text) {
-        if (!meta.lastBackupAt) {
-            text.textContent = 'Ainda não há backup neste aparelho. Exporte a rota e a agenda para ficar seguro.';
-        } else {
-            const d = Math.floor(sinceBackup);
-            text.textContent = `Último backup há ${d} dia${d === 1 ? '' : 's'}. Exporte um JSON para não perder dados.`;
-        }
-    }
-    el.classList.add('is-visible');
-}
-
-function dismissBackupReminder() {
-    writeBackupMeta({ lastDismissAt: Date.now() });
-    hideBackupReminder();
-    showToast('Lembrete adiado');
-}
-
-function setupBackupReminderUi() {
-    const nowBtn = document.getElementById('backupReminderNowBtn');
-    const dismissBtn = document.getElementById('backupReminderDismissBtn');
-    if (nowBtn && !nowBtn.dataset.ready) {
-        nowBtn.dataset.ready = '1';
-        nowBtn.addEventListener('click', () => { backupData(); });
-    }
-    if (dismissBtn && !dismissBtn.dataset.ready) {
-        dismissBtn.dataset.ready = '1';
-        dismissBtn.addEventListener('click', dismissBackupReminder);
-    }
-}
-
-function buildFullBackupObject() {
-    persistStorageNow();
-    syncActiveRouteIntoRoutes();
-    // Nunca embutir data URLs — fotos vivem no IndexedDB. Stringify com JPEGs em RAM OOM no Android.
-    const lightRoutes = (routes || []).map(r => ({
-        id: r.id,
-        name: r.name,
-        createdAt: r.createdAt,
-        nextSequenceNumber: r.nextSequenceNumber,
-        routeActive: !!r.routeActive,
-        routeMetrics: r.routeMetrics || null,
-        deliveries: cloneWithoutHeavyPhotos(r.deliveries || [])
-    }));
-    return {
-        version: 1,
-        exportedAt: Date.now(),
-        routes: lightRoutes,
-        activeRouteId,
-        deliveries: cloneWithoutHeavyPhotos(deliveries),
-        agenda: cloneWithoutHeavyPhotos(agenda),
-        nextSequenceNumber,
-        nextAgendaId,
-        userProfile
-    };
-}
-
-async function runAutoBackup({ reason = 'auto', cloud = true, silent = true } = {}) {
-    cloud = cloud && CLOUD_BACKUP_ENABLED;
-    if (backupAutoRunning) return null;
-    if (!authReady) return null;
-    const hasData = (deliveries && deliveries.length) || (agenda && agenda.length);
-    if (!hasData) return null;
-
-    const meta = readBackupMeta();
-    if (reason === 'idle' || reason === 'tick') {
-        if (meta.lastAutoAt && (Date.now() - meta.lastAutoAt) < BACKUP_AUTO_MIN_GAP_MS) return null;
-    }
-
-    backupAutoRunning = true;
-    try {
-        const data = buildFullBackupObject();
-        const json = JSON.stringify(data);
-        const local = await writeSilentLocalBackup(json);
-        let cloudRes = { ok: false, error: 'skipped' };
-        if (cloud) cloudRes = await uploadCloudBackup(json);
-
-        const patch = {
-            lastAutoAt: Date.now(),
-            dayKey: todayBackupDayKey(),
-            deliveriesSinceBackup: 0
-        };
-        if (local.ok) {
-            patch.lastBackupAt = Date.now();
-            patch.lastDismissAt = Date.now();
-        }
-        if (cloudRes.ok) {
-            patch.lastCloudAt = Date.now();
-            patch.lastCloudOk = true;
-            patch.lastCloudError = '';
-        } else if (cloud) {
-            patch.lastCloudOk = false;
-            patch.lastCloudError = cloudRes.error || 'falha';
-        }
-        writeBackupMeta(patch);
-        backupDeliveriesSinceAuto = 0;
-        hideBackupReminder();
-
-        if (!silent) {
-            if (!cloud) showToast(local.ok ? 'Backup automático salvo neste aparelho' : 'Não foi possível fazer o backup automático', !local.ok);
-            else if (local.ok && cloudRes.ok) showToast('Backup automático salvo neste aparelho e na nuvem');
-            else if (local.ok && cloudRes.error === 'offline') showToast('Backup local ok. Sem internet para a nuvem');
-            else if (local.ok) showToast('Backup local ok. Nuvem indisponível agora');
-            else showToast('Não foi possível fazer o backup automático', true);
-        }
-        return { local, cloud: cloudRes };
-    } catch (e) {
-        console.warn('auto backup', e);
-        if (!silent) showToast('Falha no backup automático', true);
-        return null;
-    } finally {
-        backupAutoRunning = false;
-    }
-}
-
-function noteDeliveryCompletedForBackup() {
-    backupDeliveriesSinceAuto += 1;
-    const meta = readBackupMeta();
-    const nextCount = (meta.deliveriesSinceBackup || 0) + 1;
-    writeBackupMeta({ deliveriesSinceBackup: nextCount });
-    if (backupDeliveriesSinceAuto >= BACKUP_AUTO_DELIVERIES || nextCount >= BACKUP_AUTO_DELIVERIES) {
-        // Adia para fora do gesto "Entregar" — evita competir por RAM/IO com o painel.
-        const kick = () => {
-            runAutoBackup({ reason: 'deliveries', silent: true }).catch(() => {});
-        };
-        if (typeof requestIdleCallback === 'function') requestIdleCallback(kick, { timeout: 4000 });
-        else setTimeout(kick, 1200);
-    }
-}
-
-function maybeAutoBackupOnDayChange() {
-    const day = todayBackupDayKey();
-    const meta = readBackupMeta();
-    if (meta.dayKey && meta.dayKey !== day) {
-        const kick = () => runAutoBackup({ reason: 'day-change', silent: true }).catch(() => {});
-        if (typeof requestIdleCallback === 'function') requestIdleCallback(kick, { timeout: 8000 });
-        else setTimeout(kick, 1500);
-        return;
-    }
-    if (!meta.dayKey) writeBackupMeta({ dayKey: day });
-    backupDayKey = day;
-}
-
-function setupAutoBackupScheduler() {
-    maybeAutoBackupOnDayChange();
-    if (backupAutoTimer) clearInterval(backupAutoTimer);
-    backupAutoTimer = setInterval(() => {
-        if (document.visibilityState === 'hidden') {
-            runAutoBackup({ reason: 'idle', silent: true }).catch(() => {});
-        } else {
-            const meta = readBackupMeta();
-            if (!meta.lastAutoAt || (Date.now() - meta.lastAutoAt) > 24 * 60 * 60 * 1000) {
-                runAutoBackup({ reason: 'daily', silent: true }).catch(() => {});
-            }
-        }
-        const day = todayBackupDayKey();
-        if (backupDayKey && backupDayKey !== day) maybeAutoBackupOnDayChange();
-        backupDayKey = day;
-    }, BACKUP_AUTO_IDLE_MS);
-
-    document.addEventListener('visibilitychange', () => {
-        if (document.visibilityState === 'hidden') {
-            const kick = () => runAutoBackup({ reason: 'idle', silent: true }).catch(() => {});
-            if (typeof requestIdleCallback === 'function') requestIdleCallback(kick, { timeout: 5000 });
-            else setTimeout(kick, 800);
-        } else {
-            recoverUiAfterResume();
-        }
-    });
-}
-
-async function downloadJsonFile(filename, data, successMsg) {
-    const json = typeof data === 'string' ? data : JSON.stringify(data, null, 2);
-    try {
-        if (isNativeApp() && window.RotaFlowCap && typeof window.RotaFlowCap.saveAndShareTextFile === 'function') {
-            await window.RotaFlowCap.saveAndShareTextFile(filename, json, filename);
-            showToast(successMsg || 'Arquivo pronto para salvar');
-            return true;
-        }
-    } catch (e) {
-        console.warn('native backup', e);
-        showToast('Não foi possível salvar o arquivo neste aparelho', true);
-        return false;
-    }
-
-    try {
-        const blob = new Blob([json], { type: 'application/json' });
-        const link = document.createElement('a');
-        link.href = URL.createObjectURL(blob);
-        link.download = filename;
-        document.body.appendChild(link);
-        link.click();
-        setTimeout(() => {
-            URL.revokeObjectURL(link.href);
-            link.remove();
-        }, 1500);
-        showToast(successMsg || 'Download iniciado');
-        return true;
-    } catch (e) {
-        showToast('Não foi possível baixar o arquivo', true);
-        return false;
-    }
-}
-
-async function backupAgenda() {
-    if (agenda.length === 0) { showToast("A agenda está vazia", true); return; }
-    const data = { agenda, nextAgendaId };
-    const filename = `agenda_${new Date().toISOString().slice(0,10)}.json`;
-    await downloadJsonFile(filename, data, 'Escolha onde salvar o backup da agenda');
-}
-
-function restoreAgenda(file) {
-    const reader = new FileReader();
-    reader.onload = async (e) => {
-        try {
-            const parsed = parseAgendaBackup(JSON.parse(e.target.result));
-            if (!parsed.ok) throw new Error(parsed.error);
-            const data = parsed.data;
-            const ok = await showConfirmModal({
-                title: 'Restaurar agenda',
-                message: 'A agenda atual será substituída pelos dados do arquivo. Deseja continuar?',
-                confirmText: 'Substituir',
-                danger: true
-            });
-            if (!ok) return;
-            agenda = data.agenda;
-            nextAgendaId = data.nextAgendaId || 1;
-            agenda.forEach(a => { migrateTelefones(a); migrateFavorito(a); if (a.pacotes === undefined) a.pacotes = 1; if (!a.photos) a.photos = []; if (!a.photoIds) a.photoIds = []; if (a.notes === undefined) a.notes = ''; });
-            await hydrateAllPhotos();
-            persistStorageNow();
-            renderAgendaList();
-            showToast("Agenda restaurada com sucesso");
-        } catch (err) {
-            showToast("Não foi possível restaurar a agenda. Arquivo inválido", true);
-        }
-    };
-    reader.readAsText(file);
-}
-
-// Exportação local (JSON via partilha/download) + cópia silenciosa no aparelho.
-async function backupDataLocal(filename, data) {
-    const ok = await downloadJsonFile(filename, data, 'Escolha onde salvar o backup completo');
-    if (ok) {
-        await writeSilentLocalBackup(JSON.stringify(data)).catch(() => {});
-        writeBackupMeta({
-            lastBackupAt: Date.now(),
-            lastDismissAt: Date.now(),
-            lastAutoAt: Date.now(),
-            deliveriesSinceBackup: 0,
-            dayKey: todayBackupDayKey()
-        });
-        hideBackupReminder();
-    }
-    return ok;
-}
-
-async function backupData() {
-    const data = buildFullBackupObject();
-    const filename = `rotaflow_backup_${new Date().toISOString().slice(0,10)}.json`;
-
-    // Nuvem desligada (sem Blaze): vai direto para o JSON local, sem escolha.
-    if (!CLOUD_BACKUP_ENABLED) {
-        await backupDataLocal(filename, data);
-        return;
-    }
-
-    const online = typeof navigator === 'undefined' || navigator.onLine !== false;
-    const options = [
-        { label: 'Neste aparelho (JSON)', value: 'local', icon: 'fas fa-download', iconColor: '#0f172a' }
-    ];
-    if (online) {
-        options.push({ label: 'Nuvem + aparelho', value: 'cloud', icon: 'fas fa-cloud-upload-alt', iconColor: '#2563eb' });
-    }
-    const choice = await showChoiceModal({
-        title: 'Backup',
-        message: online
-            ? 'Salvar cópia da rota e da agenda:'
-            : 'Sem internet — só é possível salvar neste aparelho.',
-        options
-    });
-    if (!choice) return;
-
-    if (choice === 'local') {
-        await backupDataLocal(filename, data);
-        return;
-    }
-
-    // cloud: cópia silenciosa no aparelho + upload (sem diálogo de partilha)
-    showToast('A guardar backup…');
-    const json = JSON.stringify(data);
-    const local = await writeSilentLocalBackup(json);
-    const cloudRes = await uploadCloudBackup(json);
-
-    const patch = {
-        lastDismissAt: Date.now(),
-        lastAutoAt: Date.now(),
-        deliveriesSinceBackup: 0,
-        dayKey: todayBackupDayKey()
-    };
-    if (local.ok) patch.lastBackupAt = Date.now();
-    if (cloudRes.ok) {
-        patch.lastCloudAt = Date.now();
-        patch.lastCloudOk = true;
-        patch.lastCloudError = '';
-        if (!local.ok) patch.lastBackupAt = Date.now();
-        showToast('Backup na nuvem concluído' + (local.ok ? ' (e neste aparelho)' : ''));
-    } else if (cloudRes.error === 'offline') {
-        patch.lastCloudOk = false;
-        patch.lastCloudError = 'offline';
-        showToast(local.ok
-            ? 'Salvo neste aparelho. Sem internet para a nuvem'
-            : 'Sem internet para enviar à nuvem', !local.ok);
-    } else {
-        patch.lastCloudOk = false;
-        patch.lastCloudError = cloudRes.error || 'falha';
-        if (local.ok) {
-            showToast('Salvo neste aparelho. Nuvem indisponível (verifique o Firebase)');
-        } else {
-            // Último recurso: diálogo de exportação manual
-            const shared = await downloadJsonFile(filename, data, 'Salve o JSON manualmente');
-            if (shared) patch.lastBackupAt = Date.now();
-            showToast('Nuvem indisponível. Use o arquivo JSON se foi partilhado', true);
-        }
-    }
-    writeBackupMeta(patch);
-    hideBackupReminder();
-}
-
-function restoreData(file) {
-    const reader = new FileReader();
-    reader.onload = async (e) => {
-        try {
-            const parsed = parseBackupPayload(JSON.parse(e.target.result));
-            if (!parsed.ok) throw new Error(parsed.error);
-            const data = parsed.data;
-            const ok = await showConfirmModal({
-                title: 'Restaurar backup',
-                message: 'As rotas, a agenda e o perfil atuais serão substituídos. Deseja continuar?',
-                confirmText: 'Substituir',
-                danger: true
-            });
-            if (!ok) return;
-            agenda = data.agenda;
-            nextAgendaId = data.nextAgendaId || 1;
-            if (data.userProfile) userProfile = data.userProfile;
-            hydrateRoutesFromData(data);
-            agenda.forEach(a => {
-                migrateTelefones(a); migrateFavorito(a);
-                if (a.pacotes === undefined) a.pacotes = 1;
-                if (!a.photos) a.photos = [];
-                if (!a.photoIds) a.photoIds = [];
-                if (a.notes === undefined) a.notes = '';
-                normalizeDeliveryCoords(a);
-            });
-            seedIdCounter();
-            clearRouteOverlay();
-            await hydrateAllPhotos();
-            persistStorageNow();
-            renderDeliveriesList();
-            renderRouteSwitcher();
-            renderAgendaList();
-            rebuildMarkers(false);
-            updateDeliveryStats();
-            updateOptimizeFabVisibility();
-            updateLastIdDisplay(deliveries.length ? deliveries[deliveries.length-1].sequentialId : null);
-            showToast("Dados restaurados com sucesso");
-        } catch (err) {
-            showToast("Não foi possível restaurar os dados. Arquivo inválido", true);
-        }
-    };
-    reader.readAsText(file);
-}
+// Implementação em src/js/backup-ui.js (configureBackupUi no boot).
 
 // ========== LIMPAR ROTA / NOVA ROTA ==========
 async function clearRoute() {
@@ -7072,23 +6220,7 @@ function initAppUi() {
     }
 
     document.getElementById('profileBtn').addEventListener('click', showProfileModal);
-    document.getElementById('backupBtn').addEventListener('click', backupData);
-    document.getElementById('restoreBtn').addEventListener('click', () => document.getElementById('importFileInput').click());
-    document.getElementById('importFileInput').addEventListener('change', (e) => {
-        if (e.target.files.length) {
-            restoreData(e.target.files[0]);
-            e.target.value = '';
-        }
-    });
-
-    document.getElementById('backupAgendaBtn').addEventListener('click', backupAgenda);
-    document.getElementById('restoreAgendaBtn').addEventListener('click', () => document.getElementById('restoreAgendaInput').click());
-    document.getElementById('restoreAgendaInput').addEventListener('change', (e) => {
-        if (e.target.files.length) {
-            restoreAgenda(e.target.files[0]);
-            e.target.value = '';
-        }
-    });
+    bindBackupButtons();
 
     document.getElementById('optimizeRouteBtn').addEventListener('click', optimizeRoute);
     document.getElementById('optimizeRouteToolBtn')?.addEventListener('click', optimizeRoute);
