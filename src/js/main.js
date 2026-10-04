@@ -16,6 +16,14 @@ import {
     remainingPhotoSlots as remainingPhotoSlotsFor,
     slicePhotoIdsForHydrate
 } from '../../lib/photo-helpers.js';
+import {
+    haversineDistance as haversineDistanceShared,
+    formatKm as formatKmShared,
+    formatDuration as formatDurationShared,
+    publicFirstName as publicFirstNameShared,
+    trackStatusFor as trackStatusForShared,
+    stripTrackEtaFields as stripTrackEtaFieldsShared
+} from '../../lib/track-schema.js';
 import { loadFirebaseSdk } from './firebase-loader.js';
 import {
     configurePhotoStore,
@@ -837,14 +845,7 @@ function getSequentialId(seq) {
 }
 function escapeHtml(str) { if (!str) return ''; return String(str).replace(/[&<>"']/g, m => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[m])); }
 function haversineDistance(lat1, lon1, lat2, lon2) {
-    const R = 6371;
-    const dLat = (lat2 - lat1) * Math.PI / 180;
-    const dLon = (lon2 - lon1) * Math.PI / 180;
-    const a = Math.sin(dLat/2) * Math.sin(dLat/2) +
-              Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) *
-              Math.sin(dLon/2) * Math.sin(dLon/2);
-    const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
-    return R * c;
+    return haversineDistanceShared(lat1, lon1, lat2, lon2);
 }
 
 // ========== RASTREIO DO CLIENTE (v1) ==========
@@ -864,8 +865,7 @@ function newTrackToken() {
 }
 
 function publicFirstName(name, fallback) {
-    const n = String(name || '').trim().split(/\s+/)[0] || '';
-    return (n || fallback || 'Cliente').slice(0, 60);
+    return publicFirstNameShared(name, fallback);
 }
 
 function trackingPublicBase() {
@@ -884,11 +884,7 @@ function trackingUrl(token) {
 }
 
 function trackStatusFor(delivery) {
-    if (!delivery) return 'encerrado';
-    if (delivery.status === 'entregue') return 'entregue';
-    if (delivery.status === 'falhou') return 'falhou';
-    if (delivery.status === 'pendente' || delivery.status === 'em-rota') return 'active';
-    return 'encerrado';
+    return trackStatusForShared(delivery);
 }
 
 async function ensureFirebaseTrack() {
@@ -1003,11 +999,7 @@ async function refreshActiveTrackSessions(opts) {
 }
 
 function stripTrackEtaFields(payload) {
-    if (!payload || typeof payload !== 'object') return payload;
-    const next = { ...payload };
-    delete next.etaSeconds;
-    delete next.stopsAhead;
-    return next;
+    return stripTrackEtaFieldsShared(payload);
 }
 
 async function writeTrackDoc(token, payload) {
@@ -6423,11 +6415,9 @@ function routeSignature(stops) {
     return start + '|' + stops.map(d => d.id).join('>');
 }
 
-function formatKm(meters) { return (meters / 1000).toFixed(1).replace('.', ',') + ' km'; }
+function formatKm(meters) { return formatKmShared(meters); }
 function formatDuration(seconds) {
-    const min = Math.round(seconds / 60);
-    if (min < 60) return `${min} min`;
-    return `${Math.floor(min / 60)}h${String(min % 60).padStart(2, '0')}`;
+    return formatDurationShared(seconds);
 }
 
 // Sempre tenta a localização atual. Se GPS estiver desligado/negado,

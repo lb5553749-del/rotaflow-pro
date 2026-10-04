@@ -23,6 +23,7 @@
       "dist/**",
       "signing/**",
       "functions/**",
+      "estudo-transpetro/**",
       "capacitor.config.json"
     ],
     "headers": [
