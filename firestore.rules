@@ -1,0 +1,74 @@
+rules_version = '2';
+// Deploy: npm run deploy:rules  (ou firebase deploy --only firestore:rules,storage)
+// Consistente com storage.rules: dados do motorista sob users/{uid}/** exigem auth.uid == userId.
+service cloud.firestore {
+  match /databases/{database}/documents {
+    match /users/{userId}/{document=**} {
+      allow read, write: if request.auth != null && request.auth.uid == userId;
+    }
+
+    // Rastreio v1: o token (32 hex) é a senha do documento.
+    // Leitura pública para a página do cliente; escrita só com o token.
+    match /tracks/{token} {
+      allow read: if token.matches('^[a-f0-9]{32}$');
+
+      allow create: if token.matches('^[a-f0-9]{32}$')
+        && isValidTrack(request.resource.data);
+
+      allow update: if token.matches('^[a-f0-9]{32}$')
+        && isValidTrack(request.resource.data)
+        && request.resource.data.diff(resource.data).affectedKeys()
+             .hasOnly([
+               'driverLat', 'driverLng', 'accuracy', 'updatedAt',
+               'status', 'nearNotified', 'deliveredNotified', 'absentNotified',
+               'failReason', 'destLat', 'destLng',
+               'destName', 'motorista', 'sequentialId',
+               'etaSeconds', 'stopsAhead'
+             ]);
+
+      allow delete: if false;
+
+      // Inscrição de push do cliente (página fechada)
+      match /subs/{subId} {
+        allow create, update: if token.matches('^[a-f0-9]{32}$')
+          && request.resource.data.keys().hasOnly(['endpoint', 'keys', 'createdAt'])
+          && request.resource.data.endpoint is string
+          && request.resource.data.endpoint.size() > 20
+          && request.resource.data.endpoint.size() < 2048
+          && request.resource.data.createdAt is number
+          && request.resource.data['keys'].keys().hasOnly(['p256dh', 'auth'])
+          && request.resource.data['keys'].p256dh is string
+          && request.resource.data['keys'].auth is string;
+        allow read: if token.matches('^[a-f0-9]{32}$');
+        allow delete: if false;
+      }
+    }
+  }
+
+  function isValidTrack(data) {
+    return data.keys().hasOnly([
+        'destLat', 'destLng', 'destName', 'sequentialId', 'status',
+        'motorista', 'driverLat', 'driverLng', 'accuracy',
+        'updatedAt', 'nearNotified', 'deliveredNotified', 'absentNotified', 'failReason',
+        'etaSeconds', 'stopsAhead'
+      ])
+      && data.destLat is number
+      && data.destLng is number
+      && data.destLat >= -90 && data.destLat <= 90
+      && data.destLng >= -180 && data.destLng <= 180
+      && data.status in ['active', 'entregue', 'falhou', 'encerrado']
+      && data.updatedAt is number
+      && data.destName is string && data.destName.size() < 80
+      && data.sequentialId is string && data.sequentialId.size() < 20
+      && data.motorista is string && data.motorista.size() < 80
+      && (!('driverLat' in data) || (data.driverLat is number && data.driverLat >= -90 && data.driverLat <= 90))
+      && (!('driverLng' in data) || (data.driverLng is number && data.driverLng >= -180 && data.driverLng <= 180))
+      && (!('accuracy' in data) || data.accuracy is number)
+      && (!('nearNotified' in data) || data.nearNotified is bool)
+      && (!('deliveredNotified' in data) || data.deliveredNotified is bool)
+      && (!('absentNotified' in data) || data.absentNotified is bool)
+      && (!('failReason' in data) || data.failReason in ['', 'ausente', 'endereco-errado', 'recusou'])
+      && (!('etaSeconds' in data) || (data.etaSeconds is number && data.etaSeconds >= 0 && data.etaSeconds <= 172800))
+      && (!('stopsAhead' in data) || (data.stopsAhead is number && data.stopsAhead >= 0 && data.stopsAhead <= 500));
+  }
+}

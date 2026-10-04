@@ -1,0 +1,1087 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+    <meta name="theme-color" content="#0f172a">
+    <meta name="robots" content="noindex, nofollow">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="apple-mobile-web-app-title" content="Rastreio">
+    <link rel="apple-touch-icon" href="/track-icon-192.png">
+    <title>Rastreio — RotaFlow</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+    <script>
+        (function () {
+            const q = new URLSearchParams(location.search).get('t');
+            const m = location.pathname.match(/\/r\/([a-f0-9]{32})/i);
+            const token = (q && /^[a-f0-9]{32}$/i.test(q.trim()) ? q.trim() : (m ? m[1] : '')).toLowerCase();
+            const start = token ? ('/r/' + token) : '/r/';
+            const manifest = {
+                id: 'rotaflow-rastreio-' + (token || 'page'),
+                name: 'Rastreio RotaFlow',
+                short_name: 'Rastreio',
+                description: 'Acompanhe sua entrega em tempo real',
+                start_url: start,
+                scope: '/r/',
+                display: 'standalone',
+                lang: 'pt-BR',
+                theme_color: '#0f172a',
+                background_color: '#0f172a',
+                icons: [
+                    { src: '/track-icon-192.png', sizes: '192x192', type: 'image/png', purpose: 'any' },
+                    { src: '/track-icon-192.png', sizes: '192x192', type: 'image/png', purpose: 'maskable' }
+                ]
+            };
+            const url = URL.createObjectURL(new Blob([JSON.stringify(manifest)], { type: 'application/manifest+json' }));
+            const link = document.createElement('link');
+            link.rel = 'manifest';
+            link.href = url;
+            document.head.appendChild(link);
+        })();
+    </script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/fontawesome.min.css">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/solid.min.css">
+    <style>
+        :root {
+            --ink: #0f172a;
+            --muted: #64748b;
+            --line: #e2e8f0;
+            --ok: #059669;
+            --accent: #2563eb;
+            --safe-t: env(safe-area-inset-top, 0px);
+            --safe-b: env(safe-area-inset-bottom, 0px);
+        }
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        html, body { height: 100%; }
+        body {
+            font-family: Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+            background: #f1f5f9;
+            color: var(--ink);
+            overflow: hidden;
+        }
+        .app {
+            height: 100%;
+            display: flex;
+            flex-direction: column;
+        }
+        header {
+            padding: calc(14px + var(--safe-t)) 16px 14px;
+            background: #0b1220;
+            color: #fff;
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            z-index: 2;
+        }
+        .brand { min-width: 0; }
+        .brand-logo {
+            width: 36px; height: 36px; border-radius: 10px;
+            overflow: hidden; flex-shrink: 0; display: block;
+            box-shadow: 0 0 0 1px rgba(148, 163, 184, 0.35), 0 6px 16px rgba(0,0,0,0.28);
+        }
+        .brand-logo svg { width: 100%; height: 100%; display: block; }
+        .brand h1 { font-size: 1rem; font-weight: 800; letter-spacing: -0.03em; }
+        .brand p { font-size: 0.72rem; color: #94a3b8; margin-top: 2px; font-weight: 500; }
+        .brand-pro {
+            font-size: 0.58em;
+            font-weight: 700;
+            letter-spacing: 0.08em;
+            text-transform: uppercase;
+            color: #93c5fd;
+            vertical-align: 0.12em;
+            margin-left: 3px;
+        }
+        #map {
+            flex: 1;
+            min-height: 180px;
+            background: #e2e8f0;
+        }
+        .sheet {
+            background: #fff;
+            border-top: 1px solid var(--line);
+            padding: 14px 16px calc(16px + var(--safe-b));
+            box-shadow: 0 -10px 30px rgba(15, 23, 42, 0.08);
+            z-index: 2;
+        }
+        .status-row {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 10px;
+            margin-bottom: 8px;
+        }
+        .chip {
+            display: inline-flex; align-items: center; gap: 6px;
+            font-size: 0.72rem; font-weight: 800; letter-spacing: 0.04em;
+            text-transform: uppercase; padding: 5px 10px; border-radius: 999px;
+            background: #e0f2fe; color: #0369a1;
+        }
+        .chip.done { background: #dcfce7; color: #166534; }
+        .chip.fail { background: #ffedd5; color: #9a3412; }
+        .chip.wait { background: #f1f5f9; color: #475569; }
+        .chip.near { background: #fef3c7; color: #b45309; }
+        .dist {
+            font-size: 1.45rem; font-weight: 800; letter-spacing: -0.03em;
+            font-variant-numeric: tabular-nums;
+        }
+        .meta { font-size: 0.82rem; color: var(--muted); margin-top: 2px; }
+        .banner {
+            display: none;
+            margin-top: 10px;
+            background: #ecfdf5;
+            border: 1px solid #a7f3d0;
+            color: #065f46;
+            border-radius: 12px;
+            padding: 10px 12px;
+            font-size: 0.88rem;
+            font-weight: 650;
+        }
+        .banner.show { display: flex; align-items: center; gap: 8px; }
+        .banner.delivered { background: #ecfdf5; border-color: #6ee7b7; color: #065f46; }
+        .banner.absent { background: #fff7ed; border-color: #fdba74; color: #9a3412; }
+        .banner.gps-weak { background: #fffbeb; border-color: #fcd34d; color: #92400e; }
+        .notify-btn {
+            margin-top: 10px;
+            width: 100%;
+            border: 1px solid #bfdbfe;
+            background: #eff6ff;
+            color: #1d4ed8;
+            font-weight: 700;
+            font-size: 0.85rem;
+            border-radius: 12px;
+            padding: 11px 12px;
+            cursor: pointer;
+        }
+        .notify-btn[hidden] { display: none; }
+        .center-msg {
+            position: absolute; inset: 0; display: grid; place-items: center;
+            text-align: center; padding: 28px 24px; color: var(--muted);
+            background: #f8fafc; z-index: 3;
+        }
+        .center-msg .brand-logo { width: 56px; height: 56px; border-radius: 14px; margin: 0 auto 8px; }
+        .center-msg h2 { color: var(--ink); margin: 10px 0 6px; font-size: 1.2rem; letter-spacing: -0.03em; }
+        .center-msg p { line-height: 1.45; max-width: 320px; margin: 0 auto; }
+        .center-msg[hidden] { display: none; }
+        #gate {
+            z-index: 4;
+            background:
+                radial-gradient(ellipse 90% 42% at 50% -6%, rgba(59,130,246,0.28), transparent 58%),
+                linear-gradient(180deg, #0b1220 0%, #0f172a 34%, #f8fafc 34%);
+            padding: calc(32px + var(--safe-t)) 18px calc(20px + var(--safe-b));
+            align-items: start;
+        }
+        #gate > div { width: min(420px, 100%); text-align: left; }
+        .gate-hero { color: #fff; margin-bottom: 24px; }
+        .gate-hero .brand-logo { width: 48px; height: 48px; border-radius: 13px; margin-bottom: 14px; }
+        .gate-kicker {
+            font-size: 0.68rem; font-weight: 700; letter-spacing: 0.12em;
+            text-transform: uppercase; color: #93c5fd; margin-bottom: 8px;
+        }
+        .gate-hero h2 { color: #fff; font-size: 1.4rem; margin: 0 0 8px; letter-spacing: -0.03em; }
+        .gate-hero p { color: #cbd5e1; font-size: 0.9rem; line-height: 1.45; }
+        .gate-step {
+            background: #fff;
+            border: 1px solid #e2e8f0;
+            border-radius: 18px;
+            padding: 16px 16px 14px;
+            margin-bottom: 12px;
+            box-shadow: 0 12px 28px rgba(15, 23, 42, 0.08);
+        }
+        .gate-step.done { border-color: #86efac; background: #f0fdf4; }
+        .gate-step h3 {
+            font-size: 0.95rem;
+            display: flex; align-items: center; gap: 8px;
+            margin-bottom: 6px;
+        }
+        .gate-step p { font-size: 0.82rem; color: var(--muted); line-height: 1.4; }
+        .gate-num {
+            width: 22px; height: 22px; border-radius: 50%;
+            background: #e2e8f0; color: #334155;
+            font-size: 0.75rem; font-weight: 800;
+            display: grid; place-items: center; flex-shrink: 0;
+        }
+        .gate-step.done .gate-num { background: #16a34a; color: #fff; }
+        .gate-actions { display: flex; flex-direction: column; gap: 8px; margin-top: 12px; }
+        .gate-btn {
+            width: 100%;
+            border: none;
+            border-radius: 12px;
+            padding: 13px 14px;
+            font-weight: 800;
+            font-size: 0.9rem;
+            cursor: pointer;
+            font-family: inherit;
+        }
+        .gate-btn.primary { background: #2563eb; color: #fff; box-shadow: 0 8px 18px rgba(37, 99, 235, 0.28); }
+        .gate-btn.primary:disabled { opacity: 0.55; cursor: wait; box-shadow: none; }
+        .gate-btn.ghost { background: #f1f5f9; color: #334155; }
+        .gate-howto {
+            display: none;
+            margin-top: 10px;
+            background: #f8fafc;
+            border-radius: 10px;
+            padding: 10px 12px;
+            font-size: 0.8rem;
+            color: #334155;
+            line-height: 1.45;
+        }
+        .gate-howto.show { display: block; }
+        .gate-lock {
+            text-align: center;
+            font-size: 0.78rem;
+            color: #64748b;
+            margin-top: 8px;
+        }
+    </style>
+</head>
+<body>
+    <div class="app">
+        <header>
+            <span class="brand-logo" aria-hidden="true"><svg viewBox="0 0 512 512" xmlns="http://www.w3.org/2000/svg"><rect width="512" height="512" rx="104" fill="#0f172a"/><path d="M148 388C148 300 372 330 372 200" fill="none" stroke="#3b82f6" stroke-width="30" stroke-linecap="round" stroke-dasharray="4 46"/><circle cx="148" cy="388" r="46" fill="#22c55e"/><circle cx="372" cy="176" r="46" fill="#ef4444"/></svg></span>
+            <div class="brand">
+                <h1>RotaFlow <span class="brand-pro">Pro</span></h1>
+                <p id="headerSub">Acompanhe sua entrega</p>
+            </div>
+        </header>
+        <div id="boot" class="center-msg">
+            <div>
+                <span class="brand-logo" aria-hidden="true"><svg viewBox="0 0 512 512" xmlns="http://www.w3.org/2000/svg"><rect width="512" height="512" rx="104" fill="#0f172a"/><path d="M148 388C148 300 372 330 372 200" fill="none" stroke="#3b82f6" stroke-width="30" stroke-linecap="round" stroke-dasharray="4 46"/><circle cx="148" cy="388" r="46" fill="#22c55e"/><circle cx="372" cy="176" r="46" fill="#ef4444"/></svg></span>
+                <h2>Carregando rastreio…</h2>
+                <p>Buscando a posição do motorista</p>
+            </div>
+        </div>
+        <div id="error" class="center-msg" hidden>
+            <div>
+                <span class="brand-logo" aria-hidden="true"><svg viewBox="0 0 512 512" xmlns="http://www.w3.org/2000/svg"><rect width="512" height="512" rx="104" fill="#0f172a"/><path d="M148 388C148 300 372 330 372 200" fill="none" stroke="#3b82f6" stroke-width="30" stroke-linecap="round" stroke-dasharray="4 46"/><circle cx="148" cy="388" r="46" fill="#22c55e"/><circle cx="372" cy="176" r="46" fill="#ef4444"/></svg></span>
+                <h2>Link inválido</h2>
+                <p>Este rastreio não existe ou já foi encerrado. Peça um novo link ao motorista.</p>
+            </div>
+        </div>
+        <div id="gate" class="center-msg" hidden>
+            <div>
+                <div class="gate-hero">
+                    <span class="brand-logo" aria-hidden="true"><svg viewBox="0 0 512 512" xmlns="http://www.w3.org/2000/svg"><rect width="512" height="512" rx="104" fill="#0f172a"/><path d="M148 388C148 300 372 330 372 200" fill="none" stroke="#3b82f6" stroke-width="30" stroke-linecap="round" stroke-dasharray="4 46"/><circle cx="148" cy="388" r="46" fill="#22c55e"/><circle cx="372" cy="176" r="46" fill="#ef4444"/></svg></span>
+                    <p class="gate-kicker">Rastreio da entrega</p>
+                    <h2>Ative o rastreio</h2>
+                    <p>Instale o atalho e permita as notificações para acompanhar a entrega e receber o aviso na tela bloqueada.</p>
+                </div>
+                <div class="gate-step" id="stepInstall">
+                    <h3><span class="gate-num">1</span> Instalar o app</h3>
+                    <p>Adicione o rastreio à tela inicial. Não instale o app do motorista.</p>
+                    <div class="gate-actions">
+                        <button type="button" class="gate-btn primary" id="installBtn">Instalar rastreio</button>
+                        <button type="button" class="gate-btn ghost" id="installedBtn" hidden>Já instalei — continuar</button>
+                    </div>
+                    <div class="gate-howto" id="installHowTo"></div>
+                </div>
+                <div class="gate-step" id="stepNotify">
+                    <h3><span class="gate-num">2</span> Permitir notificações</h3>
+                    <p>Vamos avisar quando o motorista estiver a cerca de 100 m, se ninguém estiver no endereço e quando a encomenda for entregue.</p>
+                    <div class="gate-actions">
+                        <button type="button" class="gate-btn primary" id="notifyBtn">Permitir notificações</button>
+                    </div>
+                </div>
+                <p class="gate-lock" id="gateLock">O mapa libera depois dos dois avisos.</p>
+            </div>
+        </div>
+        <div id="map" hidden></div>
+        <section class="sheet" id="sheet" hidden>
+            <div class="status-row">
+                <span class="chip wait" id="statusChip">Aguardando</span>
+                <div class="dist" id="distValue">—</div>
+            </div>
+            <div class="meta" id="metaLine">Aguardando a localização do motorista</div>
+            <div class="banner" id="gpsBanner"><i class="fas fa-satellite-dish"></i> Aguardando o GPS do motorista. Peça para ligar o compartilhamento no app.</div>
+            <div class="banner" id="nearBanner"><i class="fas fa-bell"></i> O motorista está a cerca de 100 m.</div>
+            <div class="banner delivered" id="deliveredBanner"><i class="fas fa-box-open"></i> Sua encomenda foi entregue.</div>
+            <div class="banner absent" id="absentBanner"><i class="fas fa-house-user"></i> O motorista registrou ausência no endereço.</div>
+        </section>
+    </div>
+
+    <script src="/firebase-config.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/11.6.0/firebase-app-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/11.6.0/firebase-firestore-compat.js"></script>
+    <script>
+        const NEAR_METERS = 100;
+        const NEAR_KM = NEAR_METERS / 1000;
+        const token = readToken();
+        const notifiedKey = token ? ('rf_near_' + token) : '';
+        const deliveredKey = token ? ('rf_delivered_' + token) : '';
+        const absentKey = token ? ('rf_absent_' + token) : '';
+        let map, destMarker, driverMarker, accuracyCircle, destPos, routeLine;
+        let lastRouteOrigin = null;
+        let lastRouteDest = null;
+        let lastRouteAt = 0;
+        let routePending = false;
+        let directionsDenied = false;
+        let directionsService = null;
+        let notifiedOnce = !!(token && localStorage.getItem(notifiedKey));
+        let deliveredOnce = !!(token && localStorage.getItem(deliveredKey));
+        let absentOnce = !!(token && localStorage.getItem(absentKey));
+        let lastStatus = '';
+        let trackReady = false;
+        let pendingTrackData = null;
+        let lastTrackData = null;
+        let deferredInstall = null;
+        const installedKey = token ? ('rf_installed_' + token) : '';
+        const pushKey = token ? ('rf_push_' + token) : '';
+
+        function readToken() {
+            const q = new URLSearchParams(location.search).get('t');
+            if (q && /^[a-f0-9]{32}$/i.test(q.trim())) return q.trim().toLowerCase();
+            const m = location.pathname.match(/\/r\/([a-f0-9]{32})/i);
+            return m ? m[1].toLowerCase() : '';
+        }
+
+        function haversineKm(a, b) {
+            const R = 6371;
+            const dLat = (b.lat - a.lat) * Math.PI / 180;
+            const dLon = (b.lng - a.lng) * Math.PI / 180;
+            const x = Math.sin(dLat / 2) ** 2 +
+                Math.cos(a.lat * Math.PI / 180) * Math.cos(b.lat * Math.PI / 180) *
+                Math.sin(dLon / 2) ** 2;
+            return R * 2 * Math.atan2(Math.sqrt(x), Math.sqrt(1 - x));
+        }
+
+        function formatDistance(km) {
+            if (km == null || !isFinite(km)) return '—';
+            if (km < 1) return Math.max(10, Math.round(km * 1000)) + ' m';
+            return km.toFixed(1).replace('.', ',') + ' km';
+        }
+
+        function formatDuration(seconds) {
+            if (seconds == null || !isFinite(seconds) || seconds < 0) return '';
+            const min = Math.max(1, Math.round(seconds / 60));
+            if (min < 60) return min + ' min';
+            return Math.floor(min / 60) + 'h' + String(min % 60).padStart(2, '0');
+        }
+
+        function formatAgo(ts) {
+            if (!ts) return '';
+            const s = Math.max(0, Math.round((Date.now() - ts) / 1000));
+            if (s < 10) return 'agora';
+            if (s < 60) return 'há ' + s + ' s';
+            const m = Math.round(s / 60);
+            if (m < 60) return 'há ' + m + ' min';
+            return 'há ' + Math.round(m / 60) + ' h';
+        }
+
+        function setChip(el, kind, text) {
+            el.className = 'chip ' + kind;
+            el.textContent = text;
+        }
+
+        function showNearUi() {
+            document.getElementById('nearBanner').classList.add('show');
+            const gpsBanner = document.getElementById('gpsBanner');
+            if (gpsBanner) gpsBanner.classList.remove('show');
+        }
+
+        function showDeliveredUi() {
+            document.getElementById('deliveredBanner').classList.add('show');
+            document.getElementById('nearBanner').classList.remove('show');
+            document.getElementById('absentBanner').classList.remove('show');
+            const gpsBanner = document.getElementById('gpsBanner');
+            if (gpsBanner) gpsBanner.classList.remove('show');
+        }
+
+        function showAbsentUi() {
+            document.getElementById('absentBanner').classList.add('show');
+            document.getElementById('nearBanner').classList.remove('show');
+            document.getElementById('deliveredBanner').classList.remove('show');
+            const gpsBanner = document.getElementById('gpsBanner');
+            if (gpsBanner) gpsBanner.classList.remove('show');
+        }
+
+        function updateGpsShareUi(driver, data, finished) {
+            const gpsBanner = document.getElementById('gpsBanner');
+            if (!gpsBanner) return;
+            if (finished) {
+                gpsBanner.classList.remove('show');
+                return;
+            }
+            const stale = !!(data.updatedAt && Date.now() - data.updatedAt > 180000);
+            const weakAcc = !!(driver && typeof data.accuracy === 'number' && data.accuracy > 80);
+            if (!driver) {
+                gpsBanner.className = 'banner gps-weak show';
+                gpsBanner.innerHTML = '<i class="fas fa-satellite-dish"></i> GPS do motorista indisponível. Peça para ligar o compartilhamento no app.';
+            } else if (stale) {
+                gpsBanner.className = 'banner gps-weak show';
+                gpsBanner.innerHTML = '<i class="fas fa-satellite-dish"></i> Sinal de GPS atrasado — a posição pode estar desatualizada.';
+            } else if (weakAcc) {
+                gpsBanner.className = 'banner gps-weak show';
+                gpsBanner.innerHTML = '<i class="fas fa-satellite-dish"></i> GPS fraco (~' + Math.round(data.accuracy) + ' m). A posição no mapa pode variar.';
+            } else {
+                gpsBanner.classList.remove('show');
+            }
+        }
+
+        function playNearBeep() {
+            try {
+                const Ctx = window.AudioContext || window.webkitAudioContext;
+                if (!Ctx) return;
+                const ctx = new Ctx();
+                const now = ctx.currentTime;
+                [[784, 0, 0.22], [523, 0.28, 0.55]].forEach(([freq, start, dur]) => {
+                    const osc = ctx.createOscillator();
+                    const gain = ctx.createGain();
+                    osc.type = 'sine';
+                    osc.frequency.value = freq;
+                    gain.gain.setValueAtTime(0.0001, now + start);
+                    gain.gain.exponentialRampToValueAtTime(0.22, now + start + 0.02);
+                    gain.gain.exponentialRampToValueAtTime(0.0001, now + start + dur);
+                    osc.connect(gain);
+                    gain.connect(ctx.destination);
+                    osc.start(now + start);
+                    osc.stop(now + start + dur + 0.02);
+                });
+                setTimeout(() => { try { ctx.close(); } catch (e) {} }, 800);
+            } catch (e) {}
+        }
+
+        function playNearFeedback() {
+            try { if (navigator.vibrate) navigator.vibrate([220, 80, 220, 80, 360]); } catch (e) {}
+            try {
+                const audio = new Audio('/track-notify.wav?v=campainha');
+                audio.volume = 1;
+                const play = audio.play();
+                if (play && play.catch) play.catch(() => playNearBeep());
+            } catch (e) {
+                playNearBeep();
+            }
+        }
+
+        function notifyAbsentOnce() {
+            showAbsentUi();
+            if (absentOnce) return;
+            absentOnce = true;
+            try { localStorage.setItem(absentKey, '1'); } catch (e) {}
+            if (trackReady) playNearFeedback();
+            showClientNotification({
+                title: 'Cliente ausente',
+                body: 'O motorista passou no endereço e não havia ninguém para receber.',
+                tag: 'rf-absent-' + token,
+                kind: 'absent',
+                actionTitle: 'Abrir'
+            });
+        }
+
+        function notifyDeliveredOnce() {
+            showDeliveredUi();
+            if (deliveredOnce) return;
+            deliveredOnce = true;
+            try { localStorage.setItem(deliveredKey, '1'); } catch (e) {}
+            if (trackReady) playNearFeedback();
+            showClientNotification({
+                title: 'Sua encomenda foi entregue',
+                body: 'O motorista confirmou a entrega.',
+                tag: 'rf-delivered-' + token,
+                kind: 'delivered',
+                actionTitle: 'Abrir'
+            });
+        }
+
+        function notifyNearOnce(body) {
+            showNearUi();
+            if (notifiedOnce) return;
+            notifiedOnce = true;
+            try { localStorage.setItem(notifiedKey, '1'); } catch (e) {}
+            playNearFeedback();
+            showClientNotification({
+                title: 'Sua entrega está chegando',
+                body: body || ('O motorista está a cerca de ' + NEAR_METERS + ' m.'),
+                tag: 'rf-near-' + token,
+                kind: 'near',
+                image: '/track-notify-banner.png'
+            });
+        }
+
+        async function trackRegistration() {
+            if (!('serviceWorker' in navigator)) return null;
+            try {
+                return await navigator.serviceWorker.getRegistration('/r/')
+                    || await navigator.serviceWorker.ready;
+            } catch (e) {
+                return null;
+            }
+        }
+
+        async function postToTrackSw(message) {
+            const reg = await trackRegistration();
+            const worker = reg && (reg.active || reg.waiting || reg.installing);
+            if (!worker) return null;
+            worker.postMessage(Object.assign({ token: token }, message || {}));
+            return reg;
+        }
+
+        async function showClientNotification(opts) {
+            if (!opts || !('Notification' in window) || Notification.permission !== 'granted') return;
+            const url = location.origin + '/r/' + token;
+            const payload = Object.assign({
+                icon: '/track-icon-192.png',
+                badge: '/track-badge-96.png',
+                silent: opts.kind === 'live',
+                renotify: true,
+                requireInteraction: opts.kind !== 'live',
+                data: { url, kind: opts.kind || 'alert' }
+            }, opts);
+            try {
+                const reg = await trackRegistration();
+                if (reg && typeof reg.showNotification === 'function') {
+                    await reg.showNotification(opts.title, payload);
+                    return;
+                }
+            } catch (e) {}
+            try { new Notification(opts.title, payload); } catch (e) {}
+        }
+
+        function isFinishedTrack(data) {
+            return !!(data && (data.status === 'entregue' || data.status === 'falhou' || data.status === 'encerrado'));
+        }
+
+        function pinLiveNotification(data) {
+            if (!token || !data || isFinishedTrack(data)) return;
+            postToTrackSw({ type: 'pin-live', data: data }).catch(() => {});
+        }
+
+        function pngIcon(url, width, height, anchorX, anchorY) {
+            return {
+                url: url,
+                scaledSize: new google.maps.Size(width, height),
+                anchor: new google.maps.Point(anchorX, anchorY)
+            };
+        }
+
+        function boxIcon() {
+            // Asset quadrado → display 60px (retina nítido). Âncora no centro do círculo.
+            return pngIcon('/track-box-marker.png?v=1', 60, 60, 30, 30);
+        }
+
+        function flagIcon() {
+            // Asset 160×224 → display 40×56. Âncora na base do mastro (pino).
+            return pngIcon('/track-flag-marker.png?v=3', 40, 56, 7, 52);
+        }
+
+        function ensureRouteLine() {
+            if (routeLine) return routeLine;
+            routeLine = new google.maps.Polyline({
+                map: map,
+                path: [],
+                strokeColor: '#4285F4',
+                strokeOpacity: 1,
+                strokeWeight: 6,
+                geodesic: true,
+                clickable: false,
+                zIndex: 4
+            });
+            return routeLine;
+        }
+
+        function setStraightRoute(from, to) {
+            const line = ensureRouteLine();
+            line.setMap(map);
+            line.setPath([from, to]);
+        }
+
+        function shouldRefreshRoute(from, to) {
+            if (!lastRouteOrigin || !lastRouteDest) return true;
+            if (haversineKm(lastRouteDest, to) > 0.015) return true;
+            const moved = haversineKm(lastRouteOrigin, from);
+            return moved >= 0.04 && (Date.now() - lastRouteAt) >= 8000;
+        }
+
+        function fetchDrivingRoute(from, to) {
+            if (routePending) return;
+            if (directionsDenied || !window.google || !google.maps.DirectionsService) {
+                setStraightRoute(from, to);
+                lastRouteOrigin = from;
+                lastRouteDest = to;
+                lastRouteAt = Date.now();
+                return;
+            }
+            if (!directionsService) {
+                directionsService = new google.maps.DirectionsService();
+            }
+            routePending = true;
+            directionsService.route({
+                origin: from,
+                destination: to,
+                travelMode: google.maps.TravelMode.DRIVING
+            }, (result, status) => {
+                routePending = false;
+                lastRouteOrigin = from;
+                lastRouteDest = to;
+                lastRouteAt = Date.now();
+                if (status === 'OK' && result && result.routes && result.routes[0]) {
+                    const line = ensureRouteLine();
+                    line.setMap(map);
+                    line.setPath(result.routes[0].overview_path);
+                    return;
+                }
+                if (status === 'REQUEST_DENIED' || status === 'OVER_QUERY_LIMIT') {
+                    directionsDenied = true;
+                }
+                setStraightRoute(from, to);
+            });
+        }
+
+        function updateTrackRoute(driver, dest, finished) {
+            if (!map || !driver || !dest || finished) {
+                if (routeLine) routeLine.setMap(null);
+                lastRouteOrigin = null;
+                lastRouteDest = null;
+                return;
+            }
+            if (!routeLine || !routeLine.getMap()) setStraightRoute(driver, dest);
+            if (shouldRefreshRoute(driver, dest)) fetchDrivingRoute(driver, dest);
+        }
+
+        function driverPos(data) {
+            if (typeof data.driverLat !== 'number' || typeof data.driverLng !== 'number') return null;
+            return { lat: data.driverLat, lng: data.driverLng };
+        }
+
+        function applyData(data) {
+            lastTrackData = data;
+            destPos = { lat: data.destLat, lng: data.destLng };
+            const driver = driverPos(data);
+            const distKm = driver ? haversineKm(driver, destPos) : null;
+            const finished = data.status === 'entregue' || data.status === 'falhou' || data.status === 'encerrado';
+
+            document.getElementById('headerSub').textContent = data.sequentialId
+                ? ('Entrega ' + data.sequentialId + (data.destName ? ' · ' + data.destName : ''))
+                : 'Acompanhe sua entrega';
+
+            const chip = document.getElementById('statusChip');
+            if (data.status === 'entregue') setChip(chip, 'done', 'Entregue');
+            else if (data.status === 'falhou' && data.failReason === 'ausente') setChip(chip, 'fail', 'Ausente');
+            else if (data.status === 'falhou') setChip(chip, 'fail', 'Não entregue');
+            else if (data.status === 'encerrado') setChip(chip, 'wait', 'Encerrado');
+            else if (distKm != null && distKm <= NEAR_KM) setChip(chip, 'near', 'Chegando');
+            else if (driver) setChip(chip, '', 'A caminho');
+            else setChip(chip, 'wait', 'Sem GPS');
+
+            document.getElementById('distValue').textContent = finished
+                ? (data.status === 'entregue' ? '✓' : '—')
+                : formatDistance(distKm);
+
+            const motorista = data.motorista || 'Motorista';
+            const ago = formatAgo(data.updatedAt);
+            let meta = motorista;
+            if (!driver) meta += ' · aguardando compartilhamento GPS';
+            else if (ago) meta += ' · atualizado ' + ago;
+            if (!finished && typeof data.etaSeconds === 'number' && data.etaSeconds > 0) {
+                meta += ' · ETA ~' + formatDuration(data.etaSeconds);
+            } else if (!finished && typeof data.stopsAhead === 'number' && data.stopsAhead > 0) {
+                meta += ' · ' + data.stopsAhead + ' parada' + (data.stopsAhead === 1 ? '' : 's') + ' antes';
+            }
+            if (driver && typeof data.accuracy === 'number' && data.accuracy > 80 && !finished) {
+                meta += ' · GPS fraco (~' + Math.round(data.accuracy) + ' m)';
+            }
+            if (data.updatedAt && Date.now() - data.updatedAt > 180000 && !finished) {
+                meta += ' · sinal atrasado';
+            }
+            document.getElementById('metaLine').textContent = meta;
+            updateGpsShareUi(driver, data, finished);
+
+            if (destMarker) destMarker.setPosition(destPos);
+            if (driver && driverMarker) {
+                driverMarker.setPosition(driver);
+                driverMarker.setMap(map);
+            } else if (driverMarker) {
+                driverMarker.setMap(null);
+            }
+            if (accuracyCircle) {
+                if (driver && data.accuracy > 0) {
+                    accuracyCircle.setCenter(driver);
+                    accuracyCircle.setRadius(Math.min(data.accuracy, 120));
+                    accuracyCircle.setMap(map);
+                } else {
+                    accuracyCircle.setMap(null);
+                }
+            }
+            updateTrackRoute(driver, destPos, finished);
+
+            if (map && destPos) {
+                if (driver && lastStatus !== data.status + ':' + Math.round((distKm || 0) * 10)) {
+                    const bounds = new google.maps.LatLngBounds();
+                    bounds.extend(destPos);
+                    bounds.extend(driver);
+                    map.fitBounds(bounds, { top: 48, right: 48, bottom: 48, left: 48 });
+                    lastStatus = data.status + ':' + Math.round((distKm || 0) * 10);
+                } else if (!driver && map.getZoom() < 14) {
+                    map.setCenter(destPos);
+                    map.setZoom(15);
+                }
+            }
+
+            const near = !finished && ((distKm != null && distKm <= NEAR_KM) || data.nearNotified);
+            if (near) notifyNearOnce('O motorista está a cerca de ' + NEAR_METERS + ' m da sua entrega.');
+            if (data.status === 'entregue') notifyDeliveredOnce();
+            if (data.status === 'falhou' && data.failReason === 'ausente') notifyAbsentOnce();
+            if (document.hidden && !finished) pinLiveNotification(data);
+            trackReady = true;
+        }
+
+        function initMap(data) {
+            destPos = { lat: data.destLat, lng: data.destLng };
+            const driver = driverPos(data);
+            map = new google.maps.Map(document.getElementById('map'), {
+                center: driver || destPos,
+                zoom: driver ? 14 : 15,
+                disableDefaultUI: true,
+                zoomControl: true,
+                gestureHandling: 'greedy',
+                clickableIcons: false,
+                styles: [
+                    { elementType: 'geometry', stylers: [{ color: '#f3f4f6' }] },
+                    { elementType: 'labels.icon', stylers: [{ visibility: 'off' }] },
+                    { elementType: 'labels.text.fill', stylers: [{ color: '#6b7280' }] },
+                    { elementType: 'labels.text.stroke', stylers: [{ color: '#f3f4f6' }] },
+                    { featureType: 'administrative', elementType: 'geometry', stylers: [{ visibility: 'off' }] },
+                    { featureType: 'poi', stylers: [{ visibility: 'off' }] },
+                    { featureType: 'road', elementType: 'geometry', stylers: [{ color: '#ffffff' }] },
+                    { featureType: 'road', elementType: 'geometry.stroke', stylers: [{ color: '#e5e7eb' }] },
+                    { featureType: 'road.highway', elementType: 'geometry', stylers: [{ color: '#ffffff' }] },
+                    { featureType: 'transit', stylers: [{ visibility: 'off' }] },
+                    { featureType: 'water', elementType: 'geometry', stylers: [{ color: '#dbeafe' }] }
+                ]
+            });
+            destMarker = new google.maps.Marker({
+                map,
+                position: destPos,
+                title: 'Destino',
+                zIndex: 12,
+                optimized: false,
+                icon: flagIcon()
+            });
+            driverMarker = new google.maps.Marker({
+                map: driver ? map : null,
+                position: driver || destPos,
+                title: 'Motorista',
+                zIndex: 20,
+                optimized: false,
+                icon: boxIcon()
+            });
+            accuracyCircle = new google.maps.Circle({
+                map: null,
+                fillColor: '#facc15',
+                fillOpacity: 0.16,
+                strokeWeight: 0
+            });
+            if (driver) {
+                const bounds = new google.maps.LatLngBounds();
+                bounds.extend(destPos);
+                bounds.extend(driver);
+                map.fitBounds(bounds, 48);
+            }
+            applyData(data);
+        }
+
+        function isStandaloneApp() {
+            try {
+                return window.matchMedia('(display-mode: standalone)').matches
+                    || window.matchMedia('(display-mode: fullscreen)').matches
+                    || window.navigator.standalone === true;
+            } catch (e) {
+                return false;
+            }
+        }
+
+        function isIos() {
+            return /iPad|iPhone|iPod/.test(navigator.userAgent || '') || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+        }
+
+        function pushSupported() {
+            return 'Notification' in window && 'PushManager' in window && 'serviceWorker' in navigator;
+        }
+
+        function isInstalledOk() {
+            return isStandaloneApp() || !!(installedKey && localStorage.getItem(installedKey));
+        }
+
+        function isNotifyOk() {
+            if (!pushSupported()) return isStandaloneApp() || isInstalledOk();
+            return Notification.permission === 'granted' && !!(pushKey && localStorage.getItem(pushKey));
+        }
+
+        function isAccessUnlocked() {
+            return isInstalledOk() && isNotifyOk();
+        }
+
+        function setStepDone(id, done) {
+            const el = document.getElementById(id);
+            if (el) el.classList.toggle('done', !!done);
+        }
+
+        function paintGate() {
+            const installed = isInstalledOk();
+            const notified = isNotifyOk();
+            setStepDone('stepInstall', installed);
+            setStepDone('stepNotify', notified);
+            const installBtn = document.getElementById('installBtn');
+            const installedBtn = document.getElementById('installedBtn');
+            const notifyBtn = document.getElementById('notifyBtn');
+            if (installBtn) {
+                installBtn.hidden = installed;
+                installBtn.textContent = deferredInstall ? 'Instalar rastreio' : 'Como instalar';
+            }
+            if (installedBtn && installed) installedBtn.hidden = true;
+            if (notifyBtn) {
+                notifyBtn.disabled = !installed;
+                notifyBtn.textContent = notified ? 'Notificações ativadas' : (installed ? 'Permitir notificações' : 'Primeiro instale o app');
+            }
+            const lock = document.getElementById('gateLock');
+            if (lock) {
+                lock.textContent = notified
+                    ? 'Tudo pronto. Liberando o rastreio…'
+                    : (installed ? 'Agora permita as notificações para abrir o mapa.' : 'O mapa libera depois dos dois avisos.');
+            }
+        }
+
+        function showGate() {
+            document.getElementById('boot').hidden = true;
+            document.getElementById('error').hidden = true;
+            document.getElementById('gate').hidden = false;
+            document.getElementById('map').hidden = true;
+            document.getElementById('sheet').hidden = true;
+            paintGate();
+        }
+
+        function revealTrack(data) {
+            document.getElementById('gate').hidden = true;
+            document.getElementById('boot').hidden = true;
+            document.getElementById('error').hidden = true;
+            document.getElementById('map').hidden = false;
+            document.getElementById('sheet').hidden = false;
+            if (!map) initMap(data);
+            else applyData(data);
+        }
+
+        function tryUnlockAccess() {
+            paintGate();
+            if (!isAccessUnlocked() || !pendingTrackData) return false;
+            revealTrack(pendingTrackData);
+            return true;
+        }
+
+        function markInstalled() {
+            try { if (installedKey) localStorage.setItem(installedKey, '1'); } catch (e) {}
+            paintGate();
+            tryUnlockAccess();
+        }
+
+        function showLive() {
+            if (!isAccessUnlocked()) {
+                showGate();
+                return;
+            }
+            document.getElementById('boot').hidden = true;
+            document.getElementById('error').hidden = true;
+            document.getElementById('gate').hidden = true;
+            document.getElementById('map').hidden = false;
+            document.getElementById('sheet').hidden = false;
+        }
+
+        function showError() {
+            document.getElementById('boot').hidden = true;
+            document.getElementById('error').hidden = false;
+            document.getElementById('gate').hidden = true;
+            document.getElementById('map').hidden = true;
+            document.getElementById('sheet').hidden = true;
+        }
+
+        window.initTrackMap = function () {
+            if (!token || typeof firebase === 'undefined' || !window.ROTAFLOW_FIREBASE) {
+                showError();
+                return;
+            }
+            if (!firebase.apps.length) firebase.initializeApp(window.ROTAFLOW_FIREBASE);
+            let missingTries = 0;
+            firebase.firestore().collection('tracks').doc(token).onSnapshot((snap) => {
+                if (!snap.exists) {
+                    if (missingTries++ < 10) return;
+                    showError();
+                    return;
+                }
+                missingTries = 0;
+                const data = snap.data();
+                if (!data || typeof data.destLat !== 'number') {
+                    showError();
+                    return;
+                }
+                pendingTrackData = data;
+                if (isAccessUnlocked()) {
+                    revealTrack(data);
+                } else {
+                    showGate();
+                }
+            }, () => showError());
+        };
+
+        function urlBase64ToUint8Array(base64String) {
+            const padding = '='.repeat((4 - (base64String.length % 4)) % 4);
+            const base64 = (base64String + padding).replace(/-/g, '+').replace(/_/g, '/');
+            const raw = atob(base64);
+            const out = new Uint8Array(raw.length);
+            for (let i = 0; i < raw.length; ++i) out[i] = raw.charCodeAt(i);
+            return out;
+        }
+
+        function markPushEnabled() {
+            try { if (pushKey) localStorage.setItem(pushKey, '1'); } catch (e) {}
+            const meta = document.getElementById('metaLine');
+            if (meta && !/avisos ativados/.test(meta.textContent || '')) {
+                meta.textContent = (meta.textContent || '') + ' · avisos ativados';
+            }
+            paintGate();
+            tryUnlockAccess();
+        }
+
+        async function subscribePush() {
+            if (!token || !('serviceWorker' in navigator) || !('PushManager' in window)) {
+                throw new Error('push-unsupported');
+            }
+            const pub = window.ROTAFLOW_VAPID_PUBLIC;
+            if (!pub) throw new Error('vapid-missing');
+            const regs = await navigator.serviceWorker.getRegistrations();
+            await Promise.all(regs.map((reg) => {
+                const script = (reg.active || reg.waiting || reg.installing);
+                const url = script && script.scriptURL ? script.scriptURL : '';
+                if (url.includes('track-sw.js') && !/\/r\/$/.test(reg.scope)) {
+                    return reg.unregister();
+                }
+            }));
+            const reg = await navigator.serviceWorker.register('/track-sw.js?v=live1', { scope: '/r/' });
+            const installing = reg.installing || reg.waiting;
+            if (installing && !reg.active) {
+                await new Promise((resolve) => {
+                    const done = () => resolve();
+                    installing.addEventListener('statechange', () => {
+                        if (installing.state === 'activated' || installing.state === 'installed') done();
+                    });
+                    setTimeout(done, 4000);
+                });
+            }
+            let sub = await reg.pushManager.getSubscription();
+            if (!sub) {
+                sub = await reg.pushManager.subscribe({
+                    userVisibleOnly: true,
+                    applicationServerKey: urlBase64ToUint8Array(pub)
+                });
+            }
+            const json = sub.toJSON();
+            if (!json.endpoint || !json.keys || !json.keys.p256dh || !json.keys.auth) {
+                throw new Error('subscription-incomplete');
+            }
+            const id = String(json.endpoint).replace(/[^a-zA-Z0-9]/g, '').slice(-40) || ('s' + Date.now());
+            if (!firebase.apps.length) firebase.initializeApp(window.ROTAFLOW_FIREBASE);
+            await firebase.firestore().collection('tracks').doc(token).collection('subs').doc(id).set({
+                endpoint: json.endpoint,
+                keys: { p256dh: json.keys.p256dh, auth: json.keys.auth },
+                createdAt: Date.now()
+            });
+            markPushEnabled();
+            await postToTrackSw({ type: 'watch' });
+            try {
+                if (reg.periodicSync) {
+                    await reg.periodicSync.register('rf-track-' + token, { minInterval: 60 * 1000 });
+                }
+            } catch (e) {}
+        }
+
+        document.getElementById('notifyBtn').addEventListener('click', async () => {
+            const btn = document.getElementById('notifyBtn');
+            if (!isInstalledOk()) {
+                btn.textContent = 'Primeiro instale o app';
+                return;
+            }
+            if (!pushSupported()) {
+                markPushEnabled();
+                return;
+            }
+            btn.disabled = true;
+            btn.textContent = 'Ativando avisos…';
+            let perm = Notification.permission;
+            if (perm === 'default') {
+                try { perm = await Notification.requestPermission(); } catch (e) {}
+            }
+            if (perm !== 'granted') {
+                btn.textContent = 'Permissão negada — toque para tentar de novo';
+                btn.disabled = false;
+                return;
+            }
+            try {
+                await subscribePush();
+            } catch (err) {
+                console.warn('push subscribe', err);
+                btn.disabled = false;
+                btn.textContent = 'Não foi possível ativar. Toque para tentar de novo';
+            }
+        });
+
+        document.getElementById('installBtn').addEventListener('click', async () => {
+            const how = document.getElementById('installHowTo');
+            const installedBtn = document.getElementById('installedBtn');
+            if (deferredInstall) {
+                try {
+                    deferredInstall.prompt();
+                    const choice = await deferredInstall.userChoice;
+                    deferredInstall = null;
+                    if (choice && choice.outcome === 'accepted') markInstalled();
+                    else if (installedBtn) installedBtn.hidden = false;
+                } catch (e) {
+                    deferredInstall = null;
+                    if (installedBtn) installedBtn.hidden = false;
+                }
+                return;
+            }
+            how.classList.add('show');
+            how.innerHTML = isIos()
+                ? 'No iPhone: toque em <strong>Compartilhar</strong> e depois em <strong>Adicionar à Tela de Início</strong>. Abra o ícone <strong>Rastreio</strong>.'
+                : 'No Android: menu do Chrome <strong>⋮</strong> → <strong>Instalar app</strong> ou <strong>Adicionar à tela inicial</strong>. Abra o ícone <strong>Rastreio</strong>.';
+            if (installedBtn) installedBtn.hidden = false;
+        });
+
+        document.getElementById('installedBtn').addEventListener('click', () => markInstalled());
+
+        window.addEventListener('beforeinstallprompt', (e) => {
+            e.preventDefault();
+            deferredInstall = e;
+            paintGate();
+        });
+        window.addEventListener('appinstalled', () => markInstalled());
+
+        if (isStandaloneApp()) markInstalled();
+        if (pushSupported() && Notification.permission === 'granted' && token && !localStorage.getItem(pushKey)) {
+            subscribePush().catch(() => {});
+        } else if (token && 'serviceWorker' in navigator) {
+            postToTrackSw({ type: 'watch' }).catch(() => {});
+        }
+
+        document.addEventListener('visibilitychange', () => {
+            if (document.hidden && lastTrackData && !isFinishedTrack(lastTrackData)) {
+                pinLiveNotification(lastTrackData);
+            }
+        });
+        window.addEventListener('pagehide', () => {
+            if (lastTrackData && !isFinishedTrack(lastTrackData)) pinLiveNotification(lastTrackData);
+        });
+
+        if (!token) showError();
+    </script>
+    <script>
+        (function () {
+            const key = (window.ROTAFLOW_MAPS_KEY || '');
+            const s = document.createElement('script');
+            s.async = true;
+            s.defer = true;
+            s.src = 'https://maps.googleapis.com/maps/api/js?key=' + encodeURIComponent(key) + '&callback=initTrackMap&loading=async&v=weekly';
+            document.body.appendChild(s);
+        })();
+    </script>
+</body>
+</html>

@@ -1,0 +1,7859 @@
+// ============================================================
+//  RotaFlow Pro — app do motorista (bundle: npm run build → build/app.js)
+//  Código ainda é majoritariamente um script único; módulos extraídos ficam em src/js/.
+//  Nada aqui é global: o que outro script precisar (ex.: callback do Maps) vai em `window`.
+// ============================================================
+import '../../native/bridge.js';
+import '../../native/push-sender.js';
+import {
+    buildPersistPayload,
+    cloneWithoutHeavyPhotos,
+    hydrateRoutesFromData as hydrateRoutesState
+} from '../../lib/persist-helpers.js';
+import {
+    photoFingerprint,
+    itemPhotoScope,
+    remainingPhotoSlots as remainingPhotoSlotsFor,
+    slicePhotoIdsForHydrate
+} from '../../lib/photo-helpers.js';
+import { loadFirebaseSdk } from './firebase-loader.js';
+import {
+    configurePhotoStore,
+    PHOTO_MULTICAM_MAX_SIDE,
+    PHOTO_MULTICAM_JPEG_QUALITY,
+    PHOTO_MAX_PER_ITEM,
+    openPhotoDb,
+    photoDbKey,
+    newPhotoId,
+    revokePhotoObjectUrl,
+    revokeDisplayUrl,
+    idbPutPhoto,
+    idbGetPhoto,
+    idbDeletePhoto,
+    idbGetAllPhotoKeys,
+    enqueuePhotoOp,
+    setPendingPhotoTarget,
+    clearPendingPhotoTarget,
+    getPendingPhotoTarget,
+    yieldToUiFrame,
+    compressImageFile,
+    compressDataUrl
+} from './photo-store.js';
+import {
+    configureBackupStore,
+    BACKUP_REMIND_DAYS,
+    BACKUP_DISMISS_DAYS,
+    BACKUP_AUTO_DELIVERIES,
+    BACKUP_AUTO_IDLE_MS,
+    BACKUP_AUTO_MIN_GAP_MS,
+    CLOUD_BACKUP_ENABLED,
+    readBackupMeta,
+    writeBackupMeta,
+    daysSince,
+    todayBackupDayKey,
+    writeSilentLocalBackup,
+    uploadCloudBackup
+} from './backup-store.js';
+
+// --- App local ---
+if (location.hostname === '127.0.0.1') {
+    location.replace(location.href.replace('://127.0.0.1', '://localhost'));
+}
+
+let map, geocoder, autocomplete;
+let deliveries = [], agenda = [];
+let routes = [];
+let activeRouteId = null;
+let nextSequenceNumber = 1, nextAgendaId = 1;
+let routeMetrics = null;
+let routeActive = false;
+let markersList = [], markersBySeq = new Map(), watchId = null, gpsMarker = null;
+let gpsAccuracyCircle = null, gpsAccuracyMeters = 0;
+let useNativeMap = false, nativeGoogleMap = null, nativeMarkerById = new Map();
+let nativeMapZoom = 12;
+const MAPS_WEB_KEY = 'AIzaSyCRcCeryXHln-E84STTLlAl-oGrPh4mP8g';
+
+function isNativeApp() {
+    if (window.RotaFlowCap && typeof window.RotaFlowCap.isNative === 'function' && window.RotaFlowCap.isNative()) {
+        return true;
+    }
+    try {
+        return !!(window.Capacitor && window.Capacitor.isNativePlatform && window.Capacitor.isNativePlatform());
+    } catch (_) {
+        return false;
+    }
+}
+
+function hexToTint(hex, alpha = 255) {
+    const h = String(hex || '#3b82f6').replace('#', '');
+    const full = h.length === 3 ? h.split('').map(c => c + c).join('') : h;
+    return {
+        r: parseInt(full.slice(0, 2), 16) || 0,
+        g: parseInt(full.slice(2, 4), 16) || 0,
+        b: parseInt(full.slice(4, 6), 16) || 0,
+        a: alpha
+    };
+}
+
+function iconFillColor(icon) {
+    if (!icon) return '#3b82f6';
+    if (typeof icon === 'string') return icon;
+    return icon.fillColor || '#3b82f6';
+}
+
+function iconFillOpacity(icon) {
+    if (!icon || typeof icon !== 'object') return 1;
+    return typeof icon.fillOpacity === 'number' ? icon.fillOpacity : 1;
+}
+
+function createNativeMapFacade(gmap) {
+    return {
+        panTo(pos) {
+            const c = pos && typeof pos.lat === 'function' ? { lat: pos.lat(), lng: pos.lng() } : pos;
+            if (!c) return;
+            gmap.setCamera({ coordinate: c, animate: true });
+        },
+        setCenter(pos) {
+            const c = pos && typeof pos.lat === 'function' ? { lat: pos.lat(), lng: pos.lng() } : pos;
+            if (!c) return;
+            gmap.setCamera({ coordinate: c });
+        },
+        setZoom(z) {
+            nativeMapZoom = z;
+            gmap.setCamera({ zoom: z });
+        },
+        getZoom() { return nativeMapZoom; },
+        fitBounds(bounds, padding) {
+            let sw, ne;
+            if (bounds && typeof bounds.getSouthWest === 'function') {
+                const a = bounds.getSouthWest();
+                const b = bounds.getNorthEast();
+                sw = { lat: a.lat(), lng: a.lng() };
+                ne = { lat: b.lat(), lng: b.lng() };
+            } else if (bounds && bounds.southwest && bounds.northeast) {
+                sw = bounds.southwest;
+                ne = bounds.northeast;
+            } else return;
+            const center = {
+                lat: (sw.lat + ne.lat) / 2,
+                lng: (sw.lng + ne.lng) / 2
+            };
+            const pad = typeof padding === 'number' ? padding : 64;
+            gmap.fitBounds({ southwest: sw, northeast: ne, center }, pad);
+        }
+    };
+}
+
+let pinSizePref = (() => {
+    try {
+        const v = localStorage.getItem('rotaflow_pin_size');
+        if (v === 'p' || v === 'm' || v === 'g') return v;
+    } catch (_) {}
+    return 'p';
+})();
+let feedbackSoundEnabled = (() => {
+    try { return localStorage.getItem('rotaflow_feedback_sound') !== '0'; } catch (_) { return true; }
+})();
+let feedbackVibrateEnabled = (() => {
+    try { return localStorage.getItem('rotaflow_feedback_vibrate') !== '0'; } catch (_) { return true; }
+})();
+let pinRefreshTimer = null;
+
+const PIN_SIZE_PX = { p: 16, m: 22, g: 28 };
+
+function nativePinDisplaySize() {
+    let base = PIN_SIZE_PX[pinSizePref] || PIN_SIZE_PX.p;
+    const n = deliveries.filter(d => shouldShowOnMap(d) && !isMutedPin(d)).length;
+    if (n > 60) base = Math.max(12, base - 2);
+    else if (n > 30) base = Math.max(13, base - 1);
+    return base;
+}
+
+function schedulePinSizeRefresh() {
+    clearTimeout(pinRefreshTimer);
+    pinRefreshTimer = setTimeout(() => {
+        if (!map) return;
+        for (const del of deliveries) {
+            if (!shouldShowOnMap(del)) continue;
+            const marker = getMarker(del.sequentialId);
+            if (marker) updateMarkerIcon(marker, del);
+        }
+    }, 120);
+}
+
+function setPinSizePref(size) {
+    if (size !== 'p' && size !== 'm' && size !== 'g') return;
+    pinSizePref = size;
+    try { localStorage.setItem('rotaflow_pin_size', size); } catch (_) {}
+    schedulePinSizeRefresh();
+}
+
+function setFeedbackPrefs({ sound, vibrate } = {}) {
+    if (typeof sound === 'boolean') {
+        feedbackSoundEnabled = sound;
+        try { localStorage.setItem('rotaflow_feedback_sound', sound ? '1' : '0'); } catch (_) {}
+    }
+    if (typeof vibrate === 'boolean') {
+        feedbackVibrateEnabled = vibrate;
+        try { localStorage.setItem('rotaflow_feedback_vibrate', vibrate ? '1' : '0'); } catch (_) {}
+    }
+}
+
+function isMutedPin(delivery) {
+    return !!(delivery && (delivery.status === 'entregue' || delivery.status === 'falhou'));
+}
+
+function pinTextColorFor(delivery, highlighted) {
+    if (highlighted) return '#ffffff';
+    if (isMutedPin(delivery)) return '#80868B';
+    return '#ffffff';
+}
+
+function markerColorFor(delivery) {
+    if (!delivery) return '#3b82f6';
+    if (delivery.status === 'entregue') return '#F1F3F4';
+    if (delivery.status === 'falhou') return '#EEF0F2';
+    return (delivery.pacotes || 1) >= 2 ? '#EF4444' : '#1A73E8';
+}
+
+function shouldShowOnMap(delivery) {
+    return hasMapCoords(delivery);
+}
+
+function markerScaleForCount(muted) {
+    if (muted) return 5;
+    const n = deliveries.filter(d => shouldShowOnMap(d) && !isMutedPin(d)).length;
+    if (n > 60) return 6;
+    if (n > 30) return 7;
+    if (n > 15) return 8;
+    return 10;
+}
+
+/** Pins quadrados (estilo Spoke): ativos coloridos, entregues cinza claro */
+function buildMapPinIcon(delivery, { highlighted = false } = {}) {
+    const muted = isMutedPin(delivery) && !highlighted;
+    const label = String(delivery?.sequentialId ?? '');
+    const fill = highlighted ? '#174EA6' : markerColorFor(delivery);
+    const textColor = pinTextColorFor(delivery, highlighted);
+    const display = nativePinDisplaySize();
+    const scale = 2;
+    const w = Math.round(display * scale);
+    const h = w;
+    const canvas = document.createElement('canvas');
+    canvas.width = w;
+    canvas.height = h;
+    const ctx = canvas.getContext('2d');
+    ctx.clearRect(0, 0, w, h);
+
+    const pad = Math.round(w * (muted ? 0.06 : 0.04));
+    const rw = w - pad * 2;
+    const rh = h - pad * 2;
+    const r = Math.max(2, Math.round(rw * (muted ? 0.14 : 0.16)));
+    const x = pad, y = pad;
+    ctx.beginPath();
+    ctx.moveTo(x + r, y);
+    ctx.arcTo(x + rw, y, x + rw, y + rh, r);
+    ctx.arcTo(x + rw, y + rh, x, y + rh, r);
+    ctx.arcTo(x, y + rh, x, y, r);
+    ctx.arcTo(x, y, x + rw, y, r);
+    ctx.closePath();
+    ctx.fillStyle = fill;
+    ctx.fill();
+    ctx.lineWidth = Math.max(1, w * (muted ? 0.035 : 0.05));
+    ctx.strokeStyle = muted ? '#DADCE0' : '#ffffff';
+    ctx.stroke();
+    ctx.fillStyle = textColor;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    const fontSize = label.length > 3 ? w * 0.34 : label.length > 2 ? w * 0.4 : w * 0.46;
+    ctx.font = `${muted ? '600' : 'bold'} ${Math.round(fontSize)}px -apple-system, BlinkMacSystemFont, sans-serif`;
+    ctx.fillText(label, w / 2, h / 2 + 1);
+
+    return {
+        url: canvas.toDataURL('image/png'),
+        size: display,
+        width: display,
+        height: display,
+        anchorX: display / 2,
+        anchorY: display / 2,
+        muted
+    };
+}
+
+function createNativeMarkerShim(opts) {
+    const color = iconFillColor(opts.icon);
+    const opacity = iconFillOpacity(opts.icon);
+    const shim = {
+        sequentialId: opts.sequentialId,
+        _nativeId: null,
+        _pos: { lat: opts.position.lat, lng: opts.position.lng },
+        _title: opts.title || '',
+        _label: opts.label && opts.label.text ? String(opts.label.text) : '',
+        _color: color,
+        _opacity: opacity,
+        _muted: !!opts.muted,
+        _highlighted: false,
+        _onClick: null,
+        _syncing: false,
+        _removed: false,
+        async _sync() {
+            if (!nativeGoogleMap || this._syncing || this._removed) return;
+            this._syncing = true;
+            try {
+                if (this._nativeId) {
+                    nativeMarkerById.delete(this._nativeId);
+                    await nativeGoogleMap.removeMarkers([this._nativeId]);
+                    this._nativeId = null;
+                }
+                if (this._removed) return;
+                const label = this._label || String(this.sequentialId || '');
+                const markerOpts = {
+                    coordinate: this._pos,
+                    title: label,
+                    snippet: this._title,
+                    opacity: 1,
+                    zIndex: this._highlighted ? 30 : (this._muted ? 1 : 10)
+                };
+                if (label && this.sequentialId !== '__gps__') {
+                    const pin = buildMapPinIcon(
+                        {
+                            sequentialId: label,
+                            status: this._muted ? 'entregue' : 'pendente',
+                            pacotes: (this._color === '#EF4444' || this._color === '#ef4444') ? 2 : 1
+                        },
+                        { highlighted: this._highlighted }
+                    );
+                    markerOpts.iconUrl = pin.url;
+                    markerOpts.iconSize = { width: pin.width, height: pin.height };
+                    markerOpts.iconAnchor = { x: pin.anchorX, y: pin.anchorY };
+                } else {
+                    markerOpts.tintColor = hexToTint(this._color, Math.round((this._opacity == null ? 1 : this._opacity) * 255));
+                }
+                const id = await nativeGoogleMap.addMarker(markerOpts);
+                if (this._removed) {
+                    await nativeGoogleMap.removeMarkers([id]).catch(() => {});
+                    return;
+                }
+                this._nativeId = id;
+                nativeMarkerById.set(this._nativeId, this);
+            } catch (e) {
+                console.warn('native marker', e);
+            } finally {
+                this._syncing = false;
+            }
+        },
+        setPosition(p) {
+            if (this._removed) return;
+            this._pos = p && typeof p.lat === 'function' ? { lat: p.lat(), lng: p.lng() } : { lat: p.lat, lng: p.lng };
+            this._sync();
+        },
+        setIcon(icon) {
+            if (this._removed) return;
+            this._color = iconFillColor(icon);
+            this._opacity = iconFillOpacity(icon);
+            if (icon && typeof icon === 'object' && 'muted' in icon) this._muted = !!icon.muted;
+            if (icon && typeof icon === 'object' && 'highlighted' in icon) this._highlighted = !!icon.highlighted;
+            this._sync();
+        },
+        setLabel(label) {
+            if (this._removed) return;
+            this._label = label && typeof label === 'object' ? String(label.text || '') : String(label || '');
+            this._sync();
+        },
+        setTitle(t) { this._title = t || ''; },
+        setMap(m) {
+            if (m) return;
+            this._removed = true;
+            if (this._nativeId && nativeGoogleMap) {
+                nativeMarkerById.delete(this._nativeId);
+                nativeGoogleMap.removeMarkers([this._nativeId]).catch(() => {});
+                this._nativeId = null;
+            }
+        },
+        addListener(ev, cb) {
+            if (ev === 'click') this._onClick = cb;
+        }
+    };
+    shim._sync();
+    return shim;
+}
+let gpsEnabled = localStorage.getItem('rotaflow_gps') !== '0';
+let routeFilter = "", agendaFilter = "";
+let currentSelectedDelivery = null;
+let highlightedMarker = null;
+let tempPhones = [];
+let currentUser = null; // { uid, displayName, email, photoURL, provider }
+let authReady = false;
+let saveTimer = null;
+
+const EMPRESA_PADRAO = "Correx express";
+const MENSAGEM_WHATSAPP_PADRAO =
+    "Olá {nome}! 🚚\n" +
+    "Sua encomenda ({id} - {pacotes} pacote(s)) está a caminho.\n" +
+    "📍 Endereço: {endereco}\n" +
+    "\n" +
+    "⚠️ Estamos chegando em breve! Por favor, esteja disponível para receber.⚠️\n" +
+    "📦 {empresa}\n" +
+    "🗺️ Acompanhe no mapa: {link}";
+
+let userProfile = {
+    motorista: "Motorista",
+    empresa: EMPRESA_PADRAO,
+    mensagemPadrao: MENSAGEM_WHATSAPP_PADRAO
+};
+
+const APP_ICON = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 512 512'%3E%3Crect width='512' height='512' rx='104' fill='%230f172a'/%3E%3Cpath d='M148 388C148 300 372 330 372 200' fill='none' stroke='%233b82f6' stroke-width='30' stroke-linecap='round' stroke-dasharray='4 46'/%3E%3Ccircle cx='148' cy='388' r='46' fill='%2322c55e'/%3E%3Ccircle cx='372' cy='176' r='46' fill='%23ef4444'/%3E%3C/svg%3E";
+
+const PORTO_VELHO_CENTER = { lat: -8.7619, lng: -63.9038 };
+const PORTO_VELHO_RADIUS = 50000;
+const mapStyle = [
+    { elementType: 'geometry', stylers: [{ color: '#f1f3f4' }] },
+    { elementType: 'labels.icon', stylers: [{ visibility: 'off' }] },
+    { elementType: 'labels.text.fill', stylers: [{ color: '#5f6368' }] },
+    { elementType: 'labels.text.stroke', stylers: [{ color: '#f1f3f4' }] },
+    { featureType: 'administrative', elementType: 'geometry', stylers: [{ visibility: 'off' }] },
+    { featureType: 'administrative.land_parcel', stylers: [{ visibility: 'off' }] },
+    { featureType: 'administrative.neighborhood', stylers: [{ visibility: 'off' }] },
+    { featureType: 'poi', stylers: [{ visibility: 'off' }] },
+    { featureType: 'poi.park', elementType: 'geometry', stylers: [{ color: '#e8f0e8' }] },
+    { featureType: 'poi.park', elementType: 'labels', stylers: [{ visibility: 'off' }] },
+    { featureType: 'road', elementType: 'geometry', stylers: [{ color: '#ffffff' }] },
+    { featureType: 'road', elementType: 'geometry.stroke', stylers: [{ color: '#dadce0' }] },
+    { featureType: 'road', elementType: 'labels.icon', stylers: [{ visibility: 'off' }] },
+    { featureType: 'road.arterial', elementType: 'geometry', stylers: [{ color: '#ffffff' }] },
+    { featureType: 'road.highway', elementType: 'geometry', stylers: [{ color: '#e8eaed' }] },
+    { featureType: 'road.highway', elementType: 'geometry.stroke', stylers: [{ color: '#dadce0' }] },
+    { featureType: 'road.local', elementType: 'geometry', stylers: [{ color: '#ffffff' }] },
+    { featureType: 'road.local', elementType: 'geometry.stroke', stylers: [{ color: '#cfd3d8' }] },
+    { featureType: 'transit', stylers: [{ visibility: 'off' }] },
+    { featureType: 'water', elementType: 'geometry', stylers: [{ color: '#dce7f2' }] },
+    { featureType: 'landscape', elementType: 'geometry', stylers: [{ color: '#f1f3f4' }] },
+    { featureType: 'landscape.man_made', elementType: 'geometry.stroke', stylers: [{ color: '#dadce0' }] }
+];
+
+function debounce(fn, ms) {
+    let t;
+    return function (...args) {
+        clearTimeout(t);
+        t = setTimeout(() => fn.apply(this, args), ms);
+    };
+}
+
+function markerIcon(color, opacity, muted) {
+    // Mantido para compat; ícones reais usam buildMapPinIcon (canvas).
+    return {
+        path: google.maps.SymbolPath.CIRCLE,
+        scale: markerScaleForCount(muted),
+        fillColor: color,
+        fillOpacity: opacity == null ? 1 : opacity,
+        strokeWeight: muted ? 1 : 1.25,
+        strokeColor: muted ? '#CFD8DC' : 'white',
+        muted: !!muted
+    };
+}
+
+function webMarkerIconFromPin(pin) {
+    return {
+        url: pin.url,
+        scaledSize: new google.maps.Size(pin.width, pin.height),
+        anchor: new google.maps.Point(pin.anchorX, pin.anchorY),
+        muted: !!pin.muted
+    };
+}
+
+function getMarker(sequentialId) {
+    return markersBySeq.get(sequentialId) || null;
+}
+
+function upsertMarker(delivery) {
+    if (!map || !delivery) return;
+    try {
+        if (!shouldShowOnMap(delivery)) {
+            removeMarkerById(delivery.sequentialId);
+            return;
+        }
+        let marker = getMarker(delivery.sequentialId);
+        if (!marker) {
+            marker = createPinMarker(delivery);
+            if (!marker) return;
+            markersList.push(marker);
+            markersBySeq.set(delivery.sequentialId, marker);
+            return;
+        }
+        marker.setPosition({ lat: Number(delivery.lat), lng: Number(delivery.lng) });
+        updateMarkerIcon(marker, delivery);
+    } catch (e) {
+        console.warn('upsertMarker', e);
+    }
+}
+
+function removeMarkerById(sequentialId) {
+    const marker = getMarker(sequentialId);
+    if (!marker) return;
+    marker.setMap(null);
+    markersBySeq.delete(sequentialId);
+    const idx = markersList.indexOf(marker);
+    if (idx >= 0) markersList.splice(idx, 1);
+    if (highlightedMarker && highlightedMarker.sequentialId === sequentialId) highlightedMarker = null;
+}
+
+function switchSidebarTab(tab) {
+    document.querySelectorAll('.sidebar-tabs button').forEach(btn => {
+        btn.classList.toggle('active', btn.dataset.tab === tab);
+    });
+    document.querySelectorAll('.sidebar-panel').forEach(panel => {
+        panel.classList.toggle('active', panel.dataset.panel === tab);
+    });
+}
+
+function closeAllOverflowMenus() {
+    document.querySelectorAll('.overflow-wrap.open').forEach(el => {
+        el.classList.remove('open');
+        const trigger = el.querySelector('.overflow-trigger');
+        if (trigger) trigger.setAttribute('aria-expanded', 'false');
+    });
+    document.querySelectorAll('.delivery-item.menu-open, .agenda-item.menu-open').forEach(el => {
+        el.classList.remove('menu-open');
+    });
+}
+
+function openOverflowWrap(wrap) {
+    if (!wrap) return;
+    wrap.classList.add('open');
+    const trigger = wrap.querySelector('.overflow-trigger');
+    if (trigger) trigger.setAttribute('aria-expanded', 'true');
+    const row = wrap.closest('.delivery-item, .agenda-item');
+    if (row) row.classList.add('menu-open');
+}
+
+function setupOverflowMenus() {
+    const routeBtn = document.getElementById('routeToolsMenuBtn');
+    const routeWrap = document.getElementById('routeToolsMenuWrap');
+    if (routeBtn && routeWrap && !routeBtn.dataset.ready) {
+        routeBtn.dataset.ready = '1';
+        routeBtn.addEventListener('click', (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            const wasOpen = routeWrap.classList.contains('open');
+            closeAllOverflowMenus();
+            if (!wasOpen) openOverflowWrap(routeWrap);
+        });
+        routeWrap.querySelectorAll('.overflow-panel button').forEach(btn => {
+            btn.addEventListener('click', () => closeAllOverflowMenus());
+        });
+    }
+    if (!document.documentElement.dataset.overflowOutsideReady) {
+        document.documentElement.dataset.overflowOutsideReady = '1';
+        // pointerdown: no Android o click sintético às vezes chega depois e fechava o menu na hora
+        document.addEventListener('pointerdown', (e) => {
+            if (e.target.closest('.overflow-wrap')) return;
+            closeAllOverflowMenus();
+        }, true);
+        document.addEventListener('keydown', (e) => {
+            if (e.key === 'Escape') closeAllOverflowMenus();
+        });
+    }
+    if (!document.documentElement.dataset.emptyCtaReady) {
+        document.documentElement.dataset.emptyCtaReady = '1';
+        document.addEventListener('click', (e) => {
+            const cta = e.target.closest('[data-empty-cta]');
+            if (!cta) return;
+            const tab = cta.dataset.emptyCta;
+            if (tab) switchSidebarTab(tab);
+        });
+    }
+}
+
+// ========== UTILITÁRIOS ==========
+function getDigits(phone) { return phone ? String(phone).replace(/\D/g, '') : ""; }
+
+// Número local (sem DDD) recebe este DDD. Os demais são preservados.
+const DDD_PADRAO = "69";
+
+// Devolve só o DDD + número, sem o código do país.
+function getNationalDigits(phone) {
+    let d = getDigits(phone);
+    if (d.length > 11 && d.startsWith('55')) d = d.slice(2);
+    return d;
+}
+
+function formatPhoneNumber(raw) {
+    let d = getNationalDigits(raw);
+    if (d.length === 8 || d.length === 9) d = DDD_PADRAO + d;
+    if (d.length !== 10 && d.length !== 11) return "";
+    const ddd = d.slice(0, 2);
+    const num = d.slice(2);
+    return num.length === 9
+        ? `+55 ${ddd} ${num.slice(0,1)} ${num.slice(1,5)}-${num.slice(5)}`
+        : `+55 ${ddd} ${num.slice(0,4)}-${num.slice(4)}`;
+}
+
+function formatPhoneShort(phone) {
+    if (!phone) return "";
+    const d = getNationalDigits(phone);
+    if (d.length === 11) return `${d.slice(0,2)} ${d.slice(2,3)} ${d.slice(3,7)}-${d.slice(7)}`;
+    if (d.length === 10) return `${d.slice(0,2)} ${d.slice(2,6)}-${d.slice(6)}`;
+    return d;
+}
+
+// Recupera números que a versão antiga salvou com o DDD 69 grudado na frente
+// de um DDD válido. Se não der para consertar, mantém o original.
+function normalizeStoredPhone(numero) {
+    let d = getNationalDigits(numero);
+    while (d.length > 11 && d.startsWith(DDD_PADRAO)) d = d.slice(2);
+    return formatPhoneNumber(d) || numero;
+}
+function getWhatsAppPhoneDigits(phone) {
+    let d = getNationalDigits(phone);
+    if (d.length === 8 || d.length === 9) d = DDD_PADRAO + d;
+    if (d.length === 10 || d.length === 11) return '55' + d;
+    d = getDigits(phone);
+    if (d.length > 11 && d.startsWith('55')) return d;
+    return d;
+}
+
+function getWhatsAppLink(phone, msg) {
+    const d = getWhatsAppPhoneDigits(phone);
+    return d ? `https://wa.me/${d}?text=${encodeURIComponent(msg)}` : null;
+}
+
+function getWhatsAppAppLink(phone, msg) {
+    const d = getWhatsAppPhoneDigits(phone);
+    return d ? `whatsapp://send?phone=${d}&text=${encodeURIComponent(msg)}` : null;
+}
+
+async function openExternalUrl(url) {
+    if (!url) return false;
+    try {
+        if (isNativeApp() && window.RotaFlowCap && typeof window.RotaFlowCap.openUrl === 'function') {
+            return !!(await window.RotaFlowCap.openUrl(url));
+        }
+    } catch (_) {
+        if (isNativeApp()) return false;
+    }
+    try {
+        const a = document.createElement('a');
+        a.href = url;
+        a.target = '_blank';
+        a.rel = 'noopener noreferrer';
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        return true;
+    } catch (_) {}
+    try {
+        window.location.href = url;
+        return true;
+    } catch (_) {
+        return false;
+    }
+}
+
+async function openWhatsAppChat(phone, msg) {
+    if (!getWhatsAppPhoneDigits(phone)) return false;
+    const webLink = getWhatsAppLink(phone, msg);
+    if (webLink && await openExternalUrl(webLink)) return true;
+    if (isNativeApp()) {
+        const appLink = getWhatsAppAppLink(phone, msg);
+        if (appLink && await openExternalUrl(appLink)) return true;
+    }
+    return false;
+}
+
+function showToast(msg, err = false) {
+    let t = document.createElement('div'); t.className = 'toast-message' + (err ? ' err' : '');
+    const icon = document.createElement('i');
+    icon.className = `fas ${err ? 'fa-exclamation-circle' : 'fa-check'}`;
+    t.appendChild(icon);
+    t.appendChild(document.createTextNode(' ' + msg));
+    document.body.appendChild(t);
+    setTimeout(() => t.remove(), Math.min(4500, 2800 + String(msg).length * 18));
+}
+
+/** Catch silent crashes / rejected promises + Crashlytics (nativo). Rate-limited toast. */
+(function installGlobalErrorHooks() {
+    let lastToastAt = 0;
+    const IGNORE = /ResizeObserver|Script error\.?$|Failed to fetch|NetworkError|Load failed|AbortError|user denied|cancel|QuotaExceeded/i;
+    function report(kind, detail) {
+        try { console.error('[RotaFlow]', kind, detail); } catch (_) {}
+        const msg = String((detail && (detail.message || detail.reason || detail.stack)) || detail || '');
+        try {
+            if (window.RotaFlowCap && typeof window.RotaFlowCap.reportNonFatal === 'function') {
+                window.RotaFlowCap.reportNonFatal(kind + ': ' + msg.slice(0, 180), msg.slice(0, 500));
+            }
+        } catch (_) {}
+        if (!msg || IGNORE.test(msg)) return;
+        const now = Date.now();
+        if (now - lastToastAt < 10000) return;
+        lastToastAt = now;
+        try { showToast('Algo falhou — tente de novo', true); } catch (_) {}
+    }
+    window.addEventListener('error', (ev) => {
+        report('error', ev.error || ev.message);
+    });
+    window.addEventListener('unhandledrejection', (ev) => {
+        report('unhandledrejection', ev.reason);
+    });
+})();
+
+// ========== MODAIS (substitui prompt / confirm) ==========
+function openAppModal({ title, bodyHtml, buttons }) {
+    return new Promise(resolve => {
+        const overlay = document.createElement('div');
+        overlay.className = 'modal-overlay';
+        overlay.innerHTML = `
+            <div class="modal-container" style="max-width:420px;" role="dialog" aria-modal="true">
+                <h3 class="modal-title">${title}</h3>
+                <div class="modal-body">${bodyHtml || ''}</div>
+                <div class="modal-buttons"></div>
+            </div>`;
+        const btnRow = overlay.querySelector('.modal-buttons');
+        const finish = (value) => {
+            overlay.remove();
+            document.removeEventListener('keydown', onKey);
+            resolve(value);
+        };
+        const onKey = (e) => {
+            if (e.key === 'Escape') finish(null);
+        };
+        (buttons || []).forEach(btn => {
+            const el = document.createElement('button');
+            el.type = 'button';
+            el.className = btn.className || 'modal-cancel';
+            el.textContent = btn.label;
+            el.addEventListener('click', () => {
+                if (btn.getValue) finish(btn.getValue());
+                else finish(btn.value);
+            });
+            btnRow.appendChild(el);
+        });
+        overlay.addEventListener('click', (e) => { if (e.target === overlay) finish(null); });
+        document.addEventListener('keydown', onKey);
+        document.body.appendChild(overlay);
+        const focusEl = overlay.querySelector('textarea, input, .modal-choice-btn, .modal-confirm, .modal-cancel');
+        if (focusEl) setTimeout(() => focusEl.focus(), 30);
+    });
+}
+
+function showConfirmModal({ title = 'Confirmar', message, confirmText = 'Confirmar', cancelText = 'Cancelar', danger = false } = {}) {
+    return openAppModal({
+        title,
+        bodyHtml: `<p class="modal-message">${escapeHtml(message || '')}</p>`,
+        buttons: [
+            { label: confirmText, className: danger ? 'modal-confirm danger' : 'modal-confirm', value: true },
+            { label: cancelText, className: 'modal-cancel', value: false }
+        ]
+    }).then(v => v === true);
+}
+
+function showPromptModal({ title = 'Editar', message = '', defaultValue = '', placeholder = '', multiline = false } = {}) {
+    const field = multiline
+        ? `<textarea id="appModalInput" class="edit-input" rows="4" style="resize:vertical;" placeholder="${escapeHtml(placeholder)}">${escapeHtml(defaultValue)}</textarea>`
+        : `<input id="appModalInput" class="edit-input" type="text" value="${escapeHtml(defaultValue)}" placeholder="${escapeHtml(placeholder)}">`;
+    return openAppModal({
+        title,
+        bodyHtml: `${message ? `<p class="modal-message">${escapeHtml(message)}</p>` : ''}${field}`,
+        buttons: [
+            {
+                label: 'Salvar',
+                className: 'modal-confirm',
+                getValue: () => {
+                    const el = document.getElementById('appModalInput');
+                    return el ? el.value : '';
+                }
+            },
+            { label: 'Cancelar', className: 'modal-cancel', value: null }
+        ]
+    });
+}
+
+function showChoiceModal({ title = 'Escolher', message = '', options = [] } = {}) {
+    return new Promise(resolve => {
+        const overlay = document.createElement('div');
+        overlay.className = 'modal-overlay';
+        const list = options.map((opt, i) => `
+            <button type="button" class="modal-choice-btn" data-choice-index="${i}">
+                <i class="${escapeHtml(opt.icon || 'fas fa-circle')}" style="color:${escapeHtml(opt.iconColor || '#64748b')}"></i>
+                <span>${escapeHtml(opt.label)}</span>
+            </button>`).join('');
+        overlay.innerHTML = `
+            <div class="modal-container" style="max-width:420px;" role="dialog" aria-modal="true">
+                <h3 class="modal-title">${title}</h3>
+                ${message ? `<p class="modal-message">${escapeHtml(message)}</p>` : ''}
+                <div class="modal-choice-list">${list}</div>
+                <div class="modal-buttons">
+                    <button type="button" class="modal-cancel">Cancelar</button>
+                </div>
+            </div>`;
+        const finish = (value) => {
+            overlay.remove();
+            document.removeEventListener('keydown', onKey);
+            resolve(value);
+        };
+        const onKey = (e) => { if (e.key === 'Escape') finish(null); };
+        overlay.querySelectorAll('.modal-choice-btn').forEach(btn => {
+            btn.addEventListener('click', () => {
+                const idx = parseInt(btn.dataset.choiceIndex, 10);
+                finish(options[idx] ? options[idx].value : null);
+            });
+        });
+        overlay.querySelector('.modal-cancel').addEventListener('click', () => finish(null));
+        overlay.addEventListener('click', (e) => { if (e.target === overlay) finish(null); });
+        document.addEventListener('keydown', onKey);
+        document.body.appendChild(overlay);
+    });
+}
+// Identificador único e crescente, mesmo com duas entregas no mesmo milissegundo.
+let lastGeneratedId = 0;
+function newId() {
+    const now = Date.now();
+    lastGeneratedId = now > lastGeneratedId ? now : lastGeneratedId + 1;
+    return lastGeneratedId;
+}
+
+// Impede que um backup restaurado gere IDs repetidos.
+function seedIdCounter() {
+    const lists = [deliveries, agenda];
+    for (const r of routes) {
+        if (r && Array.isArray(r.deliveries) && r.deliveries !== deliveries) lists.push(r.deliveries);
+    }
+    for (const list of lists) {
+        (list || []).forEach(d => {
+            if (typeof d.id === 'number' && d.id > lastGeneratedId) lastGeneratedId = d.id;
+        });
+    }
+}
+
+// A1..A10, B1..B10, ... Z10, depois AA1 em diante (estilo planilha).
+function getSequentialId(seq) {
+    const number = ((seq - 1) % 10) + 1;
+    let block = Math.floor((seq - 1) / 10);
+    let letter = '';
+    do {
+        letter = String.fromCharCode(65 + (block % 26)) + letter;
+        block = Math.floor(block / 26) - 1;
+    } while (block >= 0);
+    return `${letter}${number}`;
+}
+function escapeHtml(str) { if (!str) return ''; return String(str).replace(/[&<>"']/g, m => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[m])); }
+function haversineDistance(lat1, lon1, lat2, lon2) {
+    const R = 6371;
+    const dLat = (lat2 - lat1) * Math.PI / 180;
+    const dLon = (lon2 - lon1) * Math.PI / 180;
+    const a = Math.sin(dLat/2) * Math.sin(dLat/2) +
+              Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) *
+              Math.sin(dLon/2) * Math.sin(dLon/2);
+    const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+    return R * c;
+}
+
+// ========== RASTREIO DO CLIENTE (v1) ==========
+const TRACK_NEAR_METERS = 100;
+const TRACK_NEAR_KM = TRACK_NEAR_METERS / 1000;
+const TRACK_PUBLISH_MIN_MS = 4000;
+const TRACK_PUBLISH_MIN_KM = 0.02;
+let trackDb = null;
+let trackDbPromise = null;
+let lastTrackPublishAt = 0;
+let lastTrackPublishPos = null;
+
+function newTrackToken() {
+    const bytes = new Uint8Array(16);
+    (window.crypto || window.msCrypto).getRandomValues(bytes);
+    return Array.from(bytes, b => b.toString(16).padStart(2, '0')).join('');
+}
+
+function publicFirstName(name, fallback) {
+    const n = String(name || '').trim().split(/\s+/)[0] || '';
+    return (n || fallback || 'Cliente').slice(0, 60);
+}
+
+function trackingPublicBase() {
+    const hosted = window.ROTAFLOW_TRACK_HOST || 'https://rotaflow-83610.web.app';
+    try {
+        if (!isNativeApp() && /^https?:$/.test(location.protocol)
+            && location.hostname && location.hostname !== 'localhost' && location.hostname !== '127.0.0.1') {
+            return location.origin;
+        }
+    } catch (e) {}
+    return hosted;
+}
+
+function trackingUrl(token) {
+    return `${trackingPublicBase()}/r/${token}`;
+}
+
+function trackStatusFor(delivery) {
+    if (!delivery) return 'encerrado';
+    if (delivery.status === 'entregue') return 'entregue';
+    if (delivery.status === 'falhou') return 'falhou';
+    if (delivery.status === 'pendente' || delivery.status === 'em-rota') return 'active';
+    return 'encerrado';
+}
+
+async function ensureFirebaseTrack() {
+    if (trackDb) return trackDb;
+    if (!trackDbPromise) {
+        trackDbPromise = loadFirebaseSdk(['firestore'])
+            .then((fb) => {
+                trackDb = fb.firestore();
+                return trackDb;
+            })
+            .catch((err) => {
+                trackDbPromise = null;
+                throw err;
+            });
+    }
+    return trackDbPromise;
+}
+
+function stopsAheadOf(delivery) {
+    if (!delivery) return 0;
+    const idx = pendingStops().findIndex(d => d.id === delivery.id);
+    return idx >= 0 ? idx : 0;
+}
+
+function buildTrackPayload(delivery, extras) {
+    const status = extras && extras.status ? extras.status : trackStatusFor(delivery);
+    const payload = {
+        destLat: Number(delivery.lat),
+        destLng: Number(delivery.lng),
+        destName: publicFirstName(delivery.nome, 'Cliente'),
+        sequentialId: String(delivery.sequentialId || '').slice(0, 16),
+        status,
+        motorista: publicFirstName(userProfile && userProfile.motorista, 'Motorista'),
+        updatedAt: Date.now(),
+        nearNotified: !!delivery.nearNotified,
+        deliveredNotified: !!delivery.deliveredNotified,
+        absentNotified: !!delivery.absentNotified,
+        failReason: (status === 'falhou' && ['ausente', 'endereco-errado', 'recusou'].includes(delivery.failReason))
+            ? delivery.failReason
+            : '',
+        etaSeconds: 0,
+        stopsAhead: 0
+    };
+    if (status === 'active') {
+        payload.stopsAhead = stopsAheadOf(delivery);
+        const eta = estimateStopEta(delivery);
+        if (eta && typeof eta.seconds === 'number' && eta.seconds >= 0) {
+            payload.etaSeconds = Math.min(172800, Math.round(eta.seconds));
+        }
+    }
+    const pos = extras && extras.pos ? extras.pos : startPoint;
+    if (pos && typeof pos.lat === 'number' && typeof pos.lng === 'number') {
+        payload.driverLat = Number(pos.lat);
+        payload.driverLng = Number(pos.lng);
+        payload.accuracy = typeof gpsAccuracyMeters === 'number' ? gpsAccuracyMeters : 0;
+    }
+    return payload;
+}
+
+/** Republica tracks ativos + alvos do GPS em 2º plano (após otimizar / mudar assinatura). */
+let lastPublishedTrackRouteSig = '';
+function trackRoutePublishSignature() {
+    const pending = pendingStops();
+    if (routeActive && routeMetrics && routeMetrics.signature) return routeMetrics.signature;
+    return 'idle|' + pending.map(d => d.id).join('>');
+}
+
+async function refreshActiveTrackSessions(opts) {
+    const force = !!(opts && opts.force);
+    const sig = trackRoutePublishSignature();
+    if (!force && sig === lastPublishedTrackRouteSig) {
+        syncBackgroundGpsTargets();
+        return false;
+    }
+    syncBackgroundGpsTargets();
+    const targets = deliveries.filter(d => d.trackToken && isActiveStop(d));
+    if (!targets.length) {
+        lastPublishedTrackRouteSig = sig;
+        return false;
+    }
+    try {
+        const db = await ensureFirebaseTrack();
+        const pos = (opts && opts.pos) || startPoint;
+        const payloads = targets.map((delivery) => ({
+            token: delivery.trackToken,
+            payload: buildTrackPayload(delivery, pos ? { pos } : null)
+        }));
+        const commitBatch = (stripEta) => {
+            const batch = db.batch();
+            payloads.forEach(({ token, payload }) => {
+                batch.set(
+                    db.collection('tracks').doc(token),
+                    stripEta ? stripTrackEtaFields(payload) : payload,
+                    { merge: true }
+                );
+            });
+            return batch.commit();
+        };
+        try {
+            await commitBatch(false);
+        } catch (err) {
+            await commitBatch(true);
+        }
+        lastPublishedTrackRouteSig = sig;
+        lastTrackPublishAt = Date.now();
+        if (pos && typeof pos.lat === 'number') lastTrackPublishPos = pos;
+        return true;
+    } catch (err) {
+        console.warn('track refresh', err);
+        return false;
+    }
+}
+
+function stripTrackEtaFields(payload) {
+    if (!payload || typeof payload !== 'object') return payload;
+    const next = { ...payload };
+    delete next.etaSeconds;
+    delete next.stopsAhead;
+    return next;
+}
+
+async function writeTrackDoc(token, payload) {
+    const db = await ensureFirebaseTrack();
+    try {
+        await db.collection('tracks').doc(token).set(payload, { merge: true });
+    } catch (err) {
+        // Rules antigas (sem etaSeconds/stopsAhead): republica sem os campos novos.
+        if (payload && ('etaSeconds' in payload || 'stopsAhead' in payload)) {
+            await db.collection('tracks').doc(token).set(stripTrackEtaFields(payload), { merge: true });
+            return;
+        }
+        throw err;
+    }
+}
+
+function prepareTrackingUrl(delivery) {
+    if (!delivery || typeof delivery.lat !== 'number' || typeof delivery.lng !== 'number') return null;
+    if (!delivery.trackToken) {
+        delivery.trackToken = newTrackToken();
+        saveStorage();
+    }
+    return trackingUrl(delivery.trackToken);
+}
+
+function publishTrackingSession(delivery) {
+    if (!delivery || !delivery.trackToken) return Promise.resolve(false);
+    return writeTrackDoc(delivery.trackToken, buildTrackPayload(delivery))
+        .then(() => true)
+        .catch((err) => {
+            console.warn('track publish', err);
+            return false;
+        });
+}
+
+async function syncTrackingStatus(delivery, statusOverride) {
+    if (!delivery || !delivery.trackToken) return;
+    try {
+        await writeTrackDoc(delivery.trackToken, buildTrackPayload(delivery, { status: statusOverride }));
+    } catch (err) {
+        console.warn('track sync', err);
+    }
+}
+
+async function closeTrackingSession(delivery, status) {
+    if (!delivery || !delivery.trackToken) return;
+    try {
+        await writeTrackDoc(delivery.trackToken, buildTrackPayload(delivery, { status: status || 'encerrado' }));
+    } catch (err) {
+        console.warn('track close', err);
+    }
+}
+
+function isWithinNearKm(delivery, pos) {
+    if (!delivery || !pos) return false;
+    if (typeof delivery.lat !== 'number' || typeof delivery.lng !== 'number') return false;
+    return haversineDistance(pos.lat, pos.lng, delivery.lat, delivery.lng) <= TRACK_NEAR_KM;
+}
+
+function maybeMarkNearCustomer(delivery, pos, opts) {
+    if (!delivery || delivery.nearNotified || !isActiveStop(delivery)) return false;
+    if (!isWithinNearKm(delivery, pos)) return false;
+    delivery.nearNotified = true;
+    saveStorage();
+    showToast(`A ~${TRACK_NEAR_METERS} m de ${delivery.sequentialId} — aviso enviado ao cliente`);
+    // Push near via Cloud Function quando nearNotified chega ao Firestore.
+    syncTrackingStatus(delivery).catch(() => {});
+    if (!(opts && opts.skipPush)) sendNearPush(delivery);
+    return true;
+}
+
+function trackPushAssets() {
+    const host = 'https://rotaflow-83610.web.app';
+    return {
+        silent: false,
+        sound: host + '/track-notify.wav?v=campainha',
+        icon: host + '/track-icon-192.png',
+        badge: host + '/track-badge-96.png',
+        image: host + '/track-notify-banner.png'
+    };
+}
+
+async function sendTrackPush(delivery, extra) {
+    // Push real: Cloud Functions onTrackNotify (nearNotified / status / failReason).
+    // Cliente não tem VAPID private — RotaFlowPush.send é no-op de segurança.
+    if (!delivery || !delivery.trackToken) return;
+    try {
+        if (window.RotaFlowPush && typeof window.RotaFlowPush.send === 'function') {
+            await window.RotaFlowPush.send(null, Object.assign({
+                url: trackingUrl(delivery.trackToken)
+            }, trackPushAssets(), extra || {}));
+        }
+    } catch (err) {
+        console.warn('push track', err);
+    }
+}
+
+async function sendNearPush(delivery) {
+    return sendTrackPush(delivery, {
+        title: 'Sua entrega está chegando',
+        body: `O motorista está a cerca de ${TRACK_NEAR_METERS} m.`,
+        tag: 'rf-near-' + delivery.trackToken,
+        kind: 'near'
+    });
+}
+
+function sendDeliveredPush(delivery) {
+    if (!delivery || !delivery.trackToken || delivery.deliveredNotified) return;
+    delivery.deliveredNotified = true;
+    saveStorage();
+    syncTrackingStatus(delivery);
+    sendTrackPush(delivery, {
+        title: 'Sua encomenda foi entregue',
+        body: 'O motorista confirmou a entrega.',
+        tag: 'rf-delivered-' + delivery.trackToken,
+        kind: 'delivered',
+        actionTitle: 'Abrir'
+    });
+}
+
+function sendAbsentPush(delivery) {
+    if (!delivery || !delivery.trackToken || delivery.failReason !== 'ausente' || delivery.absentNotified) return;
+    delivery.absentNotified = true;
+    saveStorage();
+    syncTrackingStatus(delivery);
+    sendTrackPush(delivery, {
+        title: 'Cliente ausente',
+        body: 'O motorista passou no endereço e não havia ninguém para receber.',
+        tag: 'rf-absent-' + delivery.trackToken,
+        kind: 'absent',
+        actionTitle: 'Abrir'
+    });
+}
+
+function shouldPublishTrack(pos) {
+    const now = Date.now();
+    if (!lastTrackPublishPos) return true;
+    if (now - lastTrackPublishAt >= TRACK_PUBLISH_MIN_MS) return true;
+    const moved = haversineDistance(lastTrackPublishPos.lat, lastTrackPublishPos.lng, pos.lat, pos.lng);
+    return moved >= TRACK_PUBLISH_MIN_KM;
+}
+
+function publishDriverGpsFromWatch(position) {
+    if (!gpsEnabled || !position || !position.coords) return;
+    const pos = { lat: position.coords.latitude, lng: position.coords.longitude };
+    const targets = deliveries.filter(d => d.trackToken && isActiveStop(d));
+    if (!targets.length) return;
+    const becomingNear = targets.some(d => !d.nearNotified && isWithinNearKm(d, pos));
+    if (!shouldPublishTrack(pos) && !becomingNear) return;
+    lastTrackPublishAt = Date.now();
+    lastTrackPublishPos = pos;
+    ensureFirebaseTrack().then(db => {
+        const batch = db.batch();
+        const entries = [];
+        targets.forEach((delivery) => {
+            const becameNear = maybeMarkNearCustomer(delivery, pos, { skipPush: bgGpsStarted });
+            const payload = buildTrackPayload(delivery, { pos });
+            if (becameNear) payload.nearNotified = true;
+            entries.push({ token: delivery.trackToken, payload });
+            batch.set(db.collection('tracks').doc(delivery.trackToken), payload, { merge: true });
+            // Live push removido do cliente (VAPID private só nas Functions).
+            // Mapa do cliente continua via Firestore GPS; near/entregue/ausente via CF.
+        });
+        return batch.commit().catch(() => {
+            const retry = db.batch();
+            entries.forEach(({ token, payload }) => {
+                retry.set(db.collection('tracks').doc(token), stripTrackEtaFields(payload), { merge: true });
+            });
+            return retry.commit();
+        });
+    }).catch((err) => {
+        console.warn('track publish', err);
+    });
+}
+
+async function pickDeliveryPhone(delivery) {
+    if (!delivery || !delivery.telefones || !delivery.telefones.length) return null;
+    if (delivery.telefones.length === 1) return delivery.telefones[0];
+    return showChoiceModal({
+        title: 'WhatsApp',
+        message: 'Selecione o número do cliente:',
+        options: delivery.telefones.map(p => ({
+            label: (p.label ? p.label + ' · ' : '') + formatPhoneShort(p.numero),
+            value: p,
+            icon: 'fab fa-whatsapp',
+            iconColor: '#25D366'
+        }))
+    });
+}
+
+async function openWhatsAppToDelivery(delivery, msg) {
+    const phone = await pickDeliveryPhone(delivery);
+    if (!phone) {
+        showToast('Cadastre o telefone do cliente para enviar o rastreio', true);
+        return false;
+    }
+    const opened = await openWhatsAppChat(phone.numero, msg);
+    if (!opened) {
+        showToast('Não foi possível abrir o WhatsApp', true);
+        return false;
+    }
+    return true;
+}
+
+async function shareTrackingLink(delivery) {
+    const url = prepareTrackingUrl(delivery);
+    if (!url) {
+        showToast('Não foi possível criar o link de rastreio', true);
+        return;
+    }
+    publishTrackingSession(delivery).then((ok) => {
+        if (!ok) showToast('Link enviado. Se o mapa do cliente falhar, tente de novo com internet', true);
+    });
+    if (!gpsEnabled || !startPoint) {
+        showToast('Link pronto. Ligue o GPS para o cliente ver você no mapa');
+    }
+    const nome = publicFirstName(delivery.nome, 'cliente');
+    const msg = buildDeliveryWhatsAppMessage(delivery, { nome, trackUrl: url });
+    if (delivery.telefones && delivery.telefones.length) {
+        await openWhatsAppToDelivery(delivery, msg);
+        return;
+    }
+    try {
+        if (isNativeApp() && window.RotaFlowCap && window.RotaFlowCap.Share) {
+            await window.RotaFlowCap.Share.share({
+                title: 'Rastreio RotaFlow',
+                text: msg,
+                url,
+                dialogTitle: 'Compartilhar rastreio'
+            });
+            return;
+        }
+        if (navigator.share) {
+            await navigator.share({ title: 'Rastreio RotaFlow', text: msg, url });
+            return;
+        }
+    } catch (err) {
+        if (err && (err.name === 'AbortError' || /cancel/i.test(err.message || ''))) return;
+    }
+    try {
+        await navigator.clipboard.writeText(url);
+        showToast('Sem telefone salvo — link de rastreio copiado');
+    } catch (e) {
+        showToast(url);
+    }
+}
+
+// ========== MIGRAÇÃO E PERSISTÊNCIA ==========
+function migrateTelefones(obj) {
+    if (!obj) return;
+    if (obj.telefones && Array.isArray(obj.telefones) && obj.telefones.length > 0 && typeof obj.telefones[0] === 'string') {
+        obj.telefones = obj.telefones.map(num => ({ numero: num, label: '' }));
+    }
+    if (!obj.telefones) obj.telefones = [];
+    if (obj.telefone && typeof obj.telefone === 'string') {
+        obj.telefones.push({ numero: obj.telefone, label: '' });
+        delete obj.telefone;
+    }
+    obj.telefones.forEach(p => { p.numero = normalizeStoredPhone(p.numero); });
+    return obj;
+}
+function migrateFavorito(obj) {
+    if (obj.favorito === undefined) obj.favorito = false;
+    return obj;
+}
+
+let storageFull = false;
+
+function currentUid() {
+    return (currentUser && currentUser.uid) ? currentUser.uid : 'guest';
+}
+function storageKey(base) {
+    return `rotaflow_${base}_${currentUid()}`;
+}
+configurePhotoStore({ getUid: currentUid });
+configureBackupStore({ getUid: currentUid, storageKey, isNativeApp });
+function updateSyncBadge() {
+    const el = document.getElementById('syncBadge');
+    if (el) el.className = 'sync-badge';
+}
+
+function saveAuthSession(user) {
+    try { localStorage.setItem('rotaflow_auth_session', JSON.stringify(user)); } catch (e) {}
+}
+function clearAuthSession() {
+    localStorage.removeItem('rotaflow_auth_session');
+}
+function loadAuthSession() {
+    try {
+        const raw = localStorage.getItem('rotaflow_auth_session');
+        return raw ? JSON.parse(raw) : null;
+    } catch (e) { return null; }
+}
+
+function updateUserChip() {
+    const chip = document.getElementById('userChip');
+    const name = document.getElementById('userChipName');
+    const photo = document.getElementById('userChipPhoto');
+    if (!chip || !currentUser) return;
+    name.textContent = currentUser.displayName || currentUser.email || 'Conta local';
+    if (currentUser.photoURL) {
+        photo.src = currentUser.photoURL;
+        photo.style.display = 'block';
+    } else {
+        photo.removeAttribute('src');
+        photo.style.display = 'none';
+    }
+    chip.classList.add('show');
+    updateSyncBadge();
+}
+function hideLoginScreen() {
+    document.getElementById('loginScreen')?.classList.add('hidden');
+}
+function showLoginScreen() {
+    document.getElementById('loginScreen')?.classList.remove('hidden');
+}
+
+async function enterAsUser(user) {
+    currentUser = user;
+    authReady = true;
+    saveAuthSession(user);
+    try {
+        if (window.RotaFlowCap && typeof window.RotaFlowCap.setCrashlyticsUser === 'function') {
+            window.RotaFlowCap.setCrashlyticsUser(user && user.uid);
+        }
+    } catch (_) {}
+    updateUserChip();
+    hideLoginScreen();
+    await loadStorage();
+    showToast(`Bem-vindo, ${user.displayName || 'motorista'}`);
+    maybeAutoBackupOnDayChange();
+}
+
+async function continueLocally() {
+    let localId = localStorage.getItem('rotaflow_local_uid');
+    if (!localId) {
+        localId = 'local_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+        localStorage.setItem('rotaflow_local_uid', localId);
+    }
+    await enterAsUser({
+        uid: localId,
+        displayName: 'Neste aparelho',
+        email: '',
+        photoURL: '',
+        provider: 'local'
+    });
+}
+
+async function logoutUser() {
+    const ok = await showConfirmModal({
+        title: 'Sair',
+        message: 'Deseja sair agora? Seus dados permanecem salvos neste aparelho e estarão disponíveis ao retornar.',
+        confirmText: 'Sair',
+        danger: true
+    });
+    if (!ok) return;
+    persistStorageNow();
+    clearAuthSession();
+    currentUser = null;
+    authReady = false;
+    storageLoadedUid = null;
+    deliveries = [];
+    agenda = [];
+    routes = [];
+    activeRouteId = null;
+    nextSequenceNumber = 1;
+    routeActive = false;
+    routeMetrics = null;
+    clearRouteOverlay();
+    rebuildMarkers(false);
+    renderDeliveriesList();
+    renderRouteSwitcher();
+    renderAgendaList();
+    document.getElementById('userChip')?.classList.remove('show');
+    updateSyncBadge();
+    showLoginScreen();
+}
+
+function initAuthUi() {
+    const localBtn = document.getElementById('loginLocalBtn');
+    const hint = document.getElementById('loginHint');
+    if (hint) hint.textContent = 'Os dados ficam neste aparelho.';
+
+    localBtn.addEventListener('click', continueLocally);
+
+    const session = loadAuthSession();
+    if (session && session.uid && (session.provider === 'local' || !session.provider)) {
+        enterAsUser({
+            uid: session.uid,
+            displayName: session.displayName || 'Neste aparelho',
+            email: '',
+            photoURL: '',
+            provider: 'local'
+        });
+    } else {
+        // Único modo: entra direto neste aparelho.
+        continueLocally();
+    }
+}
+
+let cameraRestoreHandlerReady = false;
+
+/** Remove fotos órfãs no IDB (ids sem referência em entregas/agenda) — evita crescimento eterno. */
+async function pruneOrphanPhotos() {
+    const uid = currentUid();
+    if (!uid) return 0;
+    const prefix = `${uid}::`;
+    const live = new Set();
+    const lists = [agenda];
+    syncActiveRouteIntoRoutes();
+    for (const r of routes) {
+        if (r && Array.isArray(r.deliveries)) lists.push(r.deliveries);
+    }
+    for (const list of lists) {
+        for (const item of list || []) {
+            const ids = Array.isArray(item.photoIds) ? item.photoIds : [];
+            for (const id of ids) {
+                if (id && id !== 'pending') live.add(photoDbKey(id));
+            }
+        }
+    }
+    let keys;
+    try {
+        keys = await idbGetAllPhotoKeys();
+    } catch (_) {
+        return 0;
+    }
+    let removed = 0;
+    const db = await openPhotoDb();
+    await new Promise((resolve, reject) => {
+        const tx = db.transaction('photos', 'readwrite');
+        const store = tx.objectStore('photos');
+        for (const key of keys) {
+            if (typeof key !== 'string' || !key.startsWith(prefix)) continue;
+            if (live.has(key)) continue;
+            store.delete(key);
+            removed += 1;
+        }
+        tx.oncomplete = () => resolve();
+        tx.onerror = () => reject(tx.error);
+    }).catch(() => {});
+    return removed;
+}
+
+function scheduleOrphanPhotoPrune() {
+    const run = () => {
+        pruneOrphanPhotos().catch(() => {});
+    };
+    if (typeof requestIdleCallback === 'function') requestIdleCallback(run, { timeout: 8000 });
+    else setTimeout(run, 2500);
+}
+
+function isPhotoPickCancelled(err) {
+    const msg = String(err?.message || err || '').toLowerCase();
+    return msg.includes('cancel') || msg.includes('user denied') || msg.includes('no image') || msg.includes('picker was cancelled');
+}
+
+function remainingPhotoSlots(item) {
+    return remainingPhotoSlotsFor(item, PHOTO_MAX_PER_ITEM);
+}
+
+function canUseNativeMultiCamera() {
+    try {
+        return !!(isNativeApp()
+            && window.RotaFlowCap
+            && typeof window.RotaFlowCap.openMultiCamera === 'function');
+    } catch (_) {
+        return false;
+    }
+}
+
+function canUseGetUserMediaMulti() {
+    try {
+        // Never use getUserMedia multi on native + Google Maps — fights the same layer.
+        if (isNativeApp()) return false;
+        return !!(navigator.mediaDevices && typeof navigator.mediaDevices.getUserMedia === 'function');
+    } catch (_) {
+        return false;
+    }
+}
+
+function canUseInAppMultiCamera() {
+    return canUseNativeMultiCamera() || canUseGetUserMediaMulti();
+}
+
+async function ensureNativeCameraPermission() {
+    const Cam = window.RotaFlowCap && window.RotaFlowCap.Camera;
+    if (!Cam || typeof Cam.requestPermissions !== 'function') return true;
+    try {
+        const cur = typeof Cam.checkPermissions === 'function' ? await Cam.checkPermissions() : null;
+        if (cur && (cur.camera === 'granted' || cur.camera === 'limited')) return true;
+        const next = await Cam.requestPermissions({ permissions: ['camera'] });
+        return !!(next && (next.camera === 'granted' || next.camera === 'limited'));
+    } catch (e) {
+        console.warn('camera permission', e);
+        return false;
+    }
+}
+
+/**
+ * Captura um frame do <video> já no tamanho final (JPEG), sem data URL gigante.
+ * @param {HTMLVideoElement} video
+ * @returns {Promise<string|null>}
+ */
+async function captureVideoFrameToJpegDataUrl(video) {
+    const vw = video.videoWidth || 0;
+    const vh = video.videoHeight || 0;
+    if (!vw || !vh) return null;
+    const scale = Math.min(1, PHOTO_MULTICAM_MAX_SIDE / Math.max(vw, vh));
+    const w = Math.max(1, Math.round(vw * scale));
+    const h = Math.max(1, Math.round(vh * scale));
+    const canvas = document.createElement('canvas');
+    canvas.width = w;
+    canvas.height = h;
+    canvas.getContext('2d').drawImage(video, 0, 0, w, h);
+    await yieldToUiFrame();
+    const dataUrl = canvas.toDataURL('image/jpeg', PHOTO_MULTICAM_JPEG_QUALITY);
+    canvas.width = 0;
+    canvas.height = 0;
+    return dataUrl && dataUrl.startsWith('data:') ? dataUrl : null;
+}
+
+/**
+ * Multi-foto no Android: Activity CameraX dedicada (não partilha surface com o mapa).
+ * @param {{ maxPhotos?: number, onCapture?: function }} opts
+ * @returns {Promise<string[]>} fotos (vazio se cancelar)
+ */
+async function openNativeMultiCameraCapture(opts = {}) {
+    const maxPhotos = Math.max(1, Math.min(PHOTO_MAX_PER_ITEM, Number(opts.maxPhotos) || PHOTO_MAX_PER_ITEM));
+    const ok = await ensureNativeCameraPermission();
+    if (!ok) {
+        showToast('Permissão da câmera necessária', true);
+        return [];
+    }
+    if (!window.RotaFlowCap || typeof window.RotaFlowCap.openMultiCamera !== 'function') {
+        return [];
+    }
+    showToast('Abrindo câmera…');
+    // Bridge already compresses multi-cam to PHOTO_MULTICAM_* — do not recompress here.
+    // onPhoto: anexar/guardar cada JPEG assim que ficar pronto (não só no buffer final).
+    const multi = await window.RotaFlowCap.openMultiCamera({
+        maxPhotos,
+        onPhoto: typeof opts.onPhoto === 'function' ? opts.onPhoto : null
+    });
+    try { recoverUiAfterResume(); } catch (_) {}
+    const list = Array.isArray(multi) ? multi : [];
+    if (list.length && typeof opts.onCapture === 'function') {
+        try { opts.onCapture(list[0], list.length); } catch (_) {}
+    }
+    return list;
+}
+
+/**
+ * UI fullscreen web: várias fotos via getUserMedia (só PWA/browser — nunca no Android nativo).
+ * @param {{ maxPhotos?: number, onCapture?: function }} opts
+ * @returns {Promise<string[]|null>} array (incl. vazio se cancelar) ou null se preview indisponível
+ */
+function openMultiCameraCapture(opts = {}) {
+    const maxPhotos = Math.max(1, Math.min(PHOTO_MAX_PER_ITEM, Number(opts.maxPhotos) || PHOTO_MAX_PER_ITEM));
+    return new Promise(async (resolve) => {
+        let settled = false;
+        let stream = null;
+        const captured = [];
+        const thumbUrls = [];
+
+        const root = document.createElement('div');
+        root.className = 'rf-multicam';
+        root.setAttribute('role', 'dialog');
+        root.setAttribute('aria-modal', 'true');
+        root.setAttribute('aria-label', 'Câmera');
+        root.innerHTML = `
+            <div class="rf-multicam-video-wrap">
+                <video playsinline muted autoplay></video>
+                <div class="rf-multicam-flash" aria-hidden="true"></div>
+                <div class="rf-multicam-top">
+                    <button type="button" class="rf-multicam-cancel">Cancelar</button>
+                    <span class="rf-multicam-count">0 fotos</span>
+                </div>
+            </div>
+            <div class="rf-multicam-bottom">
+                <div class="rf-multicam-side">
+                    <div class="rf-multicam-thumbs" aria-live="polite"></div>
+                </div>
+                <button type="button" class="rf-multicam-shutter" aria-label="Disparar"></button>
+                <div class="rf-multicam-side right">
+                    <button type="button" class="rf-multicam-done" disabled>Concluir</button>
+                </div>
+            </div>
+        `;
+        document.body.appendChild(root);
+
+        const video = root.querySelector('video');
+        const flash = root.querySelector('.rf-multicam-flash');
+        const countEl = root.querySelector('.rf-multicam-count');
+        const thumbsEl = root.querySelector('.rf-multicam-thumbs');
+        const shutterBtn = root.querySelector('.rf-multicam-shutter');
+        const doneBtn = root.querySelector('.rf-multicam-done');
+        const cancelBtn = root.querySelector('.rf-multicam-cancel');
+
+        const updateUi = () => {
+            const n = captured.length;
+            countEl.textContent = n === 1 ? '1 foto' : `${n} fotos`;
+            doneBtn.disabled = n < 1;
+            shutterBtn.disabled = n >= maxPhotos;
+            if (n >= maxPhotos) {
+                countEl.textContent = `${n} fotos (máx.)`;
+            }
+        };
+
+        const cleanup = async () => {
+            try {
+                if (stream) stream.getTracks().forEach((t) => { try { t.stop(); } catch (_) {} });
+            } catch (_) {}
+            stream = null;
+            thumbUrls.forEach((u) => { try { URL.revokeObjectURL(u); } catch (_) {} });
+            thumbUrls.length = 0;
+            try { root.remove(); } catch (_) {}
+        };
+
+        const finish = async (urls, unavailable) => {
+            if (settled) return;
+            settled = true;
+            await cleanup();
+            if (unavailable) resolve(null);
+            else resolve(Array.isArray(urls) ? urls : []);
+        };
+
+        const appendThumb = async (dataUrl) => {
+            try {
+                const res = await fetch(dataUrl);
+                const blob = await res.blob();
+                const tu = URL.createObjectURL(blob);
+                thumbUrls.push(tu);
+                const img = document.createElement('img');
+                img.src = tu;
+                img.alt = '';
+                thumbsEl.appendChild(img);
+                thumbsEl.scrollLeft = thumbsEl.scrollWidth;
+            } catch (_) {}
+        };
+
+        let lastWebShutterAt = 0;
+        let captureChain = Promise.resolve();
+        const fireShutter = async () => {
+            if (settled || shutterBtn.disabled || shutterBtn.classList.contains('busy')) return;
+            const now = Date.now();
+            if (now - lastWebShutterAt < 650) return;
+            if (!video.videoWidth) {
+                showToast('Aguarde a câmera…', true);
+                return;
+            }
+            lastWebShutterAt = now;
+            shutterBtn.classList.add('busy');
+            shutterBtn.disabled = true;
+            doneBtn.disabled = true;
+            flash.classList.add('on');
+            setTimeout(() => flash.classList.remove('on'), 90);
+            const op = (async () => {
+                try {
+                    const dataUrl = await enqueuePhotoOp(() => captureVideoFrameToJpegDataUrl(video));
+                    if (!dataUrl) throw new Error('capture');
+                    captured.push(dataUrl);
+                    await appendThumb(dataUrl);
+                    // Await: senão Concluir pode devolver a lista antes do onPhoto gravar → batch salva de novo.
+                    if (typeof opts.onCapture === 'function') {
+                        try { await opts.onCapture(dataUrl, captured.length); } catch (_) {}
+                    }
+                } catch (e) {
+                    console.warn('multi cam capture', e);
+                    showToast('Não foi possível capturar', true);
+                } finally {
+                    shutterBtn.classList.remove('busy');
+                    updateUi();
+                }
+            })();
+            captureChain = captureChain.then(() => op, () => op);
+            await op;
+        };
+        // Só pointerup dispara; click só engole o evento sintético (evita 2 disparos em alguns WebViews).
+        shutterBtn.addEventListener('pointerup', (e) => {
+            if (e.button != null && e.button !== 0) return;
+            e.preventDefault();
+            e.stopPropagation();
+            fireShutter();
+        });
+        shutterBtn.addEventListener('click', (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+        });
+
+        cancelBtn.addEventListener('click', () => { finish([]); });
+        doneBtn.addEventListener('click', async () => {
+            doneBtn.disabled = true;
+            try { await captureChain; } catch (_) {}
+            if (settled) return;
+            finish(captured.slice());
+        });
+
+        try {
+            stream = await navigator.mediaDevices.getUserMedia({
+                audio: false,
+                video: {
+                    facingMode: { ideal: 'environment' },
+                    width: { ideal: 1280 },
+                    height: { ideal: 960 }
+                }
+            });
+            video.srcObject = stream;
+            try { await video.play(); } catch (_) {}
+            updateUi();
+        } catch (e) {
+            console.warn('multi-cam start', e);
+            await finish(null, true);
+        }
+    });
+}
+
+/**
+ * Câmera/galeria: multi-foto in-app (câmera) ou nativa/file (galeria / fallback).
+ * @param {'camera'|'gallery'} mode
+ * @param {{ multiple?: boolean, fileInput?: HTMLInputElement|null, pendingTarget?: object|null, alreadyCompressed?: boolean, onPreview?: (previewUrl: string)=>void, onPhoto?: (dataUrl: string, n: number, total?: number)=>void|Promise<void>, maxPhotos?: number }} opts
+ * @returns {Promise<string[]>} data URLs JPEG
+ */
+async function pickPhotoDataUrls(mode, opts = {}) {
+    const { fileInput = null, pendingTarget = null, onPreview = null, onPhoto = null } = opts;
+    const maxPhotos = Math.max(1, Math.min(
+        PHOTO_MAX_PER_ITEM,
+        Number(opts.maxPhotos) || (opts.multiple ? 12 : PHOTO_MAX_PER_ITEM)
+    ));
+    if (pendingTarget) setPendingPhotoTarget(pendingTarget);
+    // Não bloquear a abertura da câmera com flush síncrono do localStorage.
+    // O alvo da foto já está em sessionStorage; o flush roda em seguida.
+    setTimeout(() => { try { persistStorageNow(); } catch (_) {} }, 0);
+
+    // Preferência multi: Android = Activity CameraX própria (mapa nativo intacto).
+    // Web = getUserMedia in-app. Nunca CameraPreview toBack com Google Maps nativo.
+    if (mode === 'camera' && canUseInAppMultiCamera() && maxPhotos > 0) {
+        try {
+            if (canUseNativeMultiCamera()) {
+                const multi = await openNativeMultiCameraCapture({
+                    maxPhotos,
+                    onPhoto,
+                    onCapture: (dataUrl, n) => {
+                        if (n === 1 && typeof onPreview === 'function') {
+                            try { onPreview(dataUrl); } catch (_) {}
+                        }
+                    }
+                });
+                clearPendingPhotoTarget();
+                return Array.isArray(multi) ? multi : [];
+            }
+            showToast('Abrindo câmera…');
+            const multi = await openMultiCameraCapture({
+                maxPhotos,
+                onCapture: async (dataUrl, n) => {
+                    if (n === 1 && typeof onPreview === 'function') {
+                        try { onPreview(dataUrl); } catch (_) {}
+                    }
+                    if (typeof onPhoto === 'function') {
+                        try { await onPhoto(dataUrl, n); } catch (_) {}
+                    }
+                }
+            });
+            if (multi === null) {
+                showToast('Câmera multi indisponível — 1 foto', true);
+                // fallback single-shot abaixo
+            } else {
+                clearPendingPhotoTarget();
+                return multi;
+            }
+        } catch (e) {
+            console.warn('multi camera', e);
+            const msg = String(e?.message || e || '');
+            if (msg.includes('multi-cam-compress-failed')) {
+                showToast('Não foi possível processar as fotos', true);
+                clearPendingPhotoTarget();
+                return [];
+            }
+            showToast('Câmera multi indisponível — 1 foto', true);
+        }
+    }
+
+    if (isNativeApp() && window.RotaFlowCap) {
+        try {
+            showToast(mode === 'gallery' ? 'Abrindo galeria…' : 'Abrindo câmera…');
+            const source = mode === 'gallery' ? 'photos' : 'camera';
+            let raw = null;
+            // Preferir captura Uri rápida + compressão async (UI otimista via webPath).
+            if (typeof window.RotaFlowCap.getPhotoCapture === 'function'
+                && typeof window.RotaFlowCap.photoResultToDataUrl === 'function') {
+                const photo = await window.RotaFlowCap.getPhotoCapture(source);
+                clearPendingPhotoTarget();
+                if (!photo) return [];
+                if (photo.webPath && typeof onPreview === 'function') {
+                    try { onPreview(photo.webPath); } catch (_) {}
+                }
+                raw = await enqueuePhotoOp(() => window.RotaFlowCap.photoResultToDataUrl(photo));
+            } else if (typeof window.RotaFlowCap.getPhotoDataUrl === 'function') {
+                raw = await window.RotaFlowCap.getPhotoDataUrl(source);
+                clearPendingPhotoTarget();
+            } else {
+                raw = null;
+                clearPendingPhotoTarget();
+            }
+            if (!raw) return [];
+            if (typeof raw === 'string' && raw.startsWith('data:')) return [raw];
+            showToast('Otimizando foto…');
+            return [await enqueuePhotoOp(() => compressDataUrl(raw))];
+        } catch (e) {
+            if (isPhotoPickCancelled(e)) {
+                clearPendingPhotoTarget();
+                return [];
+            }
+            console.warn('native photo', e);
+            if (!fileInput) {
+                clearPendingPhotoTarget();
+                showToast('Não foi possível abrir a câmera', true);
+                return [];
+            }
+        }
+    }
+    if (!fileInput) {
+        clearPendingPhotoTarget();
+        return [];
+    }
+    return new Promise((resolve) => {
+        const onChange = async () => {
+            const files = fileInput.files ? Array.from(fileInput.files) : [];
+            fileInput.value = '';
+            clearPendingPhotoTarget();
+            const out = [];
+            const limit = opts.multiple
+                ? Math.min(files.length, maxPhotos, 12)
+                : Math.min(files.length, 1);
+            for (let i = 0; i < limit; i++) {
+                const file = files[i];
+                if (!file || !file.type.startsWith('image/')) continue;
+                try {
+                    if (i === 0 && typeof onPreview === 'function') {
+                        try { onPreview(URL.createObjectURL(file)); } catch (_) {}
+                    }
+                    out.push(await enqueuePhotoOp(() => compressImageFile(file)));
+                } catch (_) {}
+            }
+            resolve(out);
+        };
+        fileInput.addEventListener('change', onChange, { once: true });
+        fileInput.click();
+    });
+}
+
+const recentPhotoSaveKeys = new Map();
+const inflightPhotoSaves = new Set();
+const PHOTO_SAVE_DEDUPE_MS = 15000;
+
+function pruneRecentPhotoSaves(now = Date.now()) {
+    if (recentPhotoSaveKeys.size < 64) return;
+    for (const [k, t] of recentPhotoSaveKeys) {
+        if (now - t > PHOTO_SAVE_DEDUPE_MS) recentPhotoSaveKeys.delete(k);
+    }
+}
+
+function isDuplicatePhotoSave(scopeKey, dataUrl) {
+    const fp = photoFingerprint(dataUrl);
+    if (!fp) return true;
+    const key = `${scopeKey}::${fp}`;
+    const now = Date.now();
+    pruneRecentPhotoSaves(now);
+    const prev = recentPhotoSaveKeys.get(key);
+    return !!(prev && now - prev < PHOTO_SAVE_DEDUPE_MS);
+}
+
+function markPhotoSaved(scopeKey, dataUrl) {
+    const fp = photoFingerprint(dataUrl);
+    if (!fp) return;
+    recentPhotoSaveKeys.set(`${scopeKey}::${fp}`, Date.now());
+}
+
+async function addPhotoDataUrlToItem(item, dataUrl) {
+    if (!item || !dataUrl) return null;
+    if (!Array.isArray(item.photos)) item.photos = [];
+    if (!Array.isArray(item.photoIds)) item.photoIds = [];
+    if (item.photoIds.length >= PHOTO_MAX_PER_ITEM) {
+        throw new Error('photo-limit');
+    }
+    const scope = itemPhotoScope(item);
+    const fp = photoFingerprint(dataUrl);
+    const lockKey = `${scope}::${fp}`;
+    if (inflightPhotoSaves.has(lockKey) || isDuplicatePhotoSave(scope, dataUrl)) return null;
+    if (item.photos.includes(dataUrl)) return null;
+    if (fp && item.photos.some((p) => photoFingerprint(p) === fp)) return null;
+
+    inflightPhotoSaves.add(lockKey);
+    try {
+        const photoId = await persistPhotoDataUrl(dataUrl);
+        // Se só havia thumb parcial, hidrata completo depois via ensureItemPhotos.
+        if (item.photos.length && item.photoIds.length > item.photos.length) {
+            for (const u of item.photos) revokeDisplayUrl(u);
+            item.photos = [];
+        }
+        // Exibe via blob: (revogável) em vez de manter data URL gigante na RAM.
+        let display = await idbGetPhoto(photoId);
+        if (!display) display = dataUrl;
+        item.photos.push(display);
+        item.photoIds.push(photoId);
+        markPhotoSaved(scope, dataUrl);
+        return photoId;
+    } finally {
+        inflightPhotoSaves.delete(lockKey);
+    }
+}
+
+async function persistPhotoDataUrl(dataUrl) {
+    const id = newPhotoId();
+    // Grava Blob no IDB (não data URL) — menos pressão de memória no WebView.
+    await idbPutPhoto(id, dataUrl);
+    return id;
+}
+
+/**
+ * @param {object} item
+ * @param {{ maxPhotos?: number }} [opts] maxPhotos=1 para thumbs da lista (economiza RAM)
+ */
+async function hydrateItemPhotos(item, opts = {}) {
+    if (!item) return item;
+    if (!Array.isArray(item.photoIds)) item.photoIds = [];
+    if (!Array.isArray(item.photos)) item.photos = [];
+    const maxPhotos = Number.isFinite(opts.maxPhotos) ? Math.max(0, opts.maxPhotos) : null;
+
+    // Migração legado: data URLs sem photoIds → IndexedDB (só ids vão para localStorage).
+    if (!item.photoIds.length && item.photos.some(p => typeof p === 'string' && p.startsWith('data:'))) {
+        const ids = [];
+        const urls = [];
+        for (const p of item.photos) {
+            if (typeof p === 'string' && p.startsWith('data:')) {
+                ids.push(await persistPhotoDataUrl(p));
+                urls.push(p);
+            }
+        }
+        item.photoIds = ids;
+        item.photos = maxPhotos != null ? urls.slice(0, maxPhotos) : urls;
+        return item;
+    }
+
+    const idsAll = slicePhotoIdsForHydrate(item.photoIds, maxPhotos);
+    const want = idsAll.length;
+    if (want > 0 && item.photos.length < want) {
+        for (const u of item.photos) revokeDisplayUrl(u);
+        const urls = [];
+        for (const id of idsAll) {
+            const url = await idbGetPhoto(id);
+            if (url) urls.push(url);
+            await yieldToUiFrame();
+        }
+        item.photos = urls;
+    }
+    return item;
+}
+
+/** Não hidrata tudo de uma vez — só migração legado / uso pontual. */
+async function hydrateAllPhotos() {
+    // Preferir hydrate sob demanda (painel / thumbs). Migração idle cobre data URLs legadas.
+    scheduleBackgroundPhotoMigrate();
+    scheduleListPhotoHydration();
+}
+
+async function ensureItemPhotos(item) {
+    if (!item) return item;
+    try {
+        if (!Array.isArray(item.photoIds)) item.photoIds = [];
+        if (!Array.isArray(item.photos)) item.photos = [];
+        const incomplete = item.photoIds.length > 0 && item.photos.length < item.photoIds.length;
+        const legacyData = item.photos.some(p => typeof p === 'string' && p.startsWith('data:')) && !item.photoIds.length;
+        if (incomplete || legacyData || (!item.photos.length && item.photoIds.length)) {
+            await hydrateItemPhotos(item);
+        }
+        if (!item.photos) item.photos = [];
+    } catch (e) {
+        console.warn('ensureItemPhotos', e);
+        if (!item.photos) item.photos = [];
+        if (!item.photoIds) item.photoIds = [];
+    }
+    return item;
+}
+
+async function applyRestoredCameraPhoto(photoData) {
+    const pending = getPendingPhotoTarget();
+    clearPendingPhotoTarget();
+    if (!pending || !photoData) return false;
+    let dataUrl = null;
+    try {
+        if (window.RotaFlowCap && typeof window.RotaFlowCap.photoResultToDataUrl === 'function') {
+            dataUrl = await window.RotaFlowCap.photoResultToDataUrl(photoData);
+        } else if (photoData.dataUrl) {
+            dataUrl = await compressDataUrl(photoData.dataUrl);
+        } else if (photoData.webPath) {
+            dataUrl = await compressDataUrl(photoData.webPath);
+        }
+    } catch (e) {
+        console.warn('restored photo compress', e);
+        return false;
+    }
+    if (!dataUrl) return false;
+
+    try {
+        if (pending.kind === 'delivery' && pending.sequentialId != null) {
+            const delivery = deliveries.find(d => d.sequentialId === pending.sequentialId);
+            if (!delivery) return false;
+            await addPhotoDataUrlToItem(delivery, dataUrl);
+            persistStorageNow();
+            if (currentSelectedDelivery && currentSelectedDelivery.sequentialId === delivery.sequentialId) {
+                refreshPanelPhotos(delivery);
+            }
+            renderDeliveriesList();
+            showToast('Foto recuperada após reinício do app');
+            return true;
+        }
+        if (pending.kind === 'agenda' && pending.agendaId != null) {
+            const item = agenda.find(a => a.agendaId === pending.agendaId);
+            if (!item) return false;
+            await addPhotoDataUrlToItem(item, dataUrl);
+            persistStorageNow();
+            renderAgendaList();
+            showToast('Foto recuperada após reinício do app');
+            return true;
+        }
+        if (pending.kind === 'edit-delivery' || pending.kind === 'edit-agenda') {
+            // Modais de edição não sobrevivem ao kill — salva na entrega/agenda se possível.
+            if (pending.sequentialId != null) {
+                const delivery = deliveries.find(d => d.sequentialId === pending.sequentialId);
+                if (delivery) {
+                    await addPhotoDataUrlToItem(delivery, dataUrl);
+                    persistStorageNow();
+                    renderDeliveriesList();
+                    showToast('Foto salva na entrega após reinício');
+                    return true;
+                }
+            }
+            if (pending.agendaId != null) {
+                const item = agenda.find(a => a.agendaId === pending.agendaId);
+                if (item) {
+                    await addPhotoDataUrlToItem(item, dataUrl);
+                    persistStorageNow();
+                    renderAgendaList();
+                    showToast('Foto salva na agenda após reinício');
+                    return true;
+                }
+            }
+        }
+    } catch (e) {
+        console.warn('applyRestoredCameraPhoto', e);
+        showToast('Não foi possível recuperar a foto', true);
+    }
+    return false;
+}
+
+/** Evita tela preta ao voltar do 2º plano (WebView transparente + Maps nativo). */
+let recoverUiResumeTimer = null;
+let recoverUiLastAt = 0;
+function recoverUiAfterResume() {
+    // Debounce: resume + appStateChange + visibility disparam em sequência.
+    const now = Date.now();
+    if (now - recoverUiLastAt < 80) {
+        clearTimeout(recoverUiResumeTimer);
+        recoverUiResumeTimer = setTimeout(recoverUiAfterResumeNow, 100);
+        return;
+    }
+    recoverUiAfterResumeNow();
+}
+function recoverUiAfterResumeNow() {
+    recoverUiLastAt = Date.now();
+    try {
+        document.documentElement.style.visibility = 'visible';
+        document.body.style.visibility = 'visible';
+        document.body.style.opacity = '1';
+        const app = document.querySelector('.app-container');
+        if (app) {
+            app.style.visibility = 'visible';
+            app.style.opacity = '1';
+            app.style.display = '';
+        }
+        // Força reflow — WebView às vezes fica com frame preto após resume
+        void document.body.offsetHeight;
+        const mapEl = document.getElementById('map');
+        if (mapEl) {
+            mapEl.style.visibility = 'visible';
+            mapEl.style.opacity = '1';
+            mapEl.style.display = 'block';
+        }
+        if (useNativeMap && nativeGoogleMap && typeof nativeGoogleMap.setCamera === 'function') {
+            const center = (map && typeof map.getCenter === 'function') ? map.getCenter() : null;
+            const zoom = (map && typeof map.getZoom === 'function') ? map.getZoom() : nativeMapZoom;
+            const c = center
+                ? { lat: typeof center.lat === 'function' ? center.lat() : center.lat, lng: typeof center.lng === 'function' ? center.lng() : center.lng }
+                : null;
+            if (c && Number.isFinite(c.lat) && Number.isFinite(c.lng)) {
+                nativeGoogleMap.setCamera({
+                    coordinate: c,
+                    zoom: zoom || nativeMapZoom || 12,
+                    animate: false
+                }).catch(() => {});
+            }
+        } else if (map && typeof google !== 'undefined' && google.maps && typeof google.maps.event?.trigger === 'function') {
+            try { google.maps.event.trigger(map, 'resize'); } catch (_) {}
+        }
+        requestAnimationFrame(() => {
+            try { window.dispatchEvent(new Event('resize')); } catch (_) {}
+            // Segundo passe — Home/lock/câmera → mapa às vezes precisa de 2 frames
+            setTimeout(() => {
+                try {
+                    void document.body.offsetHeight;
+                    if (map && typeof google !== 'undefined' && google.maps?.event?.trigger) {
+                        google.maps.event.trigger(map, 'resize');
+                    }
+                    window.dispatchEvent(new Event('resize'));
+                } catch (_) {}
+            }, 180);
+        });
+    } catch (e) {
+        console.warn('recoverUiAfterResume', e);
+    }
+}
+
+async function setupCameraRestoreHandler() {
+    if (cameraRestoreHandlerReady) return;
+    if (!isNativeApp() || !window.RotaFlowCap?.App?.addListener) return;
+    cameraRestoreHandlerReady = true;
+    try {
+        await window.RotaFlowCap.App.addListener('appRestoredResult', async (event) => {
+            try {
+                recoverUiAfterResume();
+                if (!event || event.pluginId !== 'Camera' || !event.success) return;
+                await enqueuePhotoOp(() => applyRestoredCameraPhoto(event.data));
+                recoverUiAfterResume();
+            } catch (e) {
+                console.warn('appRestoredResult', e);
+            }
+        });
+        await window.RotaFlowCap.App.addListener('resume', () => {
+            recoverUiAfterResume();
+            setTimeout(recoverUiAfterResume, 200);
+            if (gpsEnabled) {
+                startBackgroundGpsWatch();
+                syncBackgroundGpsTargets();
+            }
+        });
+        await window.RotaFlowCap.App.addListener('appStateChange', (state) => {
+            if (state && state.isActive) {
+                recoverUiAfterResume();
+                if (gpsEnabled) {
+                    startBackgroundGpsWatch();
+                    syncBackgroundGpsTargets();
+                }
+            }
+        });
+        document.addEventListener('visibilitychange', () => {
+            if (document.visibilityState === 'visible') recoverUiAfterResume();
+        });
+    } catch (e) {
+        console.warn('setupCameraRestoreHandler', e);
+        cameraRestoreHandlerReady = false;
+    }
+}
+
+let photoMigrateQueued = false;
+function scheduleBackgroundPhotoMigrate() {
+    if (photoMigrateQueued) return;
+    photoMigrateQueued = true;
+    const run = async () => {
+        try {
+            // Só migra base64 legado → IndexedDB, sem forçar tudo na UI.
+            for (const d of deliveries) {
+                if (Array.isArray(d.photos) && d.photos.some(p => typeof p === 'string' && p.startsWith('data:'))) {
+                    await hydrateItemPhotos(d);
+                }
+            }
+            syncActiveRouteIntoRoutes();
+            for (const r of routes) {
+                if (!r || r.id === activeRouteId) continue;
+                for (const d of (r.deliveries || [])) {
+                    if (Array.isArray(d.photos) && d.photos.some(p => typeof p === 'string' && p.startsWith('data:'))) {
+                        await hydrateItemPhotos(d);
+                    }
+                }
+            }
+            for (const a of agenda) {
+                if (Array.isArray(a.photos) && a.photos.some(p => typeof p === 'string' && p.startsWith('data:'))) {
+                    await hydrateItemPhotos(a);
+                }
+            }
+            persistStorageNow();
+        } catch (e) {}
+        photoMigrateQueued = false;
+    };
+    if (typeof requestIdleCallback === 'function') requestIdleCallback(() => { run(); }, { timeout: 2500 });
+    else setTimeout(run, 600);
+}
+
+let listPhotoHydrateTimer = null;
+async function hydrateAgendaListPhotos() {
+    let needsRender = false;
+    for (const a of agenda) {
+        const hasIds = Array.isArray(a.photoIds) && a.photoIds.length;
+        const hasUrls = Array.isArray(a.photos) && a.photos.length;
+        // Só a 1ª foto para thumb da lista — evita carregar dezenas de data URLs na RAM.
+        if (hasIds && !hasUrls) {
+            await hydrateItemPhotos(a, { maxPhotos: 1 });
+            needsRender = true;
+        }
+    }
+    if (needsRender) renderAgendaList();
+}
+function scheduleListPhotoHydration() {
+    // Entregas: fotos sob demanda no painel. Agenda: hidrata thumbs (lista menor).
+    clearTimeout(listPhotoHydrateTimer);
+    listPhotoHydrateTimer = setTimeout(() => {
+        hydrateAgendaListPhotos().catch(() => {});
+    }, 350);
+}
+
+// ========== ROTAS MÚLTIPLAS ==========
+function nextRouteName() {
+    let max = 0;
+    for (const r of routes) {
+        const m = /^Rota\s+(\d+)$/i.exec(String(r.name || '').trim());
+        if (m) max = Math.max(max, parseInt(m[1], 10));
+    }
+    return `Rota ${max + 1}`;
+}
+
+function createEmptyRoute(name) {
+    return {
+        id: `r_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+        name: name || nextRouteName(),
+        deliveries: [],
+        nextSequenceNumber: 1,
+        routeActive: false,
+        routeMetrics: null,
+        createdAt: Date.now()
+    };
+}
+
+function migrateDeliveryFields(d) {
+    migrateTelefones(d); migrateFavorito(d);
+    if (d.pacotes === undefined) d.pacotes = 1;
+    if (d.savedToAgenda === undefined) d.savedToAgenda = false;
+    if (!d.photos) d.photos = [];
+    if (!d.photoIds) d.photoIds = [];
+    if (d.notes === undefined) d.notes = '';
+    normalizeDeliveryCoords(d);
+}
+
+function normalizeRouteRecord(raw) {
+    const r = raw && typeof raw === 'object' ? raw : {};
+    const deliveriesList = Array.isArray(r.deliveries) ? r.deliveries : [];
+    deliveriesList.forEach(migrateDeliveryFields);
+    return {
+        id: r.id || `r_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+        name: r.name || 'Rota 1',
+        deliveries: deliveriesList,
+        nextSequenceNumber: r.nextSequenceNumber || (deliveriesList.length + 1),
+        routeActive: !!r.routeActive,
+        routeMetrics: r.routeMetrics || null,
+        createdAt: r.createdAt || Date.now()
+    };
+}
+
+/** Espelha a rota ativa (deliveries em memória) de volta no array `routes`. */
+function syncActiveRouteIntoRoutes() {
+    if (!routes.length) {
+        const boot = createEmptyRoute('Rota 1');
+        boot.deliveries = deliveries;
+        boot.nextSequenceNumber = nextSequenceNumber;
+        boot.routeActive = !!routeActive;
+        boot.routeMetrics = routeMetrics;
+        routes = [boot];
+        activeRouteId = boot.id;
+        return;
+    }
+    let active = routes.find(r => r.id === activeRouteId);
+    if (!active) {
+        active = routes[0];
+        activeRouteId = active.id;
+    }
+    active.deliveries = deliveries;
+    active.nextSequenceNumber = nextSequenceNumber;
+    active.routeActive = !!routeActive;
+    active.routeMetrics = routeMetrics;
+}
+
+function clearMapRouteLines() {
+    routeRenderers.forEach(r => { try { r.setMap(null); } catch (_) {} });
+    routeRenderers = [];
+}
+
+function applyLoadedRouteState(route, { refreshMap = true } = {}) {
+    activeRouteId = route.id;
+    deliveries = route.deliveries || [];
+    nextSequenceNumber = route.nextSequenceNumber || (deliveries.length + 1);
+    routeActive = !!route.routeActive;
+    routeMetrics = route.routeMetrics || null;
+    seedIdCounter();
+    closeDeliveryPanel();
+    clearActiveStopNotification();
+    clearMapRouteLines();
+    if (refreshMap) {
+        rebuildMarkers(false);
+        if (routeActive) scheduleRouteRefresh();
+        else {
+            updateOptimizeFabVisibility();
+            updateProgressAndEstimates();
+        }
+    }
+    renderDeliveriesList();
+    renderRouteSwitcher();
+    updateLastIdDisplay(deliveries.length ? deliveries[deliveries.length - 1].sequentialId : null);
+    updateDaySummary();
+}
+
+/** Aceita o schema atual (`routes[]`) e o antigo (só `deliveries`) — ver lib/persist-helpers.js. */
+function hydrateRoutesFromData(data) {
+    const state = hydrateRoutesState(data, {
+        migrateDeliveryFields,
+        normalizeRouteRecord,
+        createEmptyRoute
+    });
+    routes = state.routes;
+    activeRouteId = state.activeRouteId;
+    deliveries = state.deliveries;
+    nextSequenceNumber = state.nextSequenceNumber;
+    routeActive = state.routeActive;
+    routeMetrics = state.routeMetrics;
+}
+
+function renderRouteSwitcher() {
+    const el = document.getElementById('routeSwitcher');
+    if (!el) return;
+    if (routes.length <= 1) {
+        el.hidden = true;
+        el.innerHTML = '';
+        return;
+    }
+    el.hidden = false;
+    el.innerHTML = routes.map(r => {
+        const count = (r.id === activeRouteId ? deliveries : (r.deliveries || [])).length;
+        const active = r.id === activeRouteId;
+        return `<button type="button" class="route-chip${active ? ' is-active' : ''}" role="tab" aria-selected="${active ? 'true' : 'false'}" data-route-id="${escapeHtml(r.id)}" title="${escapeHtml(r.name)}">${escapeHtml(r.name)}<span class="route-chip-count">${count}</span></button>`;
+    }).join('');
+    el.querySelectorAll('[data-route-id]').forEach(btn => {
+        btn.addEventListener('click', () => switchToRoute(btn.getAttribute('data-route-id')));
+    });
+}
+
+function switchToRoute(routeId) {
+    if (!routeId || routeId === activeRouteId) return;
+    const target = routes.find(r => r.id === routeId);
+    if (!target) return;
+    syncActiveRouteIntoRoutes();
+    applyLoadedRouteState(target);
+    persistStorageNow();
+    showToast(`Alternado para ${target.name}`);
+}
+
+function persistStorageNow() {
+    if (!authReady || !currentUser) return false;
+    try {
+        syncActiveRouteIntoRoutes();
+        // Só `routes[]` — o espelho `deliveries` saiu; dados antigos migram em hydrateRoutesFromData.
+        const payload = buildPersistPayload({ routes, activeRouteId, nextSequenceNumber, agenda, nextAgendaId });
+        localStorage.setItem(storageKey('data'), JSON.stringify(payload.data));
+        localStorage.setItem(storageKey('agenda'), JSON.stringify(payload.agenda));
+        localStorage.setItem(storageKey('profile'), JSON.stringify(userProfile));
+        localStorage.setItem(storageKey('updatedAt'), String(Date.now()));
+        if (storageFull) {
+            storageFull = false;
+            showToast("Espaço liberado. Dados salvos com sucesso");
+        }
+        return true;
+    } catch (e) {
+        if (!storageFull) {
+            storageFull = true;
+            showToast("Armazenamento insuficiente. Remova dados antigos ou faça um backup", true);
+        }
+        return false;
+    }
+}
+function saveStorage() {
+    clearTimeout(saveTimer);
+    saveTimer = setTimeout(persistStorageNow, 80);
+}
+
+// ========== HISTÓRICO DE DIAS ==========
+const HISTORY_MAX_DAYS = 30;
+let routeHistory = [];
+
+function localDateKey(d = new Date()) {
+    const y = d.getFullYear();
+    const m = String(d.getMonth() + 1).padStart(2, '0');
+    const day = String(d.getDate()).padStart(2, '0');
+    return `${y}-${m}-${day}`;
+}
+
+function formatHistoryDate(key) {
+    const [y, m, d] = String(key || '').split('-').map(Number);
+    if (!y || !m || !d) return key || '—';
+    try {
+        return new Date(y, m - 1, d).toLocaleDateString('pt-BR', {
+            weekday: 'short', day: '2-digit', month: 'short', year: 'numeric'
+        });
+    } catch (_) {
+        return key;
+    }
+}
+
+function routeDayStats(list) {
+    const arr = list || [];
+    return {
+        total: arr.length,
+        entregue: arr.filter(x => x.status === 'entregue').length,
+        falhou: arr.filter(x => x.status === 'falhou').length,
+        pendente: arr.filter(x => x.status !== 'entregue' && x.status !== 'falhou').length
+    };
+}
+
+function persistHistory() {
+    if (!authReady || !currentUser) return;
+    try {
+        localStorage.setItem(storageKey('history'), JSON.stringify(routeHistory.slice(0, HISTORY_MAX_DAYS)));
+    } catch (e) {
+        console.warn('history save', e);
+    }
+}
+
+function loadHistory() {
+    routeHistory = [];
+    try {
+        const raw = localStorage.getItem(storageKey('history'));
+        if (raw) routeHistory = JSON.parse(raw) || [];
+        if (!Array.isArray(routeHistory)) routeHistory = [];
+    } catch (_) {
+        routeHistory = [];
+    }
+}
+
+function snapshotDeliveriesForHistory() {
+    return cloneWithoutHeavyPhotos(deliveries).map(d => ({
+        ...d,
+        status: d.status,
+        voltarDepois: !!d.voltarDepois,
+        failReason: d.failReason || undefined
+    }));
+}
+
+function archiveCurrentRouteDay({ silent = false, clearAfter = false } = {}) {
+    if (!deliveries.length) {
+        if (!silent) showToast('Não há entregas para arquivar', true);
+        return false;
+    }
+    const dateKey = localDateKey();
+    const entry = {
+        id: `h_${dateKey}_${Date.now()}`,
+        date: dateKey,
+        savedAt: Date.now(),
+        deliveries: snapshotDeliveriesForHistory(),
+        nextSequenceNumber,
+        stats: routeDayStats(deliveries)
+    };
+    routeHistory = [entry, ...routeHistory.filter(h => h.date !== dateKey)].slice(0, HISTORY_MAX_DAYS);
+    persistHistory();
+    renderHistoryList();
+    if (!silent) showToast(`Dia ${formatHistoryDate(dateKey)} salvo no histórico`);
+    if (clearAfter) {
+        deliveries.forEach((d) => closeTrackingSession(d, d.status === 'entregue' || d.status === 'falhou' ? trackStatusFor(d) : 'encerrado'));
+        deliveries = [];
+        nextSequenceNumber = 1;
+        routeActive = false;
+        routeMetrics = null;
+        clearRouteOverlay();
+        saveStorage();
+        renderDeliveriesList();
+        renderRouteSwitcher();
+        rebuildMarkers(false);
+        updateLastIdDisplay(null);
+        closeDeliveryPanel();
+        clearActiveStopNotification();
+        renderAgendaList();
+    }
+    return true;
+}
+
+async function startNewRoute() {
+    syncActiveRouteIntoRoutes();
+    if (!deliveries.length) {
+        showToast('A rota atual já está vazia — adicione paradas ou troque de rota', true);
+        return;
+    }
+    const ok = await showConfirmModal({
+        title: 'Nova rota',
+        message: 'Criar outra rota vazia? A rota atual permanece intacta (entregas, status, fotos e otimização). A agenda não muda.',
+        confirmText: 'Criar rota'
+    });
+    if (!ok) return;
+    syncActiveRouteIntoRoutes();
+    const previousName = (routes.find(r => r.id === activeRouteId) || {}).name || 'Rota atual';
+    const route = createEmptyRoute();
+    routes.push(route);
+    applyLoadedRouteState(route);
+    persistStorageNow();
+    showToast(`${route.name} criada — ${previousName} continua disponível`);
+}
+
+async function duplicateHistoryDay(historyId) {
+    const entry = routeHistory.find(h => h.id === historyId);
+    if (!entry || !entry.deliveries?.length) return;
+    const ok = await showConfirmModal({
+        title: 'Duplicar dia',
+        message: `Adicionar ${entry.deliveries.length} parada(s) de ${formatHistoryDate(entry.date)} na rota de hoje como pendentes?`,
+        confirmText: 'Duplicar'
+    });
+    if (!ok) return;
+
+    let added = 0;
+    for (const src of entry.deliveries) {
+        const seqId = getSequentialId(nextSequenceNumber);
+        nextSequenceNumber++;
+        const copy = {
+            id: newId(),
+            sequentialId: seqId,
+            nome: src.nome || '',
+            endereco: src.endereco || '',
+            lat: src.lat,
+            lng: src.lng,
+            telefones: Array.isArray(src.telefones) ? src.telefones.map(p => ({ ...p })) : [],
+            pacotes: src.pacotes || 1,
+            notes: src.notes || '',
+            status: 'pendente',
+            favorito: !!src.favorito,
+            savedToAgenda: !!src.savedToAgenda,
+            photos: [],
+            photoIds: [],
+            voltarDepois: false
+        };
+        deliveries.push(copy);
+        added++;
+    }
+    seedIdCounter();
+    clearRouteOverlay();
+    persistStorageNow();
+    renderDeliveriesList();
+    rebuildMarkers(true);
+    switchSidebarTab('rota');
+    showToast(`${added} parada(s) adicionada(s) à rota de hoje`);
+}
+
+async function deleteHistoryDay(historyId) {
+    const entry = routeHistory.find(h => h.id === historyId);
+    if (!entry) return;
+    const ok = await showConfirmModal({
+        title: 'Excluir dia',
+        message: `Remover ${formatHistoryDate(entry.date)} do histórico?`,
+        confirmText: 'Excluir',
+        danger: true
+    });
+    if (!ok) return;
+    routeHistory = routeHistory.filter(h => h.id !== historyId);
+    persistHistory();
+    renderHistoryList();
+    showToast('Dia removido do histórico');
+}
+
+function renderHistoryList() {
+    const container = document.getElementById('historyList');
+    if (!container) return;
+    if (!routeHistory.length) {
+        container.innerHTML = `<div class="empty-state">
+            <span class="empty-state-mark" aria-hidden="true"></span>
+            <span class="empty-state-title">Nenhum dia arquivado</span>
+            <span class="empty-state-msg">Quando o dia terminar, arquive a rota para consultar depois.</span>
+            <button type="button" class="empty-state-cta" data-empty-cta="rota"><i class="fas fa-route"></i> Ir para a rota</button>
+        </div>`;
+        return;
+    }
+    container.innerHTML = routeHistory.map(h => {
+        const s = h.stats || routeDayStats(h.deliveries || []);
+        return `<div class="history-item" data-history-id="${escapeHtml(h.id)}">
+            <div class="history-item-header">
+                <div>
+                    <div class="history-item-title">${escapeHtml(formatHistoryDate(h.date))}</div>
+                    <div class="history-item-meta">${s.total} parada(s)</div>
+                </div>
+            </div>
+            <div class="history-stats">
+                <span class="history-stat ok">${s.entregue} entregues</span>
+                <span class="history-stat warn">${s.falhou} falhas</span>
+                <span class="history-stat">${s.pendente} pendentes</span>
+            </div>
+            <div class="history-actions">
+                <button type="button" class="action-btn" data-history-action="duplicate"><i class="fas fa-copy"></i> Duplicar p/ hoje</button>
+                <button type="button" class="action-btn danger-ghost" data-history-action="delete"><i class="fas fa-trash"></i> Excluir</button>
+            </div>
+        </div>`;
+    }).join('');
+}
+
+function setupHistoryListDelegation() {
+    const container = document.getElementById('historyList');
+    if (!container || container.dataset.ready) return;
+    container.dataset.ready = '1';
+    container.addEventListener('click', (e) => {
+        const btn = e.target.closest('[data-history-action]');
+        const item = e.target.closest('.history-item');
+        if (!btn || !item) return;
+        const id = item.dataset.historyId;
+        if (btn.dataset.historyAction === 'duplicate') duplicateHistoryDay(id);
+        if (btn.dataset.historyAction === 'delete') deleteHistoryDay(id);
+    });
+}
+
+// ========== DESFAZER RÁPIDO (SNACKBAR) ==========
+let undoSnackbarTimer = null;
+let undoSnackbarTargetId = null;
+
+function hideUndoSnackbar() {
+    clearTimeout(undoSnackbarTimer);
+    undoSnackbarTimer = null;
+    undoSnackbarTargetId = null;
+    const el = document.getElementById('undoSnackbar');
+    if (el) el.hidden = true;
+}
+
+function showUndoSnackbar(deliveryId, message) {
+    const el = document.getElementById('undoSnackbar');
+    const text = document.getElementById('undoSnackbarText');
+    if (!el || !text) return;
+    undoSnackbarTargetId = deliveryId;
+    text.textContent = message;
+    el.hidden = false;
+    clearTimeout(undoSnackbarTimer);
+    undoSnackbarTimer = setTimeout(hideUndoSnackbar, 6000);
+}
+
+function setupUndoSnackbar() {
+    document.getElementById('undoSnackbarBtn')?.addEventListener('click', () => {
+        if (undoSnackbarTargetId == null) return;
+        const id = undoSnackbarTargetId;
+        hideUndoSnackbar();
+        undoDeliveryStatus(id, { keepPanel: true, keepMinimized: true });
+    });
+}
+
+/** uid cujos dados já estão em memória (evita o 2º loadStorage no initMap). */
+let storageLoadedUid = null;
+
+async function loadStorage() {
+    deliveries = [];
+    agenda = [];
+    routes = [];
+    activeRouteId = null;
+    nextSequenceNumber = 1;
+    nextAgendaId = 1;
+    routeActive = false;
+    routeMetrics = null;
+
+    if (currentUid() === 'guest' || (currentUser && currentUser.provider === 'local')) {
+        if (!localStorage.getItem(storageKey('data')) && localStorage.getItem('rotaflow_data')) {
+            localStorage.setItem(storageKey('data'), localStorage.getItem('rotaflow_data'));
+            if (localStorage.getItem('rotaflow_agenda')) localStorage.setItem(storageKey('agenda'), localStorage.getItem('rotaflow_agenda'));
+            if (localStorage.getItem('rotaflow_profile')) localStorage.setItem(storageKey('profile'), localStorage.getItem('rotaflow_profile'));
+        }
+    }
+
+    const saved = localStorage.getItem(storageKey('data'));
+    if (saved) {
+        try {
+            const data = JSON.parse(saved);
+            hydrateRoutesFromData(data);
+        } catch (e) {
+            hydrateRoutesFromData({});
+        }
+    } else {
+        hydrateRoutesFromData({});
+    }
+    const savedAgenda = localStorage.getItem(storageKey('agenda'));
+    if (savedAgenda) {
+        try {
+            const data = JSON.parse(savedAgenda);
+            agenda = data.agenda || [];
+            agenda.forEach(a => {
+                migrateTelefones(a); migrateFavorito(a);
+                if (a.pacotes === undefined) a.pacotes = 1;
+                if (!a.photos) a.photos = [];
+                if (!a.photoIds) a.photoIds = [];
+                if (a.notes === undefined) a.notes = '';
+                normalizeDeliveryCoords(a);
+            });
+            nextAgendaId = data.nextAgendaId || 1;
+        } catch (e) {}
+    }
+    const savedProfile = localStorage.getItem(storageKey('profile'));
+    if (savedProfile) { try { userProfile = JSON.parse(savedProfile); } catch (e) {} }
+
+    if (!userProfile.empresa || !String(userProfile.empresa).trim()) {
+        userProfile.empresa = EMPRESA_PADRAO;
+    }
+
+    // Mensagem WhatsApp: template completo (sem km/ETA). Migra saudação curta e templates antigos.
+    if (userProfile.mensagemPadrao) {
+        const beforeMsg = userProfile.mensagemPadrao;
+        const alreadyNew = /Estamos chegando em breve/.test(beforeMsg) && /\{endereco\}/.test(beforeMsg) && /\{link\}/.test(beforeMsg);
+        const looksShort =
+            /Acompanhe sua entrega/.test(beforeMsg) || /em tempo real/.test(beforeMsg);
+        const looksLegacy =
+            /\{km\}|\{min\}|Faltam cerca de/.test(beforeMsg) ||
+            (/Sua encomenda \(/.test(beforeMsg) && !alreadyNew);
+        if (!alreadyNew && (looksShort || looksLegacy || !beforeMsg.trim())) {
+            userProfile.mensagemPadrao = MENSAGEM_WHATSAPP_PADRAO;
+        } else if (!alreadyNew) {
+            userProfile.mensagemPadrao = beforeMsg
+                .replace(/\n?⏱\s*Faltam cerca de[^\n]*/g, '')
+                .replace(/\n?[^\n]*\{km\}[^\n]*/g, '')
+                .replace(/\n?[^\n]*\{min\}[^\n]*/g, '')
+                .replace(/\n{3,}/g, '\n\n')
+                .trim();
+            if (!/\{link\}/.test(userProfile.mensagemPadrao)) {
+                userProfile.mensagemPadrao = userProfile.mensagemPadrao.replace(/\s*$/, '\n{link}');
+            }
+        }
+        // Migra "📦 Correx express" hardcoded → {empresa}
+        if (/📦\s*Correx express/i.test(userProfile.mensagemPadrao) && !/\{empresa\}/.test(userProfile.mensagemPadrao)) {
+            userProfile.mensagemPadrao = userProfile.mensagemPadrao.replace(/📦\s*Correx express/gi, '📦 {empresa}');
+        }
+        if (userProfile.mensagemPadrao !== beforeMsg) {
+            try { localStorage.setItem(storageKey('profile'), JSON.stringify(userProfile)); } catch (e) {}
+        }
+    } else {
+        userProfile.mensagemPadrao = MENSAGEM_WHATSAPP_PADRAO;
+        try { localStorage.setItem(storageKey('profile'), JSON.stringify(userProfile)); } catch (e) {}
+    }
+
+    // Fotos sob demanda (painel/lista), não no boot.
+    scheduleBackgroundPhotoMigrate();
+    scheduleOrphanPhotoPrune();
+    loadHistory();
+    persistStorageNow();
+
+    seedIdCounter();
+    document.getElementById("agendaCountBadge").innerHTML = agenda.length;
+    updateDeliveryStats();
+    renderDeliveriesList();
+    renderRouteSwitcher();
+    renderAgendaList();
+    renderHistoryList();
+    scheduleListPhotoHydration();
+    storageLoadedUid = currentUid();
+    refreshMapAfterStorageLoad();
+}
+
+/** Parte de loadStorage que depende do mapa — o initMap só precisa disto se os dados já carregaram. */
+function refreshMapAfterStorageLoad() {
+    if (map) rebuildMarkers(false);
+    updateProgressAndEstimates();
+    updateOptimizeFabVisibility();
+}
+
+function findAgendaItemForDelivery(delivery) {
+    if (!delivery || !delivery.endereco) return null;
+    const key = String(delivery.endereco).toLowerCase();
+    return agenda.find(item => String(item.endereco || '').toLowerCase() === key) || null;
+}
+
+function syncFavoritoToAgenda(delivery) {
+    const agendaItem = findAgendaItemForDelivery(delivery);
+    if (agendaItem && agendaItem.favorito !== delivery.favorito) {
+        agendaItem.favorito = delivery.favorito;
+        saveStorage();
+        renderAgendaList();
+        return true;
+    }
+    return false;
+}
+function syncAgendaByDelivery(delivery) {
+    const agendaItem = findAgendaItemForDelivery(delivery);
+    if (agendaItem) {
+        let changed = false;
+        const str1 = JSON.stringify(delivery.telefones || []);
+        const str2 = JSON.stringify(agendaItem.telefones || []);
+        if (str1 !== str2) {
+            agendaItem.telefones = delivery.telefones || [];
+            changed = true;
+        }
+        if (agendaItem.favorito !== delivery.favorito) {
+            agendaItem.favorito = delivery.favorito;
+            changed = true;
+        }
+        if (changed) {
+            saveStorage();
+            renderAgendaList();
+            showToast("Agenda atualizada");
+        }
+    }
+}
+
+// ========== VALIDAÇÃO DE ENDEREÇO DUPLICADO NA ROTA ==========
+let duplicateCheckTimer = null;
+function checkAddressDuplicate() {
+    const addressInput = document.getElementById('address');
+    const warningDiv = document.getElementById('addressWarning');
+    const warningText = document.getElementById('addressWarningText');
+    const address = addressInput.value.trim().toLowerCase();
+    if (!address) {
+        warningDiv.classList.remove('show');
+        addressInput.classList.remove('duplicate');
+        return;
+    }
+    const found = findActiveRouteByAddress(address);
+    if (found) {
+        warningText.textContent = `Este endereço já está na rota (ID ${found.sequentialId})`;
+        warningDiv.classList.add('show');
+        addressInput.classList.add('duplicate');
+        warningDiv.onclick = () => {
+            document.getElementById('customerName').value = found.nome;
+            document.getElementById('address').value = found.endereco;
+            tempPhones = found.telefones || [];
+            renderTempPhones();
+            document.getElementById('pacotes').value = found.pacotes || 1;
+            warningDiv.classList.remove('show');
+            addressInput.classList.remove('duplicate');
+            showToast(`Dados da entrega ${found.sequentialId} preenchidos`);
+        };
+    } else {
+        warningDiv.classList.remove('show');
+        addressInput.classList.remove('duplicate');
+        warningDiv.onclick = null;
+    }
+}
+
+// ========== MARCADORES ==========
+function applyPinVisual(marker, delivery, { highlighted = false } = {}) {
+    if (!marker || !delivery) return;
+    const pin = buildMapPinIcon(delivery, { highlighted });
+    if (useNativeMap) {
+        marker._muted = isMutedPin(delivery);
+        marker._highlighted = highlighted;
+        marker._color = highlighted ? '#1E3A8A' : markerColorFor(delivery);
+        marker._label = String(delivery.sequentialId);
+        marker.setTitle(`${delivery.sequentialId} - ${delivery.nome}`);
+        marker._sync();
+        return;
+    }
+    marker.setIcon(webMarkerIconFromPin(pin));
+    marker.setLabel(null);
+    marker.setTitle(`${delivery.sequentialId} - ${delivery.nome}`);
+    marker.setZIndex(highlighted ? 30 : (isMutedPin(delivery) ? 1 : 10));
+}
+
+function createPinMarker(delivery) {
+    const opts = {
+        sequentialId: delivery.sequentialId,
+        position: { lat: delivery.lat, lng: delivery.lng },
+        label: { text: String(delivery.sequentialId) },
+        icon: markerIcon(markerColorFor(delivery), 1, isMutedPin(delivery)),
+        title: `${delivery.sequentialId} - ${delivery.nome}`,
+        muted: isMutedPin(delivery)
+    };
+    let marker;
+    if (useNativeMap) {
+        marker = createNativeMarkerShim(opts);
+        applyPinVisual(marker, delivery);
+    } else {
+        const pin = buildMapPinIcon(delivery);
+        marker = new google.maps.Marker({
+            position: opts.position,
+            map: map,
+            icon: webMarkerIconFromPin(pin),
+            title: opts.title,
+            optimized: true,
+            zIndex: isMutedPin(delivery) ? 1 : 10
+        });
+        marker.sequentialId = delivery.sequentialId;
+    }
+    marker.addListener("click", () => {
+        const d = deliveries.find(x => x.sequentialId === marker.sequentialId);
+        if (!d) return;
+        highlightMarker(marker, d);
+        openDeliveryPanel(d, { keepMinimized: true });
+    });
+    return marker;
+}
+
+function highlightMarker(marker, delivery) {
+    if (highlightedMarker && highlightedMarker !== marker) {
+        resetMarkerStyle(highlightedMarker);
+    }
+    highlightedMarker = marker;
+    applyPinVisual(marker, delivery, { highlighted: true });
+}
+
+function resetMarkerStyle(marker) {
+    const delivery = deliveries.find(d => d.sequentialId === marker.sequentialId);
+    if (!delivery) return;
+    applyPinVisual(marker, delivery, { highlighted: false });
+}
+
+function updateMarkerIcon(marker, delivery) {
+    if (!marker || !delivery) return;
+    applyPinVisual(marker, delivery, { highlighted: highlightedMarker === marker });
+}
+
+function rebuildMarkers(centerMap = true) {
+    // Sync incremental: evita destruir/recriar dezenas de Markers a cada ação.
+    if (!map) return;
+    const keep = new Set();
+    for (const del of deliveries) {
+        if (!shouldShowOnMap(del)) continue;
+        keep.add(del.sequentialId);
+        upsertMarker(del);
+    }
+    for (const seq of [...markersBySeq.keys()]) {
+        if (!keep.has(seq)) removeMarkerById(seq);
+    }
+    if (highlightedMarker && !markersBySeq.has(highlightedMarker.sequentialId)) highlightedMarker = null;
+    if (centerMap) centerMapOnMarkers();
+    updateDeliveryStats();
+}
+
+function centerMapOnMarkers() {
+    if (!map) return;
+    // Prioriza pendentes no enquadramento; se todas entregues, usa todas
+    let pts = deliveries.filter(d => shouldShowOnMap(d) && d.status !== 'entregue').map(d => ({ lat: d.lat, lng: d.lng }));
+    if (!pts.length) pts = deliveries.filter(shouldShowOnMap).map(d => ({ lat: d.lat, lng: d.lng }));
+    if (!pts.length) {
+        map.setCenter(PORTO_VELHO_CENTER);
+        return;
+    }
+    if (useNativeMap) {
+        let minLat = pts[0].lat, maxLat = pts[0].lat, minLng = pts[0].lng, maxLng = pts[0].lng;
+        pts.forEach(p => {
+            minLat = Math.min(minLat, p.lat); maxLat = Math.max(maxLat, p.lat);
+            minLng = Math.min(minLng, p.lng); maxLng = Math.max(maxLng, p.lng);
+        });
+        map.fitBounds({
+            southwest: { lat: minLat, lng: minLng },
+            northeast: { lat: maxLat, lng: maxLng },
+            center: { lat: (minLat + maxLat) / 2, lng: (minLng + maxLng) / 2 }
+        });
+        return;
+    }
+    let bounds = new google.maps.LatLngBounds();
+    pts.forEach(p => bounds.extend(p));
+    map.fitBounds(bounds);
+}
+
+function updateDeliveryStats() {
+    const total = deliveries.length;
+    const badge = document.getElementById('deliveryCountBadge');
+    if (badge) badge.innerHTML = total;
+    updateProgressAndEstimates();
+    updateOptimizeFabVisibility();
+}
+
+/** ETA da parada: preferir dados da otimização; senão heurística GPS→parada. */
+function estimateStopEta(stop) {
+    if (!stop || !isActiveStop(stop)) return null;
+    if (typeof stop.etaSeconds === 'number' && stop.etaSeconds >= 0
+        && routeActive && routeMetrics
+        && routeMetrics.signature === routeSignature(pendingStops())) {
+        return { seconds: stop.etaSeconds, source: 'route' };
+    }
+    if (typeof stop.legSeconds === 'number' && stop.legSeconds >= 0
+        && routeActive && routeMetrics
+        && routeMetrics.signature === routeSignature(pendingStops())) {
+        return { seconds: stop.legSeconds, source: 'leg' };
+    }
+    if (startPoint && hasMapCoords(stop)) {
+        const km = haversineDistance(startPoint.lat, startPoint.lng, Number(stop.lat), Number(stop.lng));
+        if (Number.isFinite(km)) {
+            // ~25 km/h média urbana — aproximação honesta, não Directions.
+            const seconds = Math.max(60, Math.round((km / 25) * 3600));
+            return { seconds, source: 'approx' };
+        }
+    }
+    return null;
+}
+
+function isMapMenuOpen() {
+    const app = document.getElementById('appContainer');
+    return !!(app && !app.classList.contains('sidebar-hidden'));
+}
+
+function hideMapSelectedChip() {
+    const chip = document.getElementById('mapNextChip');
+    if (!chip) return;
+    chip.hidden = true;
+    chip.classList.remove('is-visible');
+    chip._selectedId = null;
+}
+
+/** HUD da parada selecionada no mapa — só aparece com pin/seleção ativa, some com o menu. */
+function updateMapNextChip() {
+    const chip = document.getElementById('mapNextChip');
+    const nameEl = document.getElementById('mapNextChipName');
+    const clientEl = document.getElementById('mapNextChipClient');
+    const labelEl = document.getElementById('mapNextChipLabel');
+    const etaEl = document.getElementById('mapNextChipEta');
+    if (!chip || !nameEl) return;
+
+    const selected = currentSelectedDelivery;
+    const panel = document.getElementById('deliveryPanel');
+    const panelOpen = !!(panel && panel.classList.contains('open') && selected);
+
+    if (!selected || !panelOpen || isMapMenuOpen()) {
+        hideMapSelectedChip();
+        return;
+    }
+
+    // ID + nome em destaque; rua quieta (3ª linha)
+    const idText = String(selected.sequentialId || '—');
+    const nome = String(selected.nome || '').trim() || 'Cliente';
+    const street = shortStreetAddress(selected.endereco);
+    nameEl.textContent = idText;
+    if (clientEl) clientEl.textContent = nome;
+    if (labelEl) labelEl.textContent = street !== '—' ? street : 'Endereço não informado';
+
+    const eta = estimateStopEta(selected);
+    if (etaEl) {
+        if (eta) {
+            const prefix = eta.source === 'approx' ? '~' : '';
+            etaEl.textContent = prefix + formatDuration(eta.seconds);
+            etaEl.hidden = false;
+            etaEl.removeAttribute('hidden');
+        } else {
+            etaEl.textContent = '';
+            etaEl.hidden = true;
+        }
+    }
+
+    chip.hidden = false;
+    chip.classList.add('is-visible');
+    chip._selectedId = selected.id;
+    chip.title = [idText, nome, street !== '—' ? street : ''].filter(Boolean).join(' · ')
+        || selected.endereco
+        || 'Parada selecionada';
+    chip.setAttribute('aria-label', `Focar mapa na parada ${idText}, ${nome}${street !== '—' ? `, ${street}` : ''}`);
+}
+
+function updateDaySummary() {
+    const root = document.getElementById('daySummary');
+    if (!root) return;
+    const stats = routeDayStats(deliveries);
+    const elE = document.getElementById('daySumEntregue');
+    const elF = document.getElementById('daySumFalhou');
+    const elKm = document.getElementById('daySumKm');
+    const kmItem = document.getElementById('daySumKmItem');
+    if (elE) elE.textContent = String(stats.entregue);
+    if (elF) elF.textContent = String(stats.falhou);
+
+    let kmText = '—';
+    const pending = pendingStops();
+    if (routeActive && routeMetrics && routeMetrics.signature === routeSignature(pending)
+        && typeof routeMetrics.meters === 'number' && routeMetrics.meters >= 0) {
+        kmText = formatKm(routeMetrics.meters) + ' rest.';
+    }
+    if (elKm) elKm.textContent = kmText;
+    if (kmItem) kmItem.title = kmText === '—'
+        ? 'Quilometragem disponível após otimizar a rota'
+        : 'Distância restante da rota otimizada';
+
+    root.hidden = deliveries.length === 0;
+    renderRouteSwitcher();
+}
+
+function updateProgressAndEstimates() {
+    updateDaySummary();
+    updateMapNextChip();
+    maybeShowBackupReminder();
+}
+
+function updateLastIdDisplay(deliveryId) {
+    const container = document.getElementById('lastIdContainer');
+    const valueSpan = document.getElementById('lastIdValue');
+    if (!container || !valueSpan) return;
+    if (deliveryId) {
+        valueSpan.innerText = deliveryId;
+        container.classList.add('show');
+        container.style.display = '';
+    } else {
+        valueSpan.innerText = '—';
+        container.classList.remove('show');
+        container.style.display = '';
+    }
+}
+
+// ========== LIMPEZA DO FORMULÁRIO ==========
+function clearForm() {
+    document.getElementById("customerName").value = "";
+    document.getElementById("address").value = "";
+    document.getElementById("newPhoneInput").value = "";
+    document.getElementById("newPhoneLabel").value = "";
+    tempPhones = [];
+    renderTempPhones();
+    document.getElementById("pacotes").value = "1";
+    document.getElementById("saveToAgendaCheckbox").checked = false;
+    document.getElementById("nameSuggestions").style.display = 'none';
+    document.getElementById('addressWarning').classList.remove('show');
+    document.getElementById('address').classList.remove('duplicate');
+}
+
+// ========== PAINEL INFERIOR ==========
+/** Centra o mapa na entrega (JS Maps ou facade nativa Capacitor). */
+function focusMapOnDelivery(delivery, opts = {}) {
+    if (!map || !delivery || !hasMapCoords(delivery)) return;
+    const lat = Number(delivery.lat);
+    const lng = Number(delivery.lng);
+    if (!Number.isFinite(lat) || !Number.isFinite(lng)) return;
+    const pos = { lat, lng };
+    const targetZoom = Number.isFinite(opts.zoom) ? opts.zoom : 16;
+    try {
+        if (useNativeMap && nativeGoogleMap && typeof nativeGoogleMap.setCamera === 'function') {
+            const cur = typeof map.getZoom === 'function' ? map.getZoom() : null;
+            const zoom = (cur == null || cur < targetZoom - 0.35 || opts.forceZoom)
+                ? targetZoom
+                : cur;
+            nativeMapZoom = zoom;
+            nativeGoogleMap.setCamera({
+                coordinate: pos,
+                zoom,
+                animate: opts.animate !== false
+            }).catch((e) => console.warn('focusMapOnDelivery native', e));
+            return;
+        }
+        map.panTo(pos);
+        const z = typeof map.getZoom === 'function' ? map.getZoom() : null;
+        if (z == null || z < targetZoom - 0.35 || opts.forceZoom) {
+            map.setZoom(targetZoom);
+        }
+    } catch (e) {
+        console.warn('focusMapOnDelivery', e);
+    }
+}
+
+function focusDeliveryInPanel(delivery, direction = 0, opts = {}) {
+    if (!delivery) return;
+    openDeliveryPanel(delivery, opts);
+    const marker = getMarker(delivery.sequentialId);
+    if (marker) highlightMarker(marker, delivery);
+    // Swipe entre entregas: não mexe no mapa. Chip / foco explícito: pan + zoom.
+    if (opts.pan === true) focusMapOnDelivery(delivery, { zoom: opts.zoom });
+    if (direction !== 0) animatePanelSwipe(direction);
+}
+
+function animatePanelSwipe(direction) {
+    const content = document.querySelector('#deliveryPanel .panel-content');
+    if (!content) return;
+    content.classList.remove('swipe-anim-next', 'swipe-anim-prev');
+    void content.offsetWidth;
+    content.classList.add(direction > 0 ? 'swipe-anim-next' : 'swipe-anim-prev');
+}
+
+function getPanelDeliveryIndex() {
+    if (!currentSelectedDelivery) return -1;
+    return deliveries.findIndex(d => d.id === currentSelectedDelivery.id);
+}
+
+/** Ordem de navegação = ordem física da lista (Otimizar já reordena o array). */
+function getNavigationSequence() {
+    return deliveries;
+}
+
+function isActiveStop(d) {
+    return d && d.status !== 'entregue' && d.status !== 'falhou';
+}
+
+function isPreferredNextStop(d) {
+    return isActiveStop(d) && !d.voltarDepois;
+}
+
+function findNextInSequence(seq, fromIdx, pred, { wrap = false } = {}) {
+    const start = Math.max(fromIdx, -1) + 1;
+    for (let i = start; i < seq.length; i++) {
+        if (pred(seq[i])) return seq[i];
+    }
+    if (!wrap) return null;
+    const end = Math.max(fromIdx, 0);
+    for (let i = 0; i < end; i++) {
+        if (pred(seq[i])) return seq[i];
+    }
+    return null;
+}
+
+// direction: 1 = próxima (deslize esquerda), -1 = anterior (deslize direita)
+function goToAdjacentDelivery(direction, { preferPending = false, keepMinimized = false } = {}) {
+    if (!deliveries.length) {
+        closeDeliveryPanel();
+        return;
+    }
+    const panel = document.getElementById('deliveryPanel');
+    const stayMini = keepMinimized || !!(panel && panel.classList.contains('open') && panel.classList.contains('minimized'));
+    const seq = getNavigationSequence();
+    const idx = getPanelDeliveryIndex();
+
+    if (preferPending) {
+        // Primeiro só para frente (evita pular para outra rua no início da rota).
+        // Só dá a volta se não houver nada à frente.
+        const next =
+            findNextInSequence(seq, idx, isPreferredNextStop, { wrap: false }) ||
+            findNextInSequence(seq, idx, isActiveStop, { wrap: false }) ||
+            findNextInSequence(seq, idx, isPreferredNextStop, { wrap: true }) ||
+            findNextInSequence(seq, idx, isActiveStop, { wrap: true });
+        if (next) {
+            focusDeliveryInPanel(next, 1, { keepMinimized: stayMini, pan: false });
+            return;
+        }
+        if (idx >= 0) openDeliveryPanel(seq[idx], { keepMinimized: stayMini });
+        else {
+            closeDeliveryPanel();
+            clearActiveStopNotification();
+        }
+        showToast('Todas as entregas foram concluídas');
+        return;
+    }
+
+    if (idx < 0) {
+        focusDeliveryInPanel(seq[0], direction, { keepMinimized: stayMini, pan: false });
+        return;
+    }
+    const next = idx + direction;
+    if (next < 0) {
+        showToast('Você está na primeira entrega');
+        return;
+    }
+    if (next >= seq.length) {
+        showToast('Você está na última entrega');
+        return;
+    }
+    focusDeliveryInPanel(seq[next], direction, { keepMinimized: stayMini, pan: false });
+}
+
+function shortStreetAddress(endereco) {
+    if (!endereco) return '—';
+    const parts = String(endereco).split(',').map(s => s.trim()).filter(Boolean);
+    if (parts.length >= 2) return parts.slice(0, 2).join(', ');
+    return parts[0] || '—';
+}
+
+function deliveryProgressInfo(delivery) {
+    const total = deliveries.length;
+    let idx = deliveries.findIndex(d => d.id === delivery.id);
+    if (idx < 0) idx = 0;
+    const current = (typeof delivery.routeOrder === 'number') ? delivery.routeOrder : (idx + 1);
+    const remaining = deliveries.filter(isActiveStop).length;
+    return { current, total, remaining };
+}
+
+function fillDeliveryPanelMeta(delivery) {
+    const street = shortStreetAddress(delivery.endereco);
+    const { current, total } = deliveryProgressInfo(delivery);
+    const progress = `${current}/${total || 0}`;
+    const idText = String(delivery.sequentialId || '—');
+
+    const miniAddr = document.getElementById('panelMiniAddress');
+    const miniId = document.getElementById('panelMiniId');
+    const miniQty = document.getElementById('panelMiniQty');
+    const qty = delivery.pacotes || 1;
+    if (miniAddr) miniAddr.textContent = street;
+    if (miniId) miniId.textContent = idText;
+    if (miniQty) {
+        miniQty.textContent = String(qty);
+        miniQty.classList.toggle('pacotes-highlight', qty >= 2);
+    }
+    updatePanelMiniPhotoUi(delivery);
+
+    const title = document.getElementById('panelAddressTitle');
+    const prog = document.getElementById('panelProgressText');
+    const idBadge = document.getElementById('panelIdBadge');
+    if (title) title.textContent = street;
+    if (prog) prog.textContent = progress;
+    if (idBadge) idBadge.textContent = idText;
+}
+
+function minimizeDeliveryPanel() {
+    const panel = document.getElementById('deliveryPanel');
+    if (!panel || !panel.classList.contains('open')) return;
+    panel.classList.add('minimized');
+}
+
+function expandDeliveryPanel() {
+    const panel = document.getElementById('deliveryPanel');
+    if (!panel || !panel.classList.contains('open')) return;
+    panel.classList.remove('minimized');
+    const d = currentSelectedDelivery;
+    if (!d) return;
+    // Se abriu em modo mini sem hidratar fotos, completa ao expandir.
+    ensureItemPhotos(d).then(() => {
+        if (currentSelectedDelivery && currentSelectedDelivery.id === d.id) {
+            refreshPanelPhotos(d);
+        }
+    }).catch(() => {});
+}
+
+let panelSwipeConsumedUntil = 0;
+function wasPanelSwipeJustConsumed() {
+    return Date.now() < panelSwipeConsumedUntil;
+}
+function markPanelSwipeConsumed(ms = 400) {
+    panelSwipeConsumedUntil = Date.now() + ms;
+}
+
+function withMiniActionGuard(handler) {
+    return (e) => {
+        if (wasPanelSwipeJustConsumed()) {
+            if (e) {
+                e.preventDefault();
+                e.stopPropagation();
+            }
+            return;
+        }
+        if (e) {
+            e.preventDefault();
+            e.stopPropagation();
+        }
+        handler(e);
+    };
+}
+
+async function openMapsNavigation(delivery) {
+    if (!delivery || !hasMapCoords(delivery)) return;
+    const lat = Number(delivery.lat);
+    const lng = Number(delivery.lng);
+    const webUrl = `https://www.google.com/maps/dir/?api=1&destination=${lat},${lng}&travelmode=driving`;
+    if (isNativeApp()) {
+        // Preferência: app Google Maps em modo navegação no Android
+        const nativeNav = `google.navigation:q=${lat},${lng}`;
+        const ok = await openExternalUrl(nativeNav);
+        if (ok) return;
+    }
+    const opened = await openExternalUrl(webUrl);
+    if (!opened) showToast('Não foi possível abrir a navegação', true);
+}
+
+function setupPanelSwipe() {
+    const panel = document.getElementById('deliveryPanel');
+    if (!panel || panel.dataset.swipeReady) return;
+    panel.dataset.swipeReady = '1';
+    const mini = document.getElementById('panelMini');
+    let startX = 0, startY = 0, tracking = false;
+
+    const onStart = (x, y) => {
+        startX = x;
+        startY = y;
+        tracking = true;
+    };
+    const onEnd = (x, y) => {
+        if (!tracking || !panel.classList.contains('open')) return;
+        tracking = false;
+        const dx = x - startX;
+        const dy = y - startY;
+        const isMini = panel.classList.contains('minimized');
+        // Puxar para baixo → minimizar; para cima → expandir
+        if (Math.abs(dy) > 55 && Math.abs(dy) > Math.abs(dx) * 1.1) {
+            if (dy > 0) minimizeDeliveryPanel();
+            else expandDeliveryPanel();
+            return;
+        }
+        if (Math.abs(dx) < 55 || Math.abs(dx) < Math.abs(dy) * 1.15) return;
+        markPanelSwipeConsumed();
+        // Minimizado: troca entrega e permanece mini (não expandir).
+        goToAdjacentDelivery(dx < 0 ? 1 : -1, { keepMinimized: isMini });
+    };
+
+    const bindSwipeTarget = (el, { stopBubble = false, allowButtons = false } = {}) => {
+        if (!el) return;
+        el.addEventListener('touchstart', (e) => {
+            if (e.touches.length !== 1) return;
+            if (stopBubble) e.stopPropagation();
+            onStart(e.touches[0].clientX, e.touches[0].clientY);
+        }, { passive: true });
+        el.addEventListener('touchend', (e) => {
+            if (!e.changedTouches.length) return;
+            if (stopBubble) e.stopPropagation();
+            onEnd(e.changedTouches[0].clientX, e.changedTouches[0].clientY);
+        }, { passive: true });
+        el.addEventListener('pointerdown', (e) => {
+            if (e.pointerType === 'touch') return;
+            if (!allowButtons && e.target.closest('button, a, input, select, textarea')) return;
+            if (stopBubble) e.stopPropagation();
+            onStart(e.clientX, e.clientY);
+        });
+        el.addEventListener('pointerup', (e) => {
+            if (e.pointerType === 'touch') return;
+            if (stopBubble) e.stopPropagation();
+            onEnd(e.clientX, e.clientY);
+        });
+    };
+
+    // Expandido: gesto no painel. Mini: listener dedicado (pointer-events próprios).
+    bindSwipeTarget(panel, { allowButtons: false });
+    bindSwipeTarget(mini, { stopBubble: true, allowButtons: true });
+
+    document.getElementById('panelMiniInfo')?.addEventListener('click', (e) => {
+        if (wasPanelSwipeJustConsumed()) {
+            e.preventDefault();
+            e.stopPropagation();
+            return;
+        }
+        expandDeliveryPanel();
+    });
+    document.getElementById('panelHandle')?.addEventListener('click', () => {
+        if (panel.classList.contains('minimized')) expandDeliveryPanel();
+        else minimizeDeliveryPanel();
+    });
+}
+
+function renderDeliveryPanelActions(delivery) {
+    const actionsDiv = document.getElementById('panelActions');
+    const miniActions = document.getElementById('panelMiniActions');
+    if (!actionsDiv || !delivery) return;
+    actionsDiv.innerHTML = '';
+    if (miniActions) miniActions.innerHTML = '';
+
+    const hasPhone = !!(delivery.telefones && delivery.telefones.length);
+    const hasCoords = hasMapCoords(delivery);
+
+    // Expandido: Navegar e WhatsApp sempre que relevantes (não se excluem).
+    if (hasCoords) {
+        const navBtn = document.createElement('button');
+        navBtn.type = 'button';
+        navBtn.className = 'panel-action-btn nav-fallback';
+        navBtn.innerHTML = '<i class="fas fa-location-arrow"></i><span>Navegar</span>';
+        navBtn.onclick = () => openMapsNavigation(delivery);
+        actionsDiv.appendChild(navBtn);
+    }
+    if (hasPhone) {
+        const waBtn = document.createElement('button');
+        waBtn.type = 'button';
+        waBtn.className = 'panel-action-btn whatsapp-primary';
+        waBtn.innerHTML = '<i class="fab fa-whatsapp"></i><span>WhatsApp</span>';
+        waBtn.onclick = () => sendWhatsApp(delivery);
+        actionsDiv.appendChild(waBtn);
+    }
+
+    if (delivery.status === 'entregue' || delivery.status === 'falhou') {
+        const undoBtn = document.createElement('button');
+        undoBtn.type = 'button';
+        undoBtn.className = 'panel-action-btn undo';
+        undoBtn.innerHTML = '<i class="fas fa-rotate-left"></i><span>Desfazer</span>';
+        undoBtn.onclick = () => {
+            const mini = document.getElementById('deliveryPanel')?.classList.contains('minimized');
+            undoDeliveryStatus(delivery.id, { keepPanel: true, keepMinimized: mini });
+        };
+        actionsDiv.appendChild(undoBtn);
+    } else {
+        const failBtn = document.createElement('button');
+        failBtn.type = 'button';
+        failBtn.className = 'panel-action-btn fail';
+        failBtn.innerHTML = '<i class="fas fa-box"></i><span>Falhou</span>';
+        failBtn.onclick = () => markNotDelivered(delivery.id);
+        actionsDiv.appendChild(failBtn);
+
+        const deliverBtn = document.createElement('button');
+        deliverBtn.type = 'button';
+        deliverBtn.className = 'panel-action-btn deliver';
+        deliverBtn.innerHTML = '<i class="fas fa-box-open"></i><span>Entregar</span>';
+        deliverBtn.onclick = () => { markDelivered(delivery.id, { advance: true }); };
+        actionsDiv.appendChild(deliverBtn);
+    }
+
+    if (!miniActions) return;
+
+    const miniPhoto = document.createElement('button');
+    miniPhoto.type = 'button';
+    miniPhoto.className = 'mini-action-btn photo';
+    miniPhoto.title = 'Tirar foto desta entrega';
+    miniPhoto.setAttribute('aria-label', 'Tirar foto');
+    miniPhoto.innerHTML = '<i class="fas fa-camera"></i><span>Tirar foto</span>';
+    miniPhoto.onclick = withMiniActionGuard(() => capturePhotoForSelectedDelivery('camera'));
+    miniActions.appendChild(miniPhoto);
+
+    // Mini: Navegar + WhatsApp sempre que houver coords / telefone (mesmo com rota ativa).
+    if (hasCoords) {
+        const miniNav = document.createElement('button');
+        miniNav.type = 'button';
+        miniNav.className = 'mini-action-btn nav';
+        miniNav.innerHTML = '<i class="fas fa-location-arrow"></i><span>Navegar</span>';
+        miniNav.onclick = withMiniActionGuard(() => openMapsNavigation(delivery));
+        miniActions.appendChild(miniNav);
+    }
+    if (hasPhone) {
+        const miniWa = document.createElement('button');
+        miniWa.type = 'button';
+        miniWa.className = 'mini-action-btn whatsapp';
+        miniWa.innerHTML = '<i class="fab fa-whatsapp"></i><span>WhatsApp</span>';
+        miniWa.onclick = withMiniActionGuard(() => sendWhatsApp(delivery));
+        miniActions.appendChild(miniWa);
+    }
+    miniActions.classList.toggle('has-dual-cta', hasCoords && hasPhone);
+
+    if (delivery.status === 'entregue' || delivery.status === 'falhou') {
+        const miniUndo = document.createElement('button');
+        miniUndo.type = 'button';
+        miniUndo.className = 'mini-action-btn undo';
+        miniUndo.innerHTML = '<i class="fas fa-rotate-left"></i><span>Desfazer</span>';
+        miniUndo.onclick = withMiniActionGuard(() => {
+            undoDeliveryStatus(delivery.id, { keepPanel: true, keepMinimized: true });
+        });
+        miniActions.appendChild(miniUndo);
+    } else {
+        const miniFail = document.createElement('button');
+        miniFail.type = 'button';
+        miniFail.className = 'mini-action-btn fail';
+        miniFail.innerHTML = '<i class="fas fa-box"></i><span>Falhou</span>';
+        miniFail.onclick = withMiniActionGuard(() => markNotDelivered(delivery.id));
+        miniActions.appendChild(miniFail);
+
+        const miniDeliver = document.createElement('button');
+        miniDeliver.type = 'button';
+        miniDeliver.className = 'mini-action-btn deliver';
+        miniDeliver.innerHTML = '<i class="fas fa-box-open"></i><span>Entregar</span>';
+        miniDeliver.onclick = withMiniActionGuard(() => markDelivered(delivery.id, { advance: true }));
+        miniActions.appendChild(miniDeliver);
+    }
+}
+
+async function openDeliveryPanel(delivery, { keepMinimized = false } = {}) {
+    if (!delivery) return;
+    const stayMini = !!keepMinimized;
+    // Painel mini só precisa do contador — hidratar JPEGs aqui estoura RAM no Android ao "baixar" e avançar.
+    if (!stayMini) {
+        try {
+            await ensureItemPhotos(delivery);
+        } catch (e) {
+            console.warn('ensureItemPhotos', e);
+        }
+    }
+    currentSelectedDelivery = delivery;
+    const panel = document.getElementById('deliveryPanel');
+    if (!panel) return;
+    if (!stayMini) panel.classList.remove('minimized');
+    if ((delivery.pacotes || 1) >= 2) panel.classList.add('red-bg');
+    else panel.classList.remove('red-bg');
+
+    try {
+        fillDeliveryPanelMeta(delivery);
+        const nameEl = document.getElementById('panelName');
+        if (nameEl) nameEl.textContent = delivery.nome || '';
+
+        const pacotesSpan = document.getElementById('panelPacotesValue');
+        if (pacotesSpan) {
+            pacotesSpan.innerText = delivery.pacotes || 1;
+            pacotesSpan.classList.toggle('pacotes-highlight', (delivery.pacotes || 1) >= 2);
+        }
+
+        const phoneContainer = document.getElementById('panelPhone');
+        if (phoneContainer) {
+            if (delivery.telefones && delivery.telefones.length) {
+                phoneContainer.textContent = delivery.telefones.map(p => {
+                    const label = p.label ? p.label + ': ' : '';
+                    return label + formatPhoneShort(p.numero);
+                }).join(', ');
+            } else {
+                phoneContainer.textContent = 'Não informado';
+            }
+        }
+        const obsEl = document.getElementById('panelObsText');
+        if (obsEl) obsEl.innerText = delivery.notes ? delivery.notes : 'Nenhuma observação';
+        if (stayMini) updatePanelMiniPhotoUi(delivery);
+        else refreshPanelPhotos(delivery);
+        renderDeliveryPanelActions(delivery);
+    } catch (e) {
+        console.warn('openDeliveryPanel ui', e);
+    }
+    panel.classList.add('open');
+    if (stayMini) panel.classList.add('minimized');
+    else panel.classList.remove('minimized');
+    try { syncActiveStopNotification(delivery); } catch (_) {}
+    try { updateMapNextChip(); } catch (_) {}
+}
+
+function deliveryPhotoCount(delivery) {
+    if (!delivery) return 0;
+    if (Array.isArray(delivery.photoIds) && delivery.photoIds.length) return delivery.photoIds.length;
+    if (Array.isArray(delivery.photos) && delivery.photos.length) return delivery.photos.length;
+    return 0;
+}
+
+function updatePanelMiniPhotoUi(delivery) {
+    const count = deliveryPhotoCount(delivery);
+    const mini = document.getElementById('panelMiniPhoto');
+    const miniCount = document.getElementById('panelMiniPhotoCount');
+    const panelCount = document.getElementById('panelPhotoCount');
+    const saveAgendaBtn = document.getElementById('panelSavePhotoAgendaBtn');
+    if (miniCount) miniCount.textContent = String(count);
+    if (mini) {
+        if (count > 0) {
+            mini.hidden = false;
+            mini.title = count === 1 ? '1 foto nesta entrega' : `${count} fotos nesta entrega`;
+        } else {
+            mini.hidden = true;
+        }
+    }
+    if (panelCount) {
+        if (count > 0) {
+            panelCount.hidden = false;
+            panelCount.textContent = count === 1 ? '1 foto' : `${count} fotos`;
+        } else {
+            panelCount.hidden = true;
+            panelCount.textContent = '';
+        }
+    }
+    if (saveAgendaBtn) {
+        saveAgendaBtn.disabled = count === 0;
+        saveAgendaBtn.title = count === 0
+            ? 'Tire ou escolha uma foto primeiro'
+            : 'Salvar a última foto na agenda deste cliente';
+    }
+}
+
+async function copyDeliveryPhotoIndexToAgenda(agendaItem, delivery, idx) {
+    await ensureItemPhotos(delivery);
+    await ensureItemPhotos(agendaItem);
+    if (!Array.isArray(delivery.photos) || !delivery.photos[idx]) {
+        return { added: false, reason: 'missing' };
+    }
+    if (!Array.isArray(agendaItem.photos)) agendaItem.photos = [];
+    if (!Array.isArray(agendaItem.photoIds)) agendaItem.photoIds = [];
+
+    const srcId = Array.isArray(delivery.photoIds) ? delivery.photoIds[idx] : null;
+    if (srcId && agendaItem.photoIds.includes(srcId)) {
+        return { added: false, reason: 'dup' };
+    }
+
+    const dataUrl = delivery.photos[idx];
+    // Nova cópia no IndexedDB para a agenda não depender da foto da entrega.
+    const newId = await persistPhotoDataUrl(dataUrl);
+    agendaItem.photos.push(dataUrl);
+    agendaItem.photoIds.push(newId);
+    return { added: true, photoId: newId };
+}
+
+/**
+ * Salva foto da entrega no cliente correspondente da agenda (match por endereço).
+ * @param {object} delivery
+ * @param {number|null} photoIndex índice específico; null = última foto
+ */
+async function saveDeliveryPhotoToAgenda(delivery, photoIndex = null) {
+    if (!delivery) {
+        showToast('Selecione uma entrega no mapa', true);
+        return false;
+    }
+    await ensureItemPhotos(delivery);
+    const count = deliveryPhotoCount(delivery);
+    if (!count) {
+        showToast('Nenhuma foto nesta entrega', true);
+        return false;
+    }
+
+    let agendaItem = findAgendaItemForDelivery(delivery);
+    if (!agendaItem) {
+        // Fluxo existente: cria o cliente na agenda com as fotos da entrega.
+        return !!(await saveToAgenda(delivery, true));
+    }
+
+    const idx = photoIndex == null ? (delivery.photos.length - 1) : photoIndex;
+    if (idx < 0 || idx >= delivery.photos.length) {
+        showToast('Foto não encontrada', true);
+        return false;
+    }
+
+    const result = await copyDeliveryPhotoIndexToAgenda(agendaItem, delivery, idx);
+    if (!result.added) {
+        showToast(result.reason === 'dup' ? 'Esta foto já está na agenda' : 'Não foi possível salvar a foto', true);
+        return false;
+    }
+
+    if (!delivery.savedToAgenda) delivery.savedToAgenda = true;
+    saveStorage();
+    renderAgendaList();
+    renderDeliveriesList();
+    showToast('Foto salva na agenda');
+    return true;
+}
+
+function refreshPanelPhotos(delivery) {
+    const container = document.getElementById('panelPhotos');
+    updatePanelMiniPhotoUi(delivery);
+    if (!container) return;
+    container.innerHTML = '';
+    if (delivery && delivery.photos && delivery.photos.length) {
+        delivery.photos.forEach((photo, idx) => {
+            appendPanelPhotoNode(delivery, photo, idx, container);
+        });
+    } else {
+        container.innerHTML = '<span class="panel-photos-empty" style="color:#94a3b8; font-size:0.75rem;">Nenhuma foto</span>';
+    }
+}
+
+function appendPanelPhotoNode(delivery, photo, idx, container = null) {
+    const host = container || document.getElementById('panelPhotos');
+    if (!host) return null;
+    host.querySelector('.panel-photos-empty')?.remove();
+    const emptyHint = host.querySelector('span[style*="94a3b8"]');
+    if (emptyHint && emptyHint.textContent && emptyHint.textContent.includes('Nenhuma')) emptyHint.remove();
+
+    const wrapper = document.createElement('div');
+    wrapper.className = 'photo-wrapper';
+    if (String(photo || '').startsWith('blob:') || wrapper.dataset.optimistic) {
+        wrapper.dataset.optimistic = '1';
+    }
+    const img = document.createElement('img');
+    img.src = photo;
+    img.className = 'panel-photo';
+    img.loading = 'lazy';
+    img.addEventListener('click', (e) => {
+        e.stopPropagation();
+        openGallery(delivery.photos, idx);
+    });
+    const saveAgendaBtn = document.createElement('button');
+    saveAgendaBtn.type = 'button';
+    saveAgendaBtn.className = 'save-panel-photo-agenda';
+    saveAgendaBtn.title = 'Salvar na agenda';
+    saveAgendaBtn.setAttribute('aria-label', 'Salvar foto na agenda');
+    saveAgendaBtn.innerHTML = '<i class="fas fa-bookmark"></i>';
+    saveAgendaBtn.addEventListener('click', async (e) => {
+        e.stopPropagation();
+        await saveDeliveryPhotoToAgenda(delivery, idx);
+    });
+    const removeBtn = document.createElement('button');
+    removeBtn.className = 'remove-panel-photo';
+    removeBtn.innerHTML = '<i class="fas fa-times"></i>';
+    removeBtn.addEventListener('click', async (e) => {
+        e.stopPropagation();
+        const pid = delivery.photoIds && delivery.photoIds[idx];
+        if (pid) {
+            try { await idbDeletePhoto(pid); } catch (err) {}
+            delivery.photoIds.splice(idx, 1);
+        }
+        delivery.photos.splice(idx, 1);
+        saveStorage();
+        refreshPanelPhotos(delivery);
+        scheduleDeliveriesListPhotoRefresh();
+        showToast('Foto removida com sucesso');
+    });
+    wrapper.appendChild(img);
+    wrapper.appendChild(saveAgendaBtn);
+    wrapper.appendChild(removeBtn);
+    host.appendChild(wrapper);
+    return wrapper;
+}
+
+/** Atualiza só a lista de entregas depois (badge de fotos) sem travar o thumb. */
+function scheduleDeliveriesListPhotoRefresh() {
+    const run = () => renderDeliveriesList();
+    if (typeof requestIdleCallback === 'function') requestIdleCallback(run, { timeout: 700 });
+    else setTimeout(run, 120);
+}
+
+function showOptimisticPanelPhoto(delivery, previewUrl) {
+    if (!delivery || !previewUrl) return null;
+    if (!Array.isArray(delivery.photos)) delivery.photos = [];
+    // Contagem visual imediata (sem photoId ainda).
+    updatePanelMiniPhotoUi({
+        ...delivery,
+        photos: [...delivery.photos, previewUrl],
+        photoIds: [...(delivery.photoIds || []), 'pending']
+    });
+    const wrapper = appendPanelPhotoNode(delivery, previewUrl, delivery.photos.length, document.getElementById('panelPhotos'));
+    if (wrapper) wrapper.dataset.optimistic = '1';
+    return wrapper;
+}
+
+async function addPhotoDataUrlsToDelivery(delivery, dataUrls, opts = {}) {
+    if (!delivery || !dataUrls || !dataUrls.length) return 0;
+    const { hadOptimistic = false, silent = false } = opts;
+    let saved = 0;
+    try {
+        for (const dataUrl of dataUrls) {
+            const id = await addPhotoDataUrlToItem(delivery, dataUrl);
+            if (!id) continue; // duplicata (onPhoto + lote / 2º shutter)
+            saved += 1;
+            // Persistência por foto: sobrevive a kill/troca de cliente a meio do lote.
+            persistStorageNow();
+            refreshPanelPhotos(delivery);
+        }
+        if (saved) {
+            scheduleDeliveriesListPhotoRefresh();
+            if (!silent) {
+                showToast(saved > 1 ? `${saved} fotos salvas nesta entrega` : 'Foto salva nesta entrega');
+            }
+        } else if (hadOptimistic && !silent) {
+            refreshPanelPhotos(delivery);
+        }
+        return saved;
+    } catch (e) {
+        if (hadOptimistic || saved) refreshPanelPhotos(delivery);
+        if (saved) {
+            scheduleDeliveriesListPhotoRefresh();
+            if (!silent) showToast(`${saved} foto(s) salvas; algumas falharam`, true);
+            return saved;
+        }
+        if (String(e?.message || e) === 'photo-limit') {
+            showToast(`Limite de ${PHOTO_MAX_PER_ITEM} fotos por entrega`, true);
+        } else if (!silent) {
+            showToast('Não foi possível adicionar a foto', true);
+        }
+        return saved;
+    }
+}
+
+async function capturePhotoForSelectedDelivery(mode = 'camera') {
+    const delivery = currentSelectedDelivery;
+    if (!delivery) {
+        showToast('Selecione uma entrega no mapa', true);
+        return;
+    }
+    const slots = remainingPhotoSlots(delivery);
+    if (slots <= 0) {
+        showToast(`Limite de ${PHOTO_MAX_PER_ITEM} fotos por entrega`, true);
+        return;
+    }
+    const cameraInput = document.getElementById('panelCameraInput');
+    const galleryInput = document.getElementById('panelGalleryInput');
+    const fileInput = mode === 'gallery' ? galleryInput : cameraInput;
+    let optimisticEl = null;
+    let optimisticUrl = null;
+    let savedIncremental = 0;
+    let lastErr = null;
+    const urls = await pickPhotoDataUrls(mode, {
+        fileInput,
+        multiple: mode === 'gallery',
+        maxPhotos: slots,
+        pendingTarget: { kind: 'delivery', sequentialId: delivery.sequentialId },
+        onPreview: (previewUrl) => {
+            if (!previewUrl || optimisticEl) return;
+            optimisticUrl = previewUrl;
+            optimisticEl = showOptimisticPanelPhoto(delivery, previewUrl);
+        },
+        onPhoto: async (dataUrl, n, total) => {
+            try {
+                const id = await addPhotoDataUrlToItem(delivery, dataUrl);
+                if (!id) return; // já gravada (dedupe)
+                savedIncremental += 1;
+                persistStorageNow();
+                if (optimisticEl) {
+                    try { optimisticEl.remove(); } catch (_) {}
+                    optimisticEl = null;
+                }
+                refreshPanelPhotos(delivery);
+                if (total && total > 1) {
+                    showToast(`A guardar fotos… ${n}/${total}`);
+                }
+            } catch (e) {
+                lastErr = e;
+                if (String(e?.message || e) === 'photo-limit') throw e;
+                console.warn('incremental photo save', e);
+            }
+        }
+    });
+    // Segurança: lote final com dedupe — cobre corrida onPhoto vs Concluir e caminhos sem onPhoto.
+    let batchSaved = 0;
+    if (urls.length) {
+        batchSaved = await addPhotoDataUrlsToDelivery(delivery, urls, {
+            hadOptimistic: !!optimisticEl,
+            silent: savedIncremental > 0
+        }) || 0;
+    }
+    const totalSaved = savedIncremental + batchSaved;
+    if (totalSaved > 0) {
+        scheduleDeliveriesListPhotoRefresh();
+        if (savedIncremental > 0) {
+            showToast(totalSaved > 1 ? `${totalSaved} fotos salvas nesta entrega` : 'Foto salva nesta entrega');
+        }
+    } else if (optimisticEl) {
+        optimisticEl.remove();
+        updatePanelMiniPhotoUi(delivery);
+        if (lastErr && String(lastErr?.message || lastErr) === 'photo-limit') {
+            showToast(`Limite de ${PHOTO_MAX_PER_ITEM} fotos por entrega`, true);
+        }
+    }
+    if (optimisticUrl && String(optimisticUrl).startsWith('blob:')) {
+        try { URL.revokeObjectURL(optimisticUrl); } catch (_) {}
+    }
+}
+
+function setupPanelPhotoCapture() {
+    const cameraBtn = document.getElementById('panelCameraBtn');
+    const galleryBtn = document.getElementById('panelGalleryBtn');
+    const saveAgendaBtn = document.getElementById('panelSavePhotoAgendaBtn');
+    if (!cameraBtn || cameraBtn.dataset.ready) return;
+    cameraBtn.dataset.ready = '1';
+
+    cameraBtn.addEventListener('click', async (e) => {
+        e.stopPropagation();
+        await capturePhotoForSelectedDelivery('camera');
+    });
+    galleryBtn.addEventListener('click', async (e) => {
+        e.stopPropagation();
+        await capturePhotoForSelectedDelivery('gallery');
+    });
+    if (saveAgendaBtn) {
+        saveAgendaBtn.addEventListener('click', async (e) => {
+            e.stopPropagation();
+            await saveDeliveryPhotoToAgenda(currentSelectedDelivery, null);
+        });
+    }
+}
+
+function closeDeliveryPanel() {
+    const panel = document.getElementById('deliveryPanel');
+    panel.classList.remove('open');
+    panel.classList.remove('minimized');
+    panel.classList.remove('red-bg');
+    currentSelectedDelivery = null;
+    if (highlightedMarker) {
+        resetMarkerStyle(highlightedMarker);
+        highlightedMarker = null;
+    }
+    hideMapSelectedChip();
+    // Entrega ativa continua no nativo para a tela de bloqueio.
+}
+
+// ========== INFO NA TELA DE BLOQUEIO (nativo, sem alerta) ==========
+let lockScreenBridgeReady = false;
+
+function getScreenEvents() {
+    return window.RotaFlowCap?.ScreenEvents || null;
+}
+
+function lockScreenStopPayload(delivery) {
+    if (!delivery || delivery.status === 'entregue' || delivery.status === 'falhou') return null;
+    const idLabel = String(delivery.sequentialId || '—');
+    const qty = Math.max(1, Number(delivery.pacotes) || 1);
+    const qtyLabel = qty === 1 ? '1 pacote' : `${qty} pacotes`;
+    const street = shortStreetAddress(delivery.endereco);
+    const nome = String(delivery.nome || '').trim();
+    const body = nome ? `${nome} · ${street}` : street;
+    return {
+        title: `Indo para ${idLabel} · ${qtyLabel}`,
+        body: body || 'Entrega em andamento'
+    };
+}
+
+async function ensureLockScreenPermission() {
+    if (!isNativeApp()) return false;
+    // Reusa o plugin de notificações só para pedir POST_NOTIFICATIONS uma vez
+    const LN = window.RotaFlowCap?.LocalNotifications;
+    if (!LN) return true;
+    try {
+        let perm = await LN.checkPermissions();
+        if (perm?.display !== 'granted') {
+            perm = await LN.requestPermissions();
+        }
+        return perm?.display === 'granted';
+    } catch (_) {
+        return false;
+    }
+}
+
+async function clearActiveStopNotification() {
+    if (!isNativeApp()) return;
+    const SE = getScreenEvents();
+    if (!SE?.clearActiveStop) return;
+    try {
+        await SE.clearActiveStop();
+    } catch (e) {
+        console.warn('clearActiveStop', e);
+    }
+}
+
+/** Memoriza no nativo; a notificação só aparece em SCREEN_OFF. */
+async function syncActiveStopNotification(delivery) {
+    if (!isNativeApp()) return;
+    const SE = getScreenEvents();
+    if (!SE?.setActiveStop) return;
+    const payload = lockScreenStopPayload(delivery);
+    try {
+        if (!payload) {
+            await SE.clearActiveStop();
+            return;
+        }
+        await SE.setActiveStop(payload);
+    } catch (e) {
+        console.warn('setActiveStop', e);
+    }
+}
+
+async function setupScreenLockNotificationBridge() {
+    if (!isNativeApp() || lockScreenBridgeReady) return;
+    const SE = getScreenEvents();
+    if (!SE) return;
+    lockScreenBridgeReady = true;
+    try {
+        await SE.ping?.();
+    } catch (e) {
+        console.warn('ScreenEvents ping', e);
+    }
+    await ensureLockScreenPermission();
+    // Se já houver entrega selecionada, sincroniza
+    if (currentSelectedDelivery) {
+        syncActiveStopNotification(currentSelectedDelivery);
+    }
+}
+
+function adjustPacotes(delta) {
+    if (!currentSelectedDelivery) return;
+    const newValue = (currentSelectedDelivery.pacotes || 1) + delta;
+    if (newValue < 1) return;
+    currentSelectedDelivery.pacotes = newValue;
+    const pacotesSpan = document.getElementById('panelPacotesValue');
+    pacotesSpan.innerText = newValue;
+    if (newValue >= 2) {
+        pacotesSpan.classList.add('pacotes-highlight');
+    } else {
+        pacotesSpan.classList.remove('pacotes-highlight');
+    }
+    const miniQty = document.getElementById('panelMiniQty');
+    if (miniQty) {
+        miniQty.textContent = String(newValue);
+        miniQty.classList.toggle('pacotes-highlight', newValue >= 2);
+    }
+    const panel = document.getElementById('deliveryPanel');
+    if (newValue >= 2) {
+        panel.classList.add('red-bg');
+    } else {
+        panel.classList.remove('red-bg');
+    }
+    saveStorage();
+    const marker = getMarker(currentSelectedDelivery.sequentialId);
+    if (marker) {
+        updateMarkerIcon(marker, currentSelectedDelivery);
+    }
+    renderDeliveriesList();
+    syncActiveStopNotification(currentSelectedDelivery);
+    showToast(`Quantidade de pacotes atualizada para ${newValue}`);
+}
+
+async function editObservation() {
+    if (!currentSelectedDelivery) return;
+    const currentObs = currentSelectedDelivery.notes || '';
+    const newObs = await showPromptModal({
+        title: 'Observação',
+        message: 'Informe a observação desta entrega:',
+        defaultValue: currentObs,
+        placeholder: 'Ex.: deixar com o porteiro',
+        multiline: true
+    });
+    if (newObs !== null) {
+        currentSelectedDelivery.notes = newObs.trim();
+        document.getElementById('panelObsText').innerText = currentSelectedDelivery.notes || 'Nenhuma observação';
+        saveStorage();
+        renderDeliveriesList();
+        showToast("Observação salva com sucesso");
+    }
+}
+
+function editPhonesPanel() {
+    if (!currentSelectedDelivery) return;
+    const overlay = document.createElement('div');
+    overlay.className = 'modal-overlay';
+    const phones = currentSelectedDelivery.telefones || [];
+    overlay.innerHTML = `
+        <div class="modal-container" style="max-width:480px;">
+            <h3 class="modal-title">Editar telefones</h3>
+            <div class="modal-form-group">
+                <label class="modal-field-label">Telefones</label>
+                <div id="phoneListModal" class="modal-phone-list"></div>
+                <div class="modal-add-phone">
+                    <input type="text" id="newPhoneLabelModal" placeholder="Identificação">
+                    <input type="tel" id="newPhoneModal" placeholder="(69) 99999-9999">
+                    <button type="button" id="addPhoneModalBtn" class="modal-add-phone-btn" aria-label="Adicionar telefone"><i class="fas fa-plus"></i></button>
+                </div>
+            </div>
+            <div class="modal-buttons">
+                <button type="button" class="modal-confirm" id="savePhonesModal">Salvar</button>
+                <button type="button" class="modal-cancel" id="cancelPhonesModal">Cancelar</button>
+            </div>
+        </div>
+    `;
+    document.body.appendChild(overlay);
+
+    function refreshPhoneList() {
+        const list = overlay.querySelector('#phoneListModal');
+        list.innerHTML = phones.map((p, i) =>
+            `<div class="modal-phone-row">
+                <input type="text" class="edit-phone-label" data-index="${i}" value="${escapeHtml(p.label || '')}" placeholder="Identificação">
+                <input type="tel" class="edit-phone-number" data-index="${i}" value="${escapeHtml(p.numero || '')}" placeholder="Número">
+                <button type="button" class="remove-phone-modal modal-phone-remove" data-index="${i}" aria-label="Remover telefone"><i class="fas fa-times"></i></button>
+            </div>`
+        ).join('');
+        list.querySelectorAll('.remove-phone-modal').forEach(btn => {
+            btn.addEventListener('click', () => {
+                const idx = parseInt(btn.dataset.index);
+                phones.splice(idx, 1);
+                refreshPhoneList();
+            });
+        });
+        list.querySelectorAll('.edit-phone-label').forEach(inp => {
+            inp.addEventListener('change', function() {
+                const idx = parseInt(this.dataset.index);
+                if (phones[idx]) phones[idx].label = this.value;
+            });
+        });
+        list.querySelectorAll('.edit-phone-number').forEach(inp => {
+            inp.addEventListener('change', function() {
+                const idx = parseInt(this.dataset.index);
+                if (phones[idx]) phones[idx].numero = this.value;
+            });
+        });
+    }
+    refreshPhoneList();
+
+    overlay.querySelector('#addPhoneModalBtn').addEventListener('click', () => {
+        const labelInput = overlay.querySelector('#newPhoneLabelModal');
+        const numInput = overlay.querySelector('#newPhoneModal');
+        const label = labelInput.value.trim();
+        const numero = numInput.value.trim();
+        if (!numero) return showToast("Informe um número de telefone", true);
+        const formatted = formatPhoneNumber(numero);
+        if (!formatted) return showToast("Número de telefone inválido", true);
+        phones.push({ numero: formatted, label: label || '' });
+        refreshPhoneList();
+        labelInput.value = '';
+        numInput.value = '';
+    });
+
+    overlay.querySelector('#savePhonesModal').addEventListener('click', () => {
+        const list = overlay.querySelector('#phoneListModal');
+        const labels = list.querySelectorAll('.edit-phone-label');
+        const numbers = list.querySelectorAll('.edit-phone-number');
+        const newPhones = [];
+        labels.forEach((inp, i) => {
+            const num = numbers[i]?.value?.trim() || '';
+            if (num) {
+                const formatted = formatPhoneNumber(num);
+                if (formatted) {
+                    newPhones.push({ numero: formatted, label: inp.value.trim() || '' });
+                }
+            }
+        });
+        currentSelectedDelivery.telefones = newPhones;
+        saveStorage();
+        const phoneContainer = document.getElementById('panelPhone');
+        if (newPhones.length) {
+            phoneContainer.innerHTML = newPhones.map(p => {
+                const label = p.label ? p.label + ': ' : '';
+                return label + formatPhoneShort(p.numero);
+            }).join(', ');
+        } else {
+            phoneContainer.innerText = 'Não informado';
+        }
+        renderDeliveriesList();
+        syncAgendaByDelivery(currentSelectedDelivery);
+        showToast("Telefones atualizados");
+        overlay.remove();
+    });
+    overlay.querySelector('#cancelPhonesModal').addEventListener('click', () => overlay.remove());
+    overlay.querySelector('#newPhoneModal').addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') overlay.querySelector('#addPhoneModalBtn').click();
+    });
+}
+
+// ========== WHATSAPP ==========
+
+function companyDisplayName() {
+    const name = userProfile && String(userProfile.empresa || '').trim();
+    return name || EMPRESA_PADRAO;
+}
+
+function buildDeliveryWhatsAppMessage(delivery, opts = {}) {
+    const trackUrl = opts.trackUrl || '';
+    const nome = opts.nome != null ? opts.nome : (delivery.nome || 'cliente');
+    const empresa = opts.empresa != null ? opts.empresa : companyDisplayName();
+    const template = (userProfile && userProfile.mensagemPadrao) || MENSAGEM_WHATSAPP_PADRAO;
+    let msg = template
+        .replace(/{nome}/g, nome)
+        .replace(/{id}/g, delivery.sequentialId)
+        .replace(/{pacotes}/g, delivery.pacotes || 1)
+        .replace(/{endereco}/g, delivery.endereco || '')
+        .replace(/{empresa}/g, empresa)
+        .replace(/{obs}/g, delivery.notes ? `📝 Obs: ${delivery.notes}\n` : '')
+        .replace(/{km}/g, '')
+        .replace(/{min}/g, '')
+        .replace(/{link}/g, trackUrl || '');
+    // Sem km/ETA na mensagem ao cliente.
+    msg = msg
+        .replace(/\n?⏱\s*Faltam cerca de[^\n]*/g, '')
+        .replace(/[ \t]+\n/g, '\n')
+        .replace(/\n{3,}/g, '\n\n')
+        .trim();
+    if (trackUrl && !msg.includes(trackUrl)) {
+        msg += `\n${trackUrl}`;
+    }
+    return msg;
+}
+
+async function sendWhatsApp(delivery) {
+    if (!delivery.telefones || delivery.telefones.length === 0) {
+        return showToast("Nenhum telefone cadastrado para esta entrega", true);
+    }
+    let phoneToUse = delivery.telefones[0];
+    if (delivery.telefones.length > 1) {
+        const choice = await showChoiceModal({
+            title: 'WhatsApp',
+            message: 'Selecione o número para enviar a mensagem:',
+            options: delivery.telefones.map(p => ({
+                label: (p.label ? p.label + ' · ' : '') + formatPhoneShort(p.numero),
+                value: p,
+                icon: 'fab fa-whatsapp',
+                iconColor: '#25D366'
+            }))
+        });
+        if (!choice) return;
+        phoneToUse = choice;
+    }
+    const trackUrl = prepareTrackingUrl(delivery) || '';
+    if (trackUrl) publishTrackingSession(delivery);
+    const msg = buildDeliveryWhatsAppMessage(delivery, {
+        nome: phoneToUse.label || delivery.nome,
+        trackUrl
+    });
+    if (trackUrl && (!gpsEnabled || !startPoint)) {
+        showToast('Link no WhatsApp. Ligue o GPS para o cliente ver você no mapa');
+    }
+    if (!getWhatsAppPhoneDigits(phoneToUse.numero)) {
+        showToast("Número de telefone inválido", true);
+        return;
+    }
+    const opened = await openWhatsAppChat(phoneToUse.numero, msg);
+    if (!opened) showToast('Não foi possível abrir o WhatsApp', true);
+}
+
+// ========== NOVA ENTREGA - TELEFONES ==========
+function renderTempPhones() {
+    const container = document.getElementById('phoneTagsContainer');
+    container.innerHTML = tempPhones.map(p => {
+        const label = p.label ? p.label + ': ' : '';
+        return `<span class="phone-tag"><span class="phone-label">${escapeHtml(label)}</span>${escapeHtml(formatPhoneShort(p.numero))} <span class="remove-phone" data-phone="${escapeHtml(p.numero)}">&times;</span></span>`;
+    }).join('');
+    container.querySelectorAll('.remove-phone').forEach(el => {
+        el.addEventListener('click', () => {
+            const phone = el.dataset.phone;
+            tempPhones = tempPhones.filter(p => p.numero !== phone);
+            renderTempPhones();
+        });
+    });
+}
+
+// ========== RENDERIZAÇÃO DA LISTA DE ENTREGAS ==========
+let renderDeliveriesQueued = false;
+function renderDeliveriesList() {
+    if (renderDeliveriesQueued) return;
+    renderDeliveriesQueued = true;
+    requestAnimationFrame(() => {
+        renderDeliveriesQueued = false;
+        renderDeliveriesListNow();
+    });
+}
+
+const DELIVERY_LIST_FULL_RENDER_MAX = 40;
+const DELIVERY_LIST_ROW_EST = 168;
+const DELIVERY_LIST_BUFFER = 6;
+let deliveryListVirtual = { filtered: [], start: -1, end: -1, scrollBound: false };
+
+function getDeliveryListScrollParent(container) {
+    return container?.closest('.sidebar-panel') || container;
+}
+
+function buildDeliveryListItemHtml(del) {
+    const statusLabel = { pendente: "Pendente", "em-rota": "Em rota", entregue: "Entregue", falhou: "Falhou" }[del.status] || del.status;
+    let statusClass = `status-${del.status}`;
+    let statusText = statusLabel;
+    if (del.voltarDepois && del.status !== 'entregue' && del.status !== 'falhou') {
+        statusText = 'Voltar depois';
+        statusClass = 'status-voltar-depois';
+    } else if (del.status === 'falhou' && del.failReason) {
+        statusText = FAIL_REASON_LABELS[del.failReason] || 'Falhou';
+    }
+
+    const phonesDisplay = (del.telefones && del.telefones.length)
+        ? `<div class="delivery-body-line"><i class="fas fa-phone-alt"></i>${escapeHtml(del.telefones.map(p => (p.label ? p.label + ': ' : '') + formatPhoneShort(p.numero)).join(', '))}</div>`
+        : '';
+    const hasPhone = !!(del.telefones && del.telefones.length);
+    const photoCount = (del.photoIds && del.photoIds.length) || (del.photos && del.photos.length) || 0;
+    const metaParts = [];
+    if (del.routeOrder && del.status !== 'entregue' && del.status !== 'falhou') {
+        metaParts.push(`<span class="route-order" title="Ordem na rota">${del.routeOrder}º</span>`);
+    }
+    if (photoCount) metaParts.push(`<span title="Fotos"><i class="fas fa-camera"></i>${photoCount}</span>`);
+    if (del.savedToAgenda) metaParts.push(`<span title="Na agenda"><i class="fas fa-book"></i></span>`);
+    const metaHtml = metaParts.length ? `<div class="delivery-meta">${metaParts.join('')}</div>` : '';
+    const legHtml = (del.legMeters === undefined || del.status === 'entregue' || del.status === 'falhou') ? '' :
+        `<div class="leg-info"><i class="fas fa-car"></i> ${formatKm(del.legMeters)} · ${formatDuration(del.legSeconds)}</div>`;
+
+    return `<div class="delivery-item" data-id="${del.id}">
+                    <div class="delivery-header">
+                        <div class="delivery-title-row">
+                            <span class="delivery-id">${del.sequentialId}</span>
+                            <button type="button" class="fav-btn ${del.favorito ? 'active' : ''}" data-action="fav" data-id="${del.id}" title="Favorito" aria-label="Favorito"><i class="fas fa-star"></i></button>
+                            <strong>${escapeHtml(del.nome)}</strong>
+                        </div>
+                        <span class="status-badge ${statusClass}">${statusText}</span>
+                    </div>
+                    ${metaHtml}
+                    <div class="delivery-body-line"><i class="fas fa-location-dot"></i>${escapeHtml(del.endereco)}</div>
+                    ${legHtml}
+                    ${phonesDisplay}
+                    <div class="delivery-links">${hasPhone ? '<a href="#" class="whatsapp-link" data-action="whatsapp"><i class="fab fa-whatsapp"></i> WhatsApp</a>' : ''}<a href="#" class="track-link" data-action="track"><i class="fas fa-map-location-dot"></i> Rastreio</a></div>
+                    ${del.notes ? `<div class="delivery-body-line"><i class="fas fa-pen"></i>${escapeHtml(del.notes)}</div>` : ''}
+                    <div class="delivery-actions">
+                        <select class="select-status" data-action="status" data-id="${del.id}" aria-label="Status da entrega">
+                            <option value="pendente" ${del.status === 'pendente' ? 'selected' : ''}>Pendente</option>
+                            <option value="em-rota" ${del.status === 'em-rota' ? 'selected' : ''}>Em rota</option>
+                            <option value="entregue" ${del.status === 'entregue' ? 'selected' : ''}>Entregue</option>
+                            <option value="falhou" ${del.status === 'falhou' ? 'selected' : ''}>Falhou</option>
+                        </select>
+                        <div class="overflow-wrap">
+                            <button type="button" class="icon-btn overflow-trigger" data-action="menu" aria-label="Mais ações" title="Mais ações">⋯</button>
+                            <div class="overflow-panel" role="menu">
+                                <button type="button" data-action="edit" data-id="${del.id}" role="menuitem"><i class="fas fa-edit"></i> Editar</button>
+                                <button type="button" data-action="up" data-id="${del.id}" role="menuitem"><i class="fas fa-arrow-up"></i> Subir</button>
+                                <button type="button" data-action="down" data-id="${del.id}" role="menuitem"><i class="fas fa-arrow-down"></i> Descer</button>
+                                <button type="button" data-action="agenda" data-id="${del.id}" role="menuitem"><i class="fas fa-bookmark"></i> Salvar na agenda</button>
+                                <button type="button" class="danger" data-action="remove" data-id="${del.id}" role="menuitem"><i class="fas fa-trash-can"></i> Remover</button>
+                            </div>
+                        </div>
+                    </div>
+                </div>`;
+}
+
+function ensureDeliveryListVirtualScroll(container) {
+    if (deliveryListVirtual.scrollBound || !container) return;
+    deliveryListVirtual.scrollBound = true;
+    const scrollEl = getDeliveryListScrollParent(container);
+    let ticking = false;
+    scrollEl.addEventListener('scroll', () => {
+        if (ticking) return;
+        ticking = true;
+        requestAnimationFrame(() => {
+            ticking = false;
+            if (deliveryListVirtual.filtered.length <= DELIVERY_LIST_FULL_RENDER_MAX) return;
+            closeAllOverflowMenus();
+            paintDeliveryListWindow(container, false);
+        });
+    }, { passive: true });
+}
+
+function paintDeliveryListWindow(container, force) {
+    const filtered = deliveryListVirtual.filtered;
+    const total = filtered.length;
+    if (!total) return;
+
+    if (total <= DELIVERY_LIST_FULL_RENDER_MAX) {
+        deliveryListVirtual.start = 0;
+        deliveryListVirtual.end = total;
+        const parts = new Array(total);
+        for (let i = 0; i < total; i++) parts[i] = buildDeliveryListItemHtml(filtered[i]);
+        container.innerHTML = parts.join('');
+        return;
+    }
+
+    const scrollEl = getDeliveryListScrollParent(container);
+    const scrollTop = scrollEl.scrollTop || 0;
+    const viewH = scrollEl.clientHeight || 600;
+    let start = Math.max(0, Math.floor(scrollTop / DELIVERY_LIST_ROW_EST) - DELIVERY_LIST_BUFFER);
+    let end = Math.min(total, Math.ceil((scrollTop + viewH) / DELIVERY_LIST_ROW_EST) + DELIVERY_LIST_BUFFER);
+    if (end <= start) end = Math.min(total, start + 1);
+    if (!force && start === deliveryListVirtual.start && end === deliveryListVirtual.end) return;
+
+    deliveryListVirtual.start = start;
+    deliveryListVirtual.end = end;
+    const topPad = start * DELIVERY_LIST_ROW_EST;
+    const bottomPad = Math.max(0, (total - end) * DELIVERY_LIST_ROW_EST);
+    const parts = new Array(end - start + 2);
+    parts[0] = `<div class="delivery-list-spacer" style="height:${topPad}px" aria-hidden="true"></div>`;
+    for (let i = start; i < end; i++) {
+        parts[i - start + 1] = buildDeliveryListItemHtml(filtered[i]);
+    }
+    parts[end - start + 1] = `<div class="delivery-list-spacer" style="height:${bottomPad}px" aria-hidden="true"></div>`;
+    container.innerHTML = parts.join('');
+}
+
+function renderDeliveriesListNow() {
+    const container = document.getElementById("deliveriesList");
+    if (!container) return;
+    ensureDeliveryListDelegation(container);
+    ensureDeliveryListVirtualScroll(container);
+    updateDeliveryStats();
+
+    const filtered = routeFilter ? deliveries.filter(d =>
+        (d.nome || '').toLowerCase().includes(routeFilter) ||
+        (d.endereco || '').toLowerCase().includes(routeFilter)
+    ) : deliveries;
+
+    if (filtered.length === 0) {
+        deliveryListVirtual.filtered = [];
+        deliveryListVirtual.start = -1;
+        deliveryListVirtual.end = -1;
+        const isFilter = !!routeFilter;
+        container.innerHTML = isFilter
+            ? `<div class="empty-state">
+                <span class="empty-state-mark" aria-hidden="true"></span>
+                <span class="empty-state-title">Nada encontrado</span>
+                <span class="empty-state-msg">Nenhuma entrega corresponde à busca.</span>
+            </div>`
+            : `<div class="empty-state">
+                <span class="empty-state-mark" aria-hidden="true"></span>
+                <span class="empty-state-title">Rota vazia</span>
+                <span class="empty-state-msg">Adicione a primeira entrega para montar o dia.</span>
+                <button type="button" class="empty-state-cta" data-empty-cta="nova"><i class="fas fa-plus"></i> Nova entrega</button>
+            </div>`;
+        return;
+    }
+
+    deliveryListVirtual.filtered = filtered;
+    deliveryListVirtual.start = -1;
+    deliveryListVirtual.end = -1;
+    paintDeliveryListWindow(container, true);
+}
+
+let deliveryListDelegationReady = false;
+function ensureDeliveryListDelegation(container) {
+    if (deliveryListDelegationReady || !container) return;
+    deliveryListDelegationReady = true;
+
+    container.addEventListener('click', async (e) => {
+        const actionEl = e.target.closest('[data-action]');
+        const item = e.target.closest('.delivery-item');
+        if (!item) return;
+        const id = parseInt(item.dataset.id, 10);
+        const delivery = deliveries.find(d => d.id === id);
+        if (!delivery) return;
+
+        const action = actionEl ? actionEl.dataset.action : 'open';
+        if (action === 'open' || !actionEl) {
+            if (e.target.closest('button, a, select, input')) return;
+            closeAllOverflowMenus();
+            const marker = getMarker(delivery.sequentialId);
+            if (marker) highlightMarker(marker, delivery);
+            openDeliveryPanel(delivery);
+            return;
+        }
+
+        e.preventDefault();
+        e.stopPropagation();
+
+        if (action === 'menu') {
+            const wrap = actionEl.closest('.overflow-wrap');
+            const wasOpen = wrap && wrap.classList.contains('open');
+            closeAllOverflowMenus();
+            if (wrap && !wasOpen) openOverflowWrap(wrap);
+            return;
+        }
+
+        closeAllOverflowMenus();
+
+        if (action === 'fav') {
+            delivery.favorito = !delivery.favorito;
+            saveStorage();
+            syncFavoritoToAgenda(delivery);
+            renderDeliveriesList();
+            showToast(delivery.favorito ? 'Adicionado aos favoritos' : 'Removido dos favoritos');
+            return;
+        }
+        if (action === 'whatsapp') {
+            sendWhatsApp(delivery);
+            return;
+        }
+        if (action === 'track') {
+            shareTrackingLink(delivery);
+            return;
+        }
+        if (action === 'edit') {
+            showEditDeliveryModal(delivery, (updated) => editDeliveryInRoute(delivery, updated));
+            return;
+        }
+        if (action === 'up') {
+            const idx = deliveries.findIndex(d => d.id === id);
+            if (idx > 0) {
+                [deliveries[idx - 1], deliveries[idx]] = [deliveries[idx], deliveries[idx - 1]];
+                saveStorage();
+                clearRouteOverlay();
+                renderDeliveriesList();
+                updateProgressAndEstimates();
+            }
+            return;
+        }
+        if (action === 'down') {
+            const idx = deliveries.findIndex(d => d.id === id);
+            if (idx >= 0 && idx < deliveries.length - 1) {
+                [deliveries[idx + 1], deliveries[idx]] = [deliveries[idx], deliveries[idx + 1]];
+                saveStorage();
+                clearRouteOverlay();
+                renderDeliveriesList();
+                updateProgressAndEstimates();
+            }
+            return;
+        }
+        if (action === 'remove') {
+            const ok = await showConfirmModal({
+                title: 'Remover entrega',
+                message: `Deseja remover a entrega ${delivery.sequentialId} (${delivery.nome}) da rota?`,
+                confirmText: 'Remover',
+                danger: true
+            });
+            if (!ok) return;
+            closeTrackingSession(delivery, 'encerrado');
+            deliveries = deliveries.filter(d => d.id !== id);
+            persistStorageNow();
+            clearRouteOverlay();
+            removeMarkerById(delivery.sequentialId);
+            renderDeliveriesList();
+            updateProgressAndEstimates();
+            showToast('Entrega removida da rota');
+            return;
+        }
+        if (action === 'agenda') {
+            await saveToAgenda(delivery, true);
+        }
+    });
+
+    container.addEventListener('change', (e) => {
+        const sel = e.target.closest('select[data-action="status"]');
+        if (!sel) return;
+        const id = parseInt(sel.dataset.id, 10);
+        const d = deliveries.find(x => x.id === id);
+        if (!d) return;
+        const oldStatus = d.status;
+        const normalsBefore = countNormalActiveStops();
+        d.status = sel.value;
+        if (d.status === 'entregue' || d.status === 'falhou') {
+            d.voltarDepois = false;
+            if (d.status === 'entregue') delete d.failReason;
+        }
+        if (d.status !== 'entregue') delete d.deliveredNotified;
+        if (d.status !== 'falhou' || d.failReason !== 'ausente') delete d.absentNotified;
+        saveStorage();
+        if (oldStatus !== d.status) {
+            upsertMarker(d);
+            syncTrackingStatus(d);
+        }
+        updateDeliveryStats();
+        renderDeliveriesList();
+        if (oldStatus !== d.status && (d.status === 'entregue' || oldStatus === 'entregue' || d.status === 'falhou' || oldStatus === 'falhou')) {
+            notifyRouteCompositionChanged({ keepRoute: true });
+        }
+        if (oldStatus !== d.status && (d.status === 'entregue' || d.status === 'falhou')) {
+            if (d.status === 'entregue') {
+                sendDeliveredPush(d);
+                playDeliveryFeedback();
+            }
+            noteDeliveryCompletedForBackup();
+            maybeNotifyVoltarDepois(normalsBefore);
+        }
+    });
+}
+
+// ========== MODAL DE EDIÇÃO DE ENTREGA ==========
+function showEditDeliveryModal(delivery, onSave) {
+    let overlay = document.createElement('div'); overlay.className = 'modal-overlay';
+    let currentPhotos = delivery.photos || [];
+    let currentPhones = delivery.telefones || [];
+    let currentPacotes = delivery.pacotes || 1;
+    overlay.innerHTML = `<div class="modal-container modal-edit-dense">
+        <h3 class="modal-title">Editar entrega</h3>
+        <div class="modal-form-group">
+            <label class="modal-field-label" for="editNome">Nome</label>
+            <input id="editNome" class="edit-input" value="${escapeHtml(delivery.nome)}" placeholder="Nome do cliente">
+        </div>
+        <div class="modal-form-group">
+            <label class="modal-field-label" for="editEndereco">Endereço</label>
+            <input id="editEndereco" class="edit-input" value="${escapeHtml(delivery.endereco)}" placeholder="Endereço completo">
+        </div>
+        <div class="modal-form-group">
+            <label class="modal-field-label">Telefones</label>
+            <div id="editPhonesList" class="modal-phone-list"></div>
+            <div class="modal-add-phone">
+                <input type="text" id="editNewPhoneLabel" placeholder="Identificação">
+                <input type="tel" id="editNewPhone" placeholder="(69) 99999-9999">
+                <button type="button" id="editAddPhoneBtn" class="modal-add-phone-btn" aria-label="Adicionar telefone"><i class="fas fa-plus"></i></button>
+            </div>
+        </div>
+        <div class="modal-form-group">
+            <label class="modal-field-label">Pacotes</label>
+            <div class="modal-pacotes-control">
+                <button type="button" id="modalPacotesMinus" aria-label="Diminuir pacotes">−</button>
+                <span id="modalPacotesValue">${currentPacotes}</span>
+                <button type="button" id="modalPacotesPlus" aria-label="Aumentar pacotes">+</button>
+            </div>
+        </div>
+        <div class="modal-form-group">
+            <label class="modal-field-label" for="editStatus">Status</label>
+            <select id="editStatus" class="edit-input">
+                <option ${delivery.status === 'pendente' ? 'selected' : ''}>pendente</option>
+                <option ${delivery.status === 'em-rota' ? 'selected' : ''}>em-rota</option>
+                <option ${delivery.status === 'entregue' ? 'selected' : ''}>entregue</option>
+                <option ${delivery.status === 'falhou' ? 'selected' : ''}>falhou</option>
+            </select>
+        </div>
+        <div class="modal-form-group">
+            <label class="modal-field-label" for="editNotes">Observações</label>
+            <input id="editNotes" class="edit-input" value="${escapeHtml(delivery.notes || '')}" placeholder="Ex.: deixar com o porteiro">
+        </div>
+        <div class="modal-form-group">
+            <label class="modal-field-label">Fotos</label>
+            <div class="modal-photo-block">
+                <div class="modal-photo-toolbar">
+                    <button type="button" id="editCameraBtn" class="photo-btn"><i class="fas fa-camera"></i> Tirar foto</button>
+                    <button type="button" id="editGalleryBtn" class="photo-btn"><i class="fas fa-images"></i> Galeria</button>
+                </div>
+                <input type="file" id="editCameraInput" accept="image/*" capture="environment" style="display:none;">
+                <input type="file" id="editGalleryInput" accept="image/*" multiple style="display:none;">
+                <div id="editPhotosPreview" class="modal-photo-grid photos-preview"></div>
+            </div>
+        </div>
+        <div class="modal-buttons"><button type="button" class="modal-confirm" id="saveEdit">Salvar</button><button type="button" class="modal-cancel" id="cancelEdit">Cancelar</button></div>
+    </div>`;
+    document.body.appendChild(overlay);
+
+    let editPhones = [...currentPhones];
+    function renderEditPhones() {
+        const list = overlay.querySelector('#editPhonesList');
+        list.innerHTML = editPhones.map((p, i) => `
+            <div class="modal-phone-row">
+                <input type="text" class="edit-phone-label-modal" data-index="${i}" value="${escapeHtml(p.label || '')}" placeholder="Identificação">
+                <input type="tel" class="edit-phone-number-modal" data-index="${i}" value="${escapeHtml(p.numero)}" placeholder="Número">
+                <button type="button" class="remove-edit-phone-modal modal-phone-remove" data-index="${i}" aria-label="Remover telefone"><i class="fas fa-times"></i></button>
+            </div>
+        `).join('');
+        list.querySelectorAll('.remove-edit-phone-modal').forEach(btn => {
+            btn.addEventListener('click', () => {
+                const idx = parseInt(btn.dataset.index);
+                editPhones.splice(idx, 1);
+                renderEditPhones();
+            });
+        });
+        list.querySelectorAll('.edit-phone-label-modal').forEach(inp => {
+            inp.addEventListener('change', function() {
+                const idx = parseInt(this.dataset.index);
+                if (editPhones[idx]) editPhones[idx].label = this.value;
+            });
+        });
+        list.querySelectorAll('.edit-phone-number-modal').forEach(inp => {
+            inp.addEventListener('change', function() {
+                const idx = parseInt(this.dataset.index);
+                if (editPhones[idx]) editPhones[idx].numero = this.value;
+            });
+        });
+    }
+    renderEditPhones();
+
+    overlay.querySelector('#editAddPhoneBtn').addEventListener('click', () => {
+        const labelInput = overlay.querySelector('#editNewPhoneLabel');
+        const numInput = overlay.querySelector('#editNewPhone');
+        const label = labelInput.value.trim();
+        const numero = numInput.value.trim();
+        if (!numero) return showToast("Informe um número de telefone", true);
+        const formatted = formatPhoneNumber(numero);
+        if (!formatted) return showToast("Número de telefone inválido", true);
+        editPhones.push({ numero: formatted, label: label || '' });
+        renderEditPhones();
+        labelInput.value = '';
+        numInput.value = '';
+    });
+    overlay.querySelector('#editNewPhone').addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') overlay.querySelector('#editAddPhoneBtn').click();
+    });
+
+    let newPhotosArray = [...currentPhotos];
+    let newPhotoIdsArray = Array.isArray(delivery.photoIds) ? [...delivery.photoIds] : [];
+    // Se só há dataURLs antigas sem ids, alinha com vazios (migração no save).
+    while (newPhotoIdsArray.length < newPhotosArray.length) newPhotoIdsArray.push(null);
+
+    const cameraInput = overlay.querySelector('#editCameraInput');
+    const galleryInput = overlay.querySelector('#editGalleryInput');
+    const previewContainer = overlay.querySelector('#editPhotosPreview');
+    function updateEditPreview() {
+        previewContainer.innerHTML = '';
+        if (!newPhotosArray.length) {
+            previewContainer.innerHTML = '<span style="color:#94a3b8; font-size:0.75rem;">Nenhuma foto</span>';
+            return;
+        }
+        newPhotosArray.forEach((photo, idx) => {
+            const div = document.createElement('div');
+            div.className = 'modal-photo-item';
+            const img = document.createElement('img');
+            img.src = photo;
+            img.className = 'preview-thumb';
+            img.alt = 'Foto da entrega';
+            const removeBtn = document.createElement('button');
+            removeBtn.type = 'button';
+            removeBtn.className = 'remove-photo-btn';
+            removeBtn.setAttribute('aria-label', 'Remover foto');
+            removeBtn.innerHTML = '<i class="fas fa-times"></i>';
+            removeBtn.onclick = async () => {
+                const pid = newPhotoIdsArray[idx];
+                if (pid) {
+                    try { await idbDeletePhoto(pid); } catch (e) {}
+                }
+                newPhotosArray.splice(idx, 1);
+                newPhotoIdsArray.splice(idx, 1);
+                delivery.photos = [...newPhotosArray];
+                delivery.photoIds = newPhotoIdsArray.filter(Boolean);
+                persistStorageNow();
+                if (currentSelectedDelivery && currentSelectedDelivery.id === delivery.id) {
+                    refreshPanelPhotos(delivery);
+                }
+                scheduleDeliveriesListPhotoRefresh();
+                updateEditPreview();
+            };
+            div.appendChild(img);
+            div.appendChild(removeBtn);
+            previewContainer.appendChild(div);
+        });
+    }
+    updateEditPreview();
+
+    async function addPhotoFromDataUrls(urls) {
+        if (!urls || !urls.length) return;
+        try {
+            let saved = 0;
+            const scope = itemPhotoScope(delivery);
+            for (const dataUrl of urls) {
+                if (newPhotoIdsArray.filter(Boolean).length >= PHOTO_MAX_PER_ITEM) {
+                    throw new Error('photo-limit');
+                }
+                if (isDuplicatePhotoSave(scope, dataUrl)) continue;
+                if (newPhotosArray.some((p) => p === dataUrl || photoFingerprint(p) === photoFingerprint(dataUrl))) {
+                    continue;
+                }
+                const id = await persistPhotoDataUrl(dataUrl);
+                newPhotosArray.push(dataUrl);
+                newPhotoIdsArray.push(id);
+                markPhotoSaved(scope, dataUrl);
+                saved += 1;
+            }
+            if (!saved) return;
+            // Liga já à entrega — fechar o modal sem "Salvar" não perde as fotos.
+            delivery.photos = [...newPhotosArray];
+            delivery.photoIds = newPhotoIdsArray.filter(Boolean);
+            persistStorageNow();
+            if (currentSelectedDelivery && currentSelectedDelivery.id === delivery.id) {
+                refreshPanelPhotos(delivery);
+            }
+            scheduleDeliveriesListPhotoRefresh();
+            updateEditPreview();
+            showToast(saved > 1 ? `${saved} fotos adicionadas` : 'Foto adicionada com sucesso');
+        } catch (e) {
+            if (String(e?.message || e) === 'photo-limit') {
+                showToast(`Limite de ${PHOTO_MAX_PER_ITEM} fotos por entrega`, true);
+            } else {
+                showToast('Não foi possível salvar a foto. Tente novamente', true);
+            }
+        }
+    }
+
+    overlay.querySelector('#editCameraBtn').addEventListener('click', async () => {
+        const slots = Math.max(0, PHOTO_MAX_PER_ITEM - newPhotoIdsArray.filter(Boolean).length);
+        if (slots <= 0) {
+            showToast(`Limite de ${PHOTO_MAX_PER_ITEM} fotos por entrega`, true);
+            return;
+        }
+        const urls = await pickPhotoDataUrls('camera', {
+            fileInput: cameraInput,
+            maxPhotos: slots,
+            pendingTarget: { kind: 'edit-delivery', sequentialId: delivery.sequentialId }
+        });
+        if (urls.length) await addPhotoFromDataUrls(urls);
+    });
+    overlay.querySelector('#editGalleryBtn').addEventListener('click', async () => {
+        const slots = Math.max(0, PHOTO_MAX_PER_ITEM - newPhotoIdsArray.filter(Boolean).length);
+        if (slots <= 0) {
+            showToast(`Limite de ${PHOTO_MAX_PER_ITEM} fotos por entrega`, true);
+            return;
+        }
+        const urls = await pickPhotoDataUrls('gallery', {
+            fileInput: galleryInput,
+            multiple: true,
+            maxPhotos: slots,
+            pendingTarget: { kind: 'edit-delivery', sequentialId: delivery.sequentialId }
+        });
+        if (urls.length) await addPhotoFromDataUrls(urls);
+    });
+
+    let editPacotes = currentPacotes;
+    function updatePacotesDisplay() { overlay.querySelector('#modalPacotesValue').innerText = editPacotes; }
+    overlay.querySelector('#modalPacotesMinus').addEventListener('click', () => { if (editPacotes > 1) { editPacotes--; updatePacotesDisplay(); } });
+    overlay.querySelector('#modalPacotesPlus').addEventListener('click', () => { editPacotes++; updatePacotesDisplay(); });
+
+    overlay.querySelector('#saveEdit').onclick = async () => {
+        const list = overlay.querySelector('#editPhonesList');
+        const labels = list.querySelectorAll('.edit-phone-label-modal');
+        const numbers = list.querySelectorAll('.edit-phone-number-modal');
+        const finalPhones = [];
+        labels.forEach((inp, i) => {
+            const num = numbers[i]?.value?.trim() || '';
+            if (num) {
+                const formatted = formatPhoneNumber(num);
+                if (formatted) {
+                    finalPhones.push({ numero: formatted, label: inp.value.trim() || '' });
+                }
+            }
+        });
+        let newNome = overlay.querySelector('#editNome').value.trim();
+        let newEndereco = overlay.querySelector('#editEndereco').value.trim();
+        let newStatus = overlay.querySelector('#editStatus').value;
+        let newNotes = overlay.querySelector('#editNotes').value.trim();
+        if (!newNome || !newEndereco) return showToast("Preencha nome e endereço para continuar", true);
+        // Garante ids para qualquer foto dataURL restante.
+        for (let i = 0; i < newPhotosArray.length; i++) {
+            if (!newPhotoIdsArray[i] && typeof newPhotosArray[i] === 'string' && newPhotosArray[i].startsWith('data:')) {
+                newPhotoIdsArray[i] = await persistPhotoDataUrl(newPhotosArray[i]);
+            }
+        }
+        onSave({
+            nome: newNome,
+            endereco: newEndereco,
+            telefones: finalPhones,
+            pacotes: editPacotes,
+            status: newStatus,
+            photos: newPhotosArray,
+            photoIds: newPhotoIdsArray.filter(Boolean),
+            notes: newNotes
+        });
+        overlay.remove();
+    };
+    overlay.querySelector('#cancelEdit').onclick = () => overlay.remove();
+}
+
+function editDeliveryInRoute(delivery, updatedData) {
+    let oldAddress = delivery.endereco;
+    delivery.nome = updatedData.nome;
+    delivery.endereco = updatedData.endereco;
+    delivery.telefones = updatedData.telefones || [];
+    delivery.pacotes = updatedData.pacotes;
+    delivery.status = updatedData.status;
+    if (updatedData.photos) delivery.photos = updatedData.photos;
+    if (updatedData.photoIds) delivery.photoIds = updatedData.photoIds;
+    if (updatedData.notes !== undefined) delivery.notes = updatedData.notes;
+    if (updatedData.endereco !== oldAddress) {
+        geocodeAddressAndUpdate(delivery, updatedData.endereco, (success) => {
+            if (!success) { delivery.endereco = oldAddress; saveStorage(); renderDeliveriesList(); }
+            else if (currentSelectedDelivery && currentSelectedDelivery.id === delivery.id) {
+                syncActiveStopNotification(delivery);
+            }
+        });
+    } else { 
+        saveStorage(); 
+        const marker = getMarker(delivery.sequentialId);
+        if (marker) updateMarkerIcon(marker, delivery);
+        else rebuildMarkers(false);
+        updateDeliveryStats(); 
+        renderDeliveriesList(); 
+        syncAgendaByDelivery(delivery);
+        if (currentSelectedDelivery && currentSelectedDelivery.id === delivery.id) {
+            syncActiveStopNotification(delivery);
+        }
+        showToast(`Entrega ${delivery.sequentialId} atualizada`); 
+    }
+}
+
+// ========== AGENDA ==========
+function renderAgendaList() {
+    const container = document.getElementById("agendaList");
+    let filtered = agendaFilter ? agenda.filter(i => i.nome.toLowerCase().includes(agendaFilter) || i.endereco.toLowerCase().includes(agendaFilter)) : agenda;
+    if (filtered.length === 0) {
+        const isFilter = !!agendaFilter;
+        container.innerHTML = isFilter
+            ? `<div class="empty-state">
+                <span class="empty-state-mark" aria-hidden="true"></span>
+                <span class="empty-state-title">Nada encontrado</span>
+                <span class="empty-state-msg">Nenhuma parada corresponde à busca.</span>
+            </div>`
+            : `<div class="empty-state">
+                <span class="empty-state-mark" aria-hidden="true"></span>
+                <span class="empty-state-title">Agenda vazia</span>
+                <span class="empty-state-msg">Salve clientes frequentes para reutilizar depois.</span>
+                <button type="button" class="empty-state-cta" data-empty-cta="nova"><i class="fas fa-plus"></i> Nova entrega</button>
+            </div>`;
+        return;
+    }
+    let html = "";
+    filtered.forEach(item => {
+        const phonesDisplay = item.telefones && item.telefones.length
+            ? item.telefones.map(p => {
+                const label = p.label ? p.label + ': ' : '';
+                return label + formatPhoneShort(p.numero);
+            }).join(', ')
+            : '';
+        const photoCount = (item.photoIds && item.photoIds.length) || (item.photos && item.photos.length) || 0;
+        const thumbSrc = (item.photos && item.photos[0]) || '';
+        const onRoute = findActiveRouteByAddress(item.endereco);
+        const addBtn = onRoute
+            ? `<button type="button" class="action-btn ghost" disabled title="Já está na rota">Na rota · ${onRoute.sequentialId}</button>`
+            : `<button type="button" class="action-btn route add-agenda" data-id="${item.agendaId}"><i class="fas fa-plus"></i> Adicionar à rota</button>`;
+        const metaParts = [];
+        metaParts.push(`<span title="Pacotes"><i class="fas fa-box"></i>${item.pacotes || 1}</span>`);
+        if (photoCount) metaParts.push(`<span title="Fotos"><i class="fas fa-camera"></i>${photoCount}</span>`);
+        if (onRoute) metaParts.push(`<span class="agenda-badge" title="Já na rota de hoje"><i class="fas fa-route"></i>${onRoute.sequentialId}</span>`);
+        html += `<div class="agenda-item" data-id="${item.agendaId}">
+                    <div class="agenda-header">
+                        <div class="delivery-title-row">
+                            ${item.favorito ? '<span class="fav-btn active" aria-hidden="true"><i class="fas fa-star"></i></span>' : ''}
+                            <strong>${escapeHtml(item.nome)}</strong>
+                        </div>
+                        <div class="overflow-wrap">
+                            <button type="button" class="icon-btn overflow-trigger" aria-label="Mais ações" title="Mais ações">⋯</button>
+                            <div class="overflow-panel" role="menu">
+                                <button type="button" class="edit-agenda" data-id="${item.agendaId}" role="menuitem"><i class="fas fa-edit"></i> Editar</button>
+                                <button type="button" class="remove-agenda danger" data-id="${item.agendaId}" role="menuitem"><i class="fas fa-trash-can"></i> Remover</button>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="delivery-meta">${metaParts.join('')}</div>
+                    <div class="delivery-body-line"><i class="fas fa-location-dot"></i>${escapeHtml(item.endereco)}</div>
+                    ${phonesDisplay ? `<div class="delivery-body-line"><i class="fas fa-phone-alt"></i>${escapeHtml(phonesDisplay)}</div>` : ''}
+                    ${item.notes ? `<div class="delivery-body-line"><i class="fas fa-pen"></i>${escapeHtml(item.notes)}</div>` : ''}
+                    <div class="agenda-photo-row">
+                        ${thumbSrc ? `<img src="${thumbSrc}" class="agenda-photo" data-agenda-id="${item.agendaId}" alt="Foto do cliente">` : ''}
+                        <button type="button" class="photo-btn agenda-take-photo" data-id="${item.agendaId}" title="Tirar foto"><i class="fas fa-camera"></i> Tirar foto</button>
+                        <button type="button" class="photo-btn agenda-pick-photo" data-id="${item.agendaId}" title="Escolher da galeria"><i class="fas fa-images"></i> Galeria</button>
+                    </div>
+                    <div class="agenda-actions">${addBtn}</div>
+                </div>`;
+    });
+    container.innerHTML = html;
+    attachAgendaEvents();
+    document.querySelectorAll('.agenda-photo').forEach(img => {
+        img.addEventListener('click', async (e) => {
+            e.stopPropagation();
+            const item = agenda.find(a => a.agendaId === parseInt(img.dataset.agendaId));
+            if (!item) return;
+            await ensureItemPhotos(item);
+            if (item.photos && item.photos.length) openGallery(item.photos, 0);
+        });
+    });
+}
+
+function attachAgendaEvents() {
+    document.querySelectorAll('#agendaList .overflow-trigger').forEach(btn => {
+        btn.onclick = (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            const wrap = btn.closest('.overflow-wrap');
+            const wasOpen = wrap && wrap.classList.contains('open');
+            closeAllOverflowMenus();
+            if (wrap && !wasOpen) openOverflowWrap(wrap);
+        };
+    });
+    document.querySelectorAll(".add-agenda").forEach(btn => {
+        btn.onclick = () => {
+            closeAllOverflowMenus();
+            let id = parseInt(btn.dataset.id);
+            let item = agenda.find(i => i.agendaId === id);
+            if (item) addAgendaToRoute(item);
+        };
+    });
+    document.querySelectorAll(".remove-agenda").forEach(btn => {
+        btn.onclick = async () => {
+            closeAllOverflowMenus();
+            const id = parseInt(btn.dataset.id);
+            const item = agenda.find(i => i.agendaId === id);
+            if (!item) return;
+            const ok = await showConfirmModal({
+                title: 'Remover da agenda',
+                message: `Deseja remover "${item.nome}" da agenda de paradas?`,
+                confirmText: 'Remover',
+                danger: true
+            });
+            if (!ok) return;
+            agenda = agenda.filter(i => i.agendaId !== id);
+            saveStorage();
+            renderAgendaList();
+            showToast("Parada removida da agenda");
+        };
+    });
+    document.querySelectorAll(".edit-agenda").forEach(btn => {
+        btn.onclick = async () => {
+            closeAllOverflowMenus();
+            let id = parseInt(btn.dataset.id);
+            let item = agenda.find(i => i.agendaId === id);
+            if (item) {
+                await ensureItemPhotos(item);
+                showEditAgendaModal(item, (updated) => editAgendaItem(id, updated));
+            }
+        };
+    });
+    document.querySelectorAll(".agenda-take-photo").forEach(btn => {
+        btn.onclick = async (e) => {
+            e.stopPropagation();
+            const id = parseInt(btn.dataset.id);
+            const item = agenda.find(i => i.agendaId === id);
+            if (!item) return;
+            const slots = remainingPhotoSlots(item);
+            if (slots <= 0) {
+                showToast(`Limite de ${PHOTO_MAX_PER_ITEM} fotos por item`, true);
+                return;
+            }
+            const cameraInput = document.getElementById('agendaCameraInput');
+            let savedIncremental = 0;
+            const urls = await pickPhotoDataUrls('camera', {
+                fileInput: cameraInput,
+                maxPhotos: slots,
+                pendingTarget: { kind: 'agenda', agendaId: item.agendaId },
+                onPhoto: async (dataUrl, n, total) => {
+                    const id = await addPhotoDataUrlToItem(item, dataUrl);
+                    if (!id) return;
+                    savedIncremental += 1;
+                    persistStorageNow();
+                    if (total && total > 1) showToast(`A guardar fotos… ${n}/${total}`);
+                }
+            });
+            let batchSaved = 0;
+            if (urls.length) {
+                for (const url of urls) {
+                    try {
+                        const id = await addPhotoDataUrlToItem(item, url);
+                        if (id) {
+                            batchSaved += 1;
+                            persistStorageNow();
+                        }
+                    } catch (err) {
+                        if (String(err?.message || err) === 'photo-limit') {
+                            showToast(`Limite de ${PHOTO_MAX_PER_ITEM} fotos por item`, true);
+                            break;
+                        }
+                    }
+                }
+            }
+            const totalSaved = savedIncremental + batchSaved;
+            if (totalSaved > 0) {
+                renderAgendaList();
+                showToast(totalSaved > 1 ? `${totalSaved} fotos salvas na agenda` : 'Foto salva na agenda');
+            }
+        };
+    });
+    document.querySelectorAll(".agenda-pick-photo").forEach(btn => {
+        btn.onclick = async (e) => {
+            e.stopPropagation();
+            const id = parseInt(btn.dataset.id);
+            const item = agenda.find(i => i.agendaId === id);
+            if (!item) return;
+            const slots = remainingPhotoSlots(item);
+            if (slots <= 0) {
+                showToast(`Limite de ${PHOTO_MAX_PER_ITEM} fotos por item`, true);
+                return;
+            }
+            const galleryInput = document.getElementById('agendaGalleryInput');
+            const urls = await pickPhotoDataUrls('gallery', {
+                fileInput: galleryInput,
+                multiple: true,
+                maxPhotos: slots,
+                pendingTarget: { kind: 'agenda', agendaId: item.agendaId }
+            });
+            if (!urls.length) return;
+            try {
+                for (const url of urls) await addPhotoDataUrlToItem(item, url);
+                persistStorageNow();
+                renderAgendaList();
+                showToast(urls.length > 1 ? `${urls.length} fotos salvas na agenda` : 'Foto salva na agenda');
+            } catch (err) {
+                if (String(err?.message || err) === 'photo-limit') {
+                    showToast(`Limite de ${PHOTO_MAX_PER_ITEM} fotos por item`, true);
+                } else {
+                    showToast('Não foi possível salvar a foto', true);
+                }
+            }
+        };
+    });
+}
+
+function editAgendaItem(agendaId, updatedData) {
+    let idx = agenda.findIndex(i => i.agendaId === agendaId);
+    if (idx === -1) return;
+    if (updatedData.endereco !== agenda[idx].endereco) {
+        showToast("Atualizando coordenadas…");
+        geocoder.geocode({ address: updatedData.endereco }, (res, stat) => {
+            if (stat === "OK" && res[0]) {
+                agenda[idx] = { ...agenda[idx], ...updatedData, lat: res[0].geometry.location.lat(), lng: res[0].geometry.location.lng() };
+                saveStorage(); renderAgendaList(); showToast(`"${updatedData.nome}" atualizado na agenda`);
+            } else showToast("Não foi possível localizar este endereço", true);
+        });
+    } else { agenda[idx] = { ...agenda[idx], ...updatedData }; saveStorage(); renderAgendaList(); showToast(`"${updatedData.nome}" atualizado na agenda`); }
+}
+
+function showEditAgendaModal(item, onSave) {
+    let overlay = document.createElement('div'); overlay.className = 'modal-overlay';
+    let currentPhones = item.telefones || [];
+    overlay.innerHTML = `<div class="modal-container modal-edit-dense">
+        <h3 class="modal-title">Editar na agenda</h3>
+        <div class="modal-form-group">
+            <label class="modal-field-label" for="editNome">Nome</label>
+            <input id="editNome" class="edit-input" value="${escapeHtml(item.nome)}" placeholder="Nome do cliente">
+        </div>
+        <div class="modal-form-group">
+            <label class="modal-field-label" for="editEndereco">Endereço</label>
+            <input id="editEndereco" class="edit-input" value="${escapeHtml(item.endereco)}" placeholder="Endereço completo">
+        </div>
+        <div class="modal-form-group">
+            <label class="modal-field-label">Telefones</label>
+            <div id="editAgendaPhonesList" class="modal-phone-list"></div>
+            <div class="modal-add-phone">
+                <input type="text" id="editAgendaNewPhoneLabel" placeholder="Identificação">
+                <input type="tel" id="editAgendaNewPhone" placeholder="(69) 99999-9999">
+                <button type="button" id="editAgendaAddPhoneBtn" class="modal-add-phone-btn" aria-label="Adicionar telefone"><i class="fas fa-plus"></i></button>
+            </div>
+        </div>
+        <div class="modal-form-group">
+            <label class="modal-field-label" for="editPacotes">Pacotes</label>
+            <input id="editPacotes" class="edit-input" type="number" min="1" value="${item.pacotes || 1}">
+        </div>
+        <div class="modal-form-group">
+            <label class="modal-field-label" for="editNotes">Observações</label>
+            <input id="editNotes" class="edit-input" value="${escapeHtml(item.notes || '')}" placeholder="Observações">
+        </div>
+        <div class="modal-form-group">
+            <label class="modal-field-label">Fotos do cliente</label>
+            <div class="modal-photo-block">
+                <div class="modal-photo-toolbar">
+                    <button type="button" id="editAgendaCameraBtn" class="photo-btn"><i class="fas fa-camera"></i> Tirar foto</button>
+                    <button type="button" id="editAgendaGalleryBtn" class="photo-btn"><i class="fas fa-images"></i> Galeria</button>
+                </div>
+                <input type="file" id="editAgendaCameraInput" accept="image/*" capture="environment" style="display:none;">
+                <input type="file" id="editAgendaGalleryInput" accept="image/*" multiple style="display:none;">
+                <div id="editAgendaPhotosPreview" class="modal-photo-grid photos-preview"></div>
+            </div>
+        </div>
+        <div class="modal-buttons"><button type="button" class="modal-confirm" id="saveEdit">Salvar</button><button type="button" class="modal-cancel" id="cancelEdit">Cancelar</button></div>
+    </div>`;
+    document.body.appendChild(overlay);
+
+    let editPhones = [...currentPhones];
+    function renderEditAgendaPhones() {
+        const list = overlay.querySelector('#editAgendaPhonesList');
+        list.innerHTML = editPhones.map((p, i) => `
+            <div class="modal-phone-row">
+                <input type="text" class="edit-agenda-phone-label" data-index="${i}" value="${escapeHtml(p.label || '')}" placeholder="Identificação">
+                <input type="tel" class="edit-agenda-phone-number" data-index="${i}" value="${escapeHtml(p.numero)}" placeholder="Número">
+                <button type="button" class="remove-edit-agenda-phone modal-phone-remove" data-index="${i}" aria-label="Remover telefone"><i class="fas fa-times"></i></button>
+            </div>
+        `).join('');
+        list.querySelectorAll('.remove-edit-agenda-phone').forEach(btn => {
+            btn.addEventListener('click', () => {
+                const idx = parseInt(btn.dataset.index);
+                editPhones.splice(idx, 1);
+                renderEditAgendaPhones();
+            });
+        });
+        list.querySelectorAll('.edit-agenda-phone-label').forEach(inp => {
+            inp.addEventListener('change', function() {
+                const idx = parseInt(this.dataset.index);
+                if (editPhones[idx]) editPhones[idx].label = this.value;
+            });
+        });
+        list.querySelectorAll('.edit-agenda-phone-number').forEach(inp => {
+            inp.addEventListener('change', function() {
+                const idx = parseInt(this.dataset.index);
+                if (editPhones[idx]) editPhones[idx].numero = this.value;
+            });
+        });
+    }
+    renderEditAgendaPhones();
+
+    overlay.querySelector('#editAgendaAddPhoneBtn').addEventListener('click', () => {
+        const labelInput = overlay.querySelector('#editAgendaNewPhoneLabel');
+        const numInput = overlay.querySelector('#editAgendaNewPhone');
+        const label = labelInput.value.trim();
+        const numero = numInput.value.trim();
+        if (!numero) return showToast("Informe um número de telefone", true);
+        const formatted = formatPhoneNumber(numero);
+        if (!formatted) return showToast("Número de telefone inválido", true);
+        editPhones.push({ numero: formatted, label: label || '' });
+        renderEditAgendaPhones();
+        labelInput.value = '';
+        numInput.value = '';
+    });
+
+    let newPhotosArray = Array.isArray(item.photos) ? [...item.photos] : [];
+    let newPhotoIdsArray = Array.isArray(item.photoIds) ? [...item.photoIds] : [];
+    while (newPhotoIdsArray.length < newPhotosArray.length) newPhotoIdsArray.push(null);
+
+    const cameraInput = overlay.querySelector('#editAgendaCameraInput');
+    const galleryInput = overlay.querySelector('#editAgendaGalleryInput');
+    const previewContainer = overlay.querySelector('#editAgendaPhotosPreview');
+    function updateEditAgendaPreview() {
+        previewContainer.innerHTML = '';
+        if (!newPhotosArray.length) {
+            previewContainer.innerHTML = '<span style="color:#94a3b8; font-size:0.75rem;">Nenhuma foto</span>';
+            return;
+        }
+        newPhotosArray.forEach((photo, idx) => {
+            const div = document.createElement('div');
+            div.className = 'modal-photo-item';
+            const img = document.createElement('img');
+            img.src = photo;
+            img.className = 'preview-thumb';
+            img.alt = 'Foto do cliente';
+            img.style.cursor = 'pointer';
+            img.onclick = () => openGallery(newPhotosArray, idx);
+            const removeBtn = document.createElement('button');
+            removeBtn.type = 'button';
+            removeBtn.className = 'remove-photo-btn';
+            removeBtn.setAttribute('aria-label', 'Remover foto');
+            removeBtn.innerHTML = '<i class="fas fa-times"></i>';
+            removeBtn.onclick = async () => {
+                const pid = newPhotoIdsArray[idx];
+                if (pid) {
+                    try { await idbDeletePhoto(pid); } catch (e) {}
+                }
+                newPhotosArray.splice(idx, 1);
+                newPhotoIdsArray.splice(idx, 1);
+                item.photos = [...newPhotosArray];
+                item.photoIds = newPhotoIdsArray.filter(Boolean);
+                persistStorageNow();
+                renderAgendaList();
+                updateEditAgendaPreview();
+            };
+            div.appendChild(img);
+            div.appendChild(removeBtn);
+            previewContainer.appendChild(div);
+        });
+    }
+    updateEditAgendaPreview();
+
+    async function addAgendaPhotosFromDataUrls(urls) {
+        if (!urls || !urls.length) return;
+        try {
+            for (const dataUrl of urls) {
+                if (newPhotoIdsArray.filter(Boolean).length >= PHOTO_MAX_PER_ITEM) {
+                    throw new Error('photo-limit');
+                }
+                const id = await persistPhotoDataUrl(dataUrl);
+                newPhotosArray.push(dataUrl);
+                newPhotoIdsArray.push(id);
+            }
+            // Liga já ao cliente da agenda — fechar sem "Salvar" não perde as fotos.
+            item.photos = [...newPhotosArray];
+            item.photoIds = newPhotoIdsArray.filter(Boolean);
+            persistStorageNow();
+            renderAgendaList();
+            updateEditAgendaPreview();
+            showToast(urls.length > 1 ? `${urls.length} fotos adicionadas` : 'Foto adicionada');
+        } catch (e) {
+            if (String(e?.message || e) === 'photo-limit') {
+                showToast(`Limite de ${PHOTO_MAX_PER_ITEM} fotos por item`, true);
+            } else {
+                showToast('Não foi possível salvar a foto. Tente novamente', true);
+            }
+        }
+    }
+
+    overlay.querySelector('#editAgendaCameraBtn').addEventListener('click', async () => {
+        const slots = Math.max(0, PHOTO_MAX_PER_ITEM - newPhotoIdsArray.filter(Boolean).length);
+        if (slots <= 0) {
+            showToast(`Limite de ${PHOTO_MAX_PER_ITEM} fotos por item`, true);
+            return;
+        }
+        const urls = await pickPhotoDataUrls('camera', {
+            fileInput: cameraInput,
+            maxPhotos: slots,
+            pendingTarget: { kind: 'edit-agenda', agendaId: item.agendaId }
+        });
+        if (urls.length) await addAgendaPhotosFromDataUrls(urls);
+    });
+    overlay.querySelector('#editAgendaGalleryBtn').addEventListener('click', async () => {
+        const slots = Math.max(0, PHOTO_MAX_PER_ITEM - newPhotoIdsArray.filter(Boolean).length);
+        if (slots <= 0) {
+            showToast(`Limite de ${PHOTO_MAX_PER_ITEM} fotos por item`, true);
+            return;
+        }
+        const urls = await pickPhotoDataUrls('gallery', {
+            fileInput: galleryInput,
+            multiple: true,
+            maxPhotos: slots,
+            pendingTarget: { kind: 'edit-agenda', agendaId: item.agendaId }
+        });
+        if (urls.length) await addAgendaPhotosFromDataUrls(urls);
+    });
+
+    overlay.querySelector('#saveEdit').onclick = async () => {
+        const list = overlay.querySelector('#editAgendaPhonesList');
+        const labels = list.querySelectorAll('.edit-agenda-phone-label');
+        const numbers = list.querySelectorAll('.edit-agenda-phone-number');
+        const finalPhones = [];
+        labels.forEach((inp, i) => {
+            const num = numbers[i]?.value?.trim() || '';
+            if (num) {
+                const formatted = formatPhoneNumber(num);
+                if (formatted) {
+                    finalPhones.push({ numero: formatted, label: inp.value.trim() || '' });
+                }
+            }
+        });
+        let newNome = overlay.querySelector('#editNome').value.trim();
+        let newEndereco = overlay.querySelector('#editEndereco').value.trim();
+        let newPacotes = parseInt(overlay.querySelector('#editPacotes').value) || 1;
+        let newNotes = overlay.querySelector('#editNotes').value.trim();
+        if (!newNome || !newEndereco) return showToast("Preencha nome e endereço para continuar", true);
+        for (let i = 0; i < newPhotosArray.length; i++) {
+            if (!newPhotoIdsArray[i] && typeof newPhotosArray[i] === 'string' && newPhotosArray[i].startsWith('data:')) {
+                newPhotoIdsArray[i] = await persistPhotoDataUrl(newPhotosArray[i]);
+            }
+        }
+        onSave({
+            nome: newNome,
+            endereco: newEndereco,
+            telefones: finalPhones,
+            pacotes: newPacotes,
+            notes: newNotes,
+            photos: newPhotosArray,
+            photoIds: newPhotoIdsArray.filter(Boolean)
+        });
+        overlay.remove();
+    };
+    overlay.querySelector('#cancelEdit').onclick = () => overlay.remove();
+}
+
+// ========== ADICIONAR DA AGENDA PARA A ROTA (PERMITIDO) ==========
+function normalizeAddress(addr) {
+    return String(addr || '').trim().toLowerCase().replace(/\s+/g, ' ');
+}
+function findActiveRouteByAddress(endereco) {
+    const key = normalizeAddress(endereco);
+    return deliveries.find(d =>
+        normalizeAddress(d.endereco) === key &&
+        d.status !== 'entregue' &&
+        d.status !== 'falhou'
+    );
+}
+
+function addAgendaToRoute(item) {
+    const already = findActiveRouteByAddress(item.endereco);
+    if (already) {
+        showToast(`Este endereço já está na rota (ID ${already.sequentialId})`, true);
+        return;
+    }
+
+    const finish = async (lat, lng) => {
+        // Cópia própria das fotos — apagar na rota não apaga na agenda.
+        const cloned = await cloneItemPhotosForCopy(item);
+        const seqId = getSequentialId(nextSequenceNumber);
+        deliveries.push({
+            id: newId(),
+            sequentialId: seqId,
+            nome: item.nome,
+            endereco: item.endereco,
+            telefones: item.telefones || [],
+            pacotes: item.pacotes || 1,
+            status: "pendente",
+            lat,
+            lng,
+            savedToAgenda: true,
+            photos: cloned.photos,
+            photoIds: cloned.photoIds,
+            notes: item.notes || '',
+            favorito: item.favorito || false
+        });
+        nextSequenceNumber++;
+        persistStorageNow();
+        renderDeliveriesList();
+        renderAgendaList();
+        upsertMarker(deliveries[deliveries.length - 1]);
+        updateLastIdDisplay(seqId);
+        clearRouteOverlay();
+        updateProgressAndEstimates();
+        showToast(`${item.nome} adicionado à rota (ID ${seqId})`);
+    };
+
+    if (hasMapCoords(item)) {
+        finish(Number(item.lat), Number(item.lng));
+        return;
+    }
+    if (!geocoder) {
+        showToast("Aguarde o mapa carregar completamente", true);
+        return;
+    }
+    showToast("Localizando endereço…");
+    geocoder.geocode({ address: item.endereco }, (res, stat) => {
+        let lat = PORTO_VELHO_CENTER.lat, lng = PORTO_VELHO_CENTER.lng;
+        if (stat === "OK" && res[0]) {
+            lat = res[0].geometry.location.lat();
+            lng = res[0].geometry.location.lng();
+            item.lat = lat;
+            item.lng = lng;
+            saveStorage();
+        } else {
+            showToast("Endereço sem coordenadas precisas. Usando o centro do mapa", true);
+        }
+        finish(lat, lng);
+    });
+}
+
+// ========== SALVAR NA AGENDA ==========
+async function cloneItemPhotosForCopy(src) {
+    await ensureItemPhotos(src);
+    const photos = [];
+    const photoIds = [];
+    const urls = Array.isArray(src.photos) ? src.photos : [];
+    const ids = Array.isArray(src.photoIds) ? src.photoIds : [];
+    const n = Math.max(urls.length, ids.length);
+    for (let i = 0; i < n; i++) {
+        let dataUrl = urls[i];
+        if (!dataUrl && ids[i]) {
+            try { dataUrl = await idbGetPhoto(ids[i]); } catch (_) { dataUrl = null; }
+        }
+        if (!dataUrl || typeof dataUrl !== 'string') continue;
+        try {
+            const newId = await persistPhotoDataUrl(dataUrl);
+            photos.push(dataUrl);
+            photoIds.push(newId);
+        } catch (_) {}
+    }
+    return { photos, photoIds };
+}
+
+async function saveToAgenda(del, fromCard = false) {
+    const duplicate = findAgendaItemForDelivery(del);
+    if (duplicate) {
+        showToast(`O endereço "${del.endereco}" já existe na agenda`, true);
+        return false;
+    }
+    // Cópia própria no IndexedDB — agenda e entrega não partilham o mesmo photoId.
+    const cloned = await cloneItemPhotosForCopy(del);
+    agenda.push({ 
+        agendaId: nextAgendaId++, 
+        nome: del.nome, 
+        endereco: del.endereco, 
+        telefones: del.telefones || [], 
+        pacotes: del.pacotes, 
+        lat: del.lat, 
+        lng: del.lng, 
+        photos: cloned.photos,
+        photoIds: cloned.photoIds,
+        notes: del.notes || '',
+        favorito: del.favorito || false
+    });
+    if (!del.savedToAgenda) { del.savedToAgenda = true; saveStorage(); renderDeliveriesList(); }
+    saveStorage(); renderAgendaList();
+    showToast(`"${del.nome}" salvo na agenda`);
+    return true;
+}
+
+async function copyFromOtherRoute() {
+    if (deliveries.length === 0) return showToast("Não há entregas na rota para copiar", true);
+    let count = 0;
+    for (const del of deliveries) {
+        if (await saveToAgenda(del, false)) count++;
+    }
+    showToast(`${count} parada${count === 1 ? "" : "s"} adicionada${count === 1 ? "" : "s"} à agenda`);
+}
+
+// ========== BACKUP E RESTORE ==========
+let backupAutoTimer = null;
+let backupAutoRunning = false;
+let backupDeliveriesSinceAuto = 0;
+let backupDayKey = '';
+
+function hideBackupReminder() {
+    const el = document.getElementById('backupReminder');
+    if (el) el.classList.remove('is-visible');
+}
+
+function maybeShowBackupReminder() {
+    const el = document.getElementById('backupReminder');
+    const text = document.getElementById('backupReminderText');
+    if (!el) return;
+
+    const hasData = (deliveries && deliveries.length) || (agenda && agenda.length);
+    if (!hasData) {
+        hideBackupReminder();
+        return;
+    }
+
+    const meta = readBackupMeta();
+    const sinceBackup = daysSince(meta.lastBackupAt);
+    const sinceDismiss = daysSince(meta.lastDismissAt);
+    const needsRemind = sinceBackup >= BACKUP_REMIND_DAYS;
+    const coolDownOk = sinceDismiss >= BACKUP_DISMISS_DAYS;
+
+    if (!needsRemind || !coolDownOk) {
+        hideBackupReminder();
+        return;
+    }
+
+    if (text) {
+        if (!meta.lastBackupAt) {
+            text.textContent = 'Ainda não há backup neste aparelho. Exporte a rota e a agenda para ficar seguro.';
+        } else {
+            const d = Math.floor(sinceBackup);
+            text.textContent = `Último backup há ${d} dia${d === 1 ? '' : 's'}. Exporte um JSON para não perder dados.`;
+        }
+    }
+    el.classList.add('is-visible');
+}
+
+function dismissBackupReminder() {
+    writeBackupMeta({ lastDismissAt: Date.now() });
+    hideBackupReminder();
+    showToast('Lembrete adiado');
+}
+
+function setupBackupReminderUi() {
+    const nowBtn = document.getElementById('backupReminderNowBtn');
+    const dismissBtn = document.getElementById('backupReminderDismissBtn');
+    if (nowBtn && !nowBtn.dataset.ready) {
+        nowBtn.dataset.ready = '1';
+        nowBtn.addEventListener('click', () => { backupData(); });
+    }
+    if (dismissBtn && !dismissBtn.dataset.ready) {
+        dismissBtn.dataset.ready = '1';
+        dismissBtn.addEventListener('click', dismissBackupReminder);
+    }
+}
+
+function buildFullBackupObject() {
+    persistStorageNow();
+    syncActiveRouteIntoRoutes();
+    // Nunca embutir data URLs — fotos vivem no IndexedDB. Stringify com JPEGs em RAM OOM no Android.
+    const lightRoutes = (routes || []).map(r => ({
+        id: r.id,
+        name: r.name,
+        createdAt: r.createdAt,
+        nextSequenceNumber: r.nextSequenceNumber,
+        routeActive: !!r.routeActive,
+        routeMetrics: r.routeMetrics || null,
+        deliveries: cloneWithoutHeavyPhotos(r.deliveries || [])
+    }));
+    return {
+        version: 1,
+        exportedAt: Date.now(),
+        routes: lightRoutes,
+        activeRouteId,
+        deliveries: cloneWithoutHeavyPhotos(deliveries),
+        agenda: cloneWithoutHeavyPhotos(agenda),
+        nextSequenceNumber,
+        nextAgendaId,
+        userProfile
+    };
+}
+
+async function runAutoBackup({ reason = 'auto', cloud = true, silent = true } = {}) {
+    cloud = cloud && CLOUD_BACKUP_ENABLED;
+    if (backupAutoRunning) return null;
+    if (!authReady) return null;
+    const hasData = (deliveries && deliveries.length) || (agenda && agenda.length);
+    if (!hasData) return null;
+
+    const meta = readBackupMeta();
+    if (reason === 'idle' || reason === 'tick') {
+        if (meta.lastAutoAt && (Date.now() - meta.lastAutoAt) < BACKUP_AUTO_MIN_GAP_MS) return null;
+    }
+
+    backupAutoRunning = true;
+    try {
+        const data = buildFullBackupObject();
+        const json = JSON.stringify(data);
+        const local = await writeSilentLocalBackup(json);
+        let cloudRes = { ok: false, error: 'skipped' };
+        if (cloud) cloudRes = await uploadCloudBackup(json);
+
+        const patch = {
+            lastAutoAt: Date.now(),
+            dayKey: todayBackupDayKey(),
+            deliveriesSinceBackup: 0
+        };
+        if (local.ok) {
+            patch.lastBackupAt = Date.now();
+            patch.lastDismissAt = Date.now();
+        }
+        if (cloudRes.ok) {
+            patch.lastCloudAt = Date.now();
+            patch.lastCloudOk = true;
+            patch.lastCloudError = '';
+        } else if (cloud) {
+            patch.lastCloudOk = false;
+            patch.lastCloudError = cloudRes.error || 'falha';
+        }
+        writeBackupMeta(patch);
+        backupDeliveriesSinceAuto = 0;
+        hideBackupReminder();
+
+        if (!silent) {
+            if (!cloud) showToast(local.ok ? 'Backup automático salvo neste aparelho' : 'Não foi possível fazer o backup automático', !local.ok);
+            else if (local.ok && cloudRes.ok) showToast('Backup automático salvo neste aparelho e na nuvem');
+            else if (local.ok && cloudRes.error === 'offline') showToast('Backup local ok. Sem internet para a nuvem');
+            else if (local.ok) showToast('Backup local ok. Nuvem indisponível agora');
+            else showToast('Não foi possível fazer o backup automático', true);
+        }
+        return { local, cloud: cloudRes };
+    } catch (e) {
+        console.warn('auto backup', e);
+        if (!silent) showToast('Falha no backup automático', true);
+        return null;
+    } finally {
+        backupAutoRunning = false;
+    }
+}
+
+function noteDeliveryCompletedForBackup() {
+    backupDeliveriesSinceAuto += 1;
+    const meta = readBackupMeta();
+    const nextCount = (meta.deliveriesSinceBackup || 0) + 1;
+    writeBackupMeta({ deliveriesSinceBackup: nextCount });
+    if (backupDeliveriesSinceAuto >= BACKUP_AUTO_DELIVERIES || nextCount >= BACKUP_AUTO_DELIVERIES) {
+        // Adia para fora do gesto "Entregar" — evita competir por RAM/IO com o painel.
+        const kick = () => {
+            runAutoBackup({ reason: 'deliveries', silent: true }).catch(() => {});
+        };
+        if (typeof requestIdleCallback === 'function') requestIdleCallback(kick, { timeout: 4000 });
+        else setTimeout(kick, 1200);
+    }
+}
+
+function maybeAutoBackupOnDayChange() {
+    const day = todayBackupDayKey();
+    const meta = readBackupMeta();
+    if (meta.dayKey && meta.dayKey !== day) {
+        const kick = () => runAutoBackup({ reason: 'day-change', silent: true }).catch(() => {});
+        if (typeof requestIdleCallback === 'function') requestIdleCallback(kick, { timeout: 8000 });
+        else setTimeout(kick, 1500);
+        return;
+    }
+    if (!meta.dayKey) writeBackupMeta({ dayKey: day });
+    backupDayKey = day;
+}
+
+function setupAutoBackupScheduler() {
+    maybeAutoBackupOnDayChange();
+    if (backupAutoTimer) clearInterval(backupAutoTimer);
+    backupAutoTimer = setInterval(() => {
+        if (document.visibilityState === 'hidden') {
+            runAutoBackup({ reason: 'idle', silent: true }).catch(() => {});
+        } else {
+            const meta = readBackupMeta();
+            if (!meta.lastAutoAt || (Date.now() - meta.lastAutoAt) > 24 * 60 * 60 * 1000) {
+                runAutoBackup({ reason: 'daily', silent: true }).catch(() => {});
+            }
+        }
+        const day = todayBackupDayKey();
+        if (backupDayKey && backupDayKey !== day) maybeAutoBackupOnDayChange();
+        backupDayKey = day;
+    }, BACKUP_AUTO_IDLE_MS);
+
+    document.addEventListener('visibilitychange', () => {
+        if (document.visibilityState === 'hidden') {
+            const kick = () => runAutoBackup({ reason: 'idle', silent: true }).catch(() => {});
+            if (typeof requestIdleCallback === 'function') requestIdleCallback(kick, { timeout: 5000 });
+            else setTimeout(kick, 800);
+        } else {
+            recoverUiAfterResume();
+        }
+    });
+}
+
+async function downloadJsonFile(filename, data, successMsg) {
+    const json = typeof data === 'string' ? data : JSON.stringify(data, null, 2);
+    try {
+        if (isNativeApp() && window.RotaFlowCap && typeof window.RotaFlowCap.saveAndShareTextFile === 'function') {
+            await window.RotaFlowCap.saveAndShareTextFile(filename, json, filename);
+            showToast(successMsg || 'Arquivo pronto para salvar');
+            return true;
+        }
+    } catch (e) {
+        console.warn('native backup', e);
+        showToast('Não foi possível salvar o arquivo neste aparelho', true);
+        return false;
+    }
+
+    try {
+        const blob = new Blob([json], { type: 'application/json' });
+        const link = document.createElement('a');
+        link.href = URL.createObjectURL(blob);
+        link.download = filename;
+        document.body.appendChild(link);
+        link.click();
+        setTimeout(() => {
+            URL.revokeObjectURL(link.href);
+            link.remove();
+        }, 1500);
+        showToast(successMsg || 'Download iniciado');
+        return true;
+    } catch (e) {
+        showToast('Não foi possível baixar o arquivo', true);
+        return false;
+    }
+}
+
+async function backupAgenda() {
+    if (agenda.length === 0) { showToast("A agenda está vazia", true); return; }
+    const data = { agenda, nextAgendaId };
+    const filename = `agenda_${new Date().toISOString().slice(0,10)}.json`;
+    await downloadJsonFile(filename, data, 'Escolha onde salvar o backup da agenda');
+}
+
+function restoreAgenda(file) {
+    const reader = new FileReader();
+    reader.onload = async (e) => {
+        try {
+            const data = JSON.parse(e.target.result);
+            if (!data.agenda) throw new Error("Formato inválido");
+            const ok = await showConfirmModal({
+                title: 'Restaurar agenda',
+                message: 'A agenda atual será substituída pelos dados do arquivo. Deseja continuar?',
+                confirmText: 'Substituir',
+                danger: true
+            });
+            if (!ok) return;
+            agenda = data.agenda;
+            nextAgendaId = data.nextAgendaId || 1;
+            agenda.forEach(a => { migrateTelefones(a); migrateFavorito(a); if (a.pacotes === undefined) a.pacotes = 1; if (!a.photos) a.photos = []; if (!a.photoIds) a.photoIds = []; if (a.notes === undefined) a.notes = ''; });
+            await hydrateAllPhotos();
+            persistStorageNow();
+            renderAgendaList();
+            showToast("Agenda restaurada com sucesso");
+        } catch (err) {
+            showToast("Não foi possível restaurar a agenda. Arquivo inválido", true);
+        }
+    };
+    reader.readAsText(file);
+}
+
+// Exportação local (JSON via partilha/download) + cópia silenciosa no aparelho.
+async function backupDataLocal(filename, data) {
+    const ok = await downloadJsonFile(filename, data, 'Escolha onde salvar o backup completo');
+    if (ok) {
+        await writeSilentLocalBackup(JSON.stringify(data)).catch(() => {});
+        writeBackupMeta({
+            lastBackupAt: Date.now(),
+            lastDismissAt: Date.now(),
+            lastAutoAt: Date.now(),
+            deliveriesSinceBackup: 0,
+            dayKey: todayBackupDayKey()
+        });
+        hideBackupReminder();
+    }
+    return ok;
+}
+
+async function backupData() {
+    const data = buildFullBackupObject();
+    const filename = `rotaflow_backup_${new Date().toISOString().slice(0,10)}.json`;
+
+    // Nuvem desligada (sem Blaze): vai direto para o JSON local, sem escolha.
+    if (!CLOUD_BACKUP_ENABLED) {
+        await backupDataLocal(filename, data);
+        return;
+    }
+
+    const online = typeof navigator === 'undefined' || navigator.onLine !== false;
+    const options = [
+        { label: 'Neste aparelho (JSON)', value: 'local', icon: 'fas fa-download', iconColor: '#0f172a' }
+    ];
+    if (online) {
+        options.push({ label: 'Nuvem + aparelho', value: 'cloud', icon: 'fas fa-cloud-upload-alt', iconColor: '#2563eb' });
+    }
+    const choice = await showChoiceModal({
+        title: 'Backup',
+        message: online
+            ? 'Salvar cópia da rota e da agenda:'
+            : 'Sem internet — só é possível salvar neste aparelho.',
+        options
+    });
+    if (!choice) return;
+
+    if (choice === 'local') {
+        await backupDataLocal(filename, data);
+        return;
+    }
+
+    // cloud: cópia silenciosa no aparelho + upload (sem diálogo de partilha)
+    showToast('A guardar backup…');
+    const json = JSON.stringify(data);
+    const local = await writeSilentLocalBackup(json);
+    const cloudRes = await uploadCloudBackup(json);
+
+    const patch = {
+        lastDismissAt: Date.now(),
+        lastAutoAt: Date.now(),
+        deliveriesSinceBackup: 0,
+        dayKey: todayBackupDayKey()
+    };
+    if (local.ok) patch.lastBackupAt = Date.now();
+    if (cloudRes.ok) {
+        patch.lastCloudAt = Date.now();
+        patch.lastCloudOk = true;
+        patch.lastCloudError = '';
+        if (!local.ok) patch.lastBackupAt = Date.now();
+        showToast('Backup na nuvem concluído' + (local.ok ? ' (e neste aparelho)' : ''));
+    } else if (cloudRes.error === 'offline') {
+        patch.lastCloudOk = false;
+        patch.lastCloudError = 'offline';
+        showToast(local.ok
+            ? 'Salvo neste aparelho. Sem internet para a nuvem'
+            : 'Sem internet para enviar à nuvem', !local.ok);
+    } else {
+        patch.lastCloudOk = false;
+        patch.lastCloudError = cloudRes.error || 'falha';
+        if (local.ok) {
+            showToast('Salvo neste aparelho. Nuvem indisponível (verifique o Firebase)');
+        } else {
+            // Último recurso: diálogo de exportação manual
+            const shared = await downloadJsonFile(filename, data, 'Salve o JSON manualmente');
+            if (shared) patch.lastBackupAt = Date.now();
+            showToast('Nuvem indisponível. Use o arquivo JSON se foi partilhado', true);
+        }
+    }
+    writeBackupMeta(patch);
+    hideBackupReminder();
+}
+
+function restoreData(file) {
+    const reader = new FileReader();
+    reader.onload = async (e) => {
+        try {
+            const data = JSON.parse(e.target.result);
+            if (!data.agenda || (!data.deliveries && !data.routes)) throw new Error("Formato inválido");
+            const ok = await showConfirmModal({
+                title: 'Restaurar backup',
+                message: 'As rotas, a agenda e o perfil atuais serão substituídos. Deseja continuar?',
+                confirmText: 'Substituir',
+                danger: true
+            });
+            if (!ok) return;
+            agenda = data.agenda;
+            nextAgendaId = data.nextAgendaId || 1;
+            if (data.userProfile) userProfile = data.userProfile;
+            hydrateRoutesFromData(data);
+            agenda.forEach(a => {
+                migrateTelefones(a); migrateFavorito(a);
+                if (a.pacotes === undefined) a.pacotes = 1;
+                if (!a.photos) a.photos = [];
+                if (!a.photoIds) a.photoIds = [];
+                if (a.notes === undefined) a.notes = '';
+                normalizeDeliveryCoords(a);
+            });
+            seedIdCounter();
+            clearRouteOverlay();
+            await hydrateAllPhotos();
+            persistStorageNow();
+            renderDeliveriesList();
+            renderRouteSwitcher();
+            renderAgendaList();
+            rebuildMarkers(false);
+            updateDeliveryStats();
+            updateOptimizeFabVisibility();
+            updateLastIdDisplay(deliveries.length ? deliveries[deliveries.length-1].sequentialId : null);
+            showToast("Dados restaurados com sucesso");
+        } catch (err) {
+            showToast("Não foi possível restaurar os dados. Arquivo inválido", true);
+        }
+    };
+    reader.readAsText(file);
+}
+
+// ========== LIMPAR ROTA / NOVA ROTA ==========
+async function clearRoute() {
+    if (!deliveries.length) {
+        showToast('A rota já está vazia', true);
+        return;
+    }
+    const stats = routeDayStats(deliveries);
+    const pendingNote = stats.pendente > 0
+        ? ` Ainda há ${stats.pendente} parada(s) pendente(s).`
+        : '';
+    const ok = await showConfirmModal({
+        title: 'Limpar rota',
+        message: `Deseja limpar todas as entregas da rota atual? O dia será salvo no histórico.${pendingNote} A agenda não será alterada.`,
+        confirmText: 'Limpar',
+        danger: true
+    });
+    if (!ok) return;
+    archiveCurrentRouteDay({ silent: true, clearAfter: true });
+    showToast('Rota limpa e dia salvo no histórico');
+}
+
+/** Fecha painéis/modais abertos ao abrir o menu lateral (não fecha o próprio sidebar). */
+function closeAllOverlaysExceptMenu() {
+    closeAllOverflowMenus();
+    closeDeliveryPanel();
+    hideMapSelectedChip();
+    document.querySelectorAll('.modal-overlay').forEach((overlay) => {
+        const cancel = overlay.querySelector(
+            '.modal-cancel, #cancelEdit, #cancelProfileBtn, #cancelPhonesModal'
+        );
+        if (cancel) {
+            try { cancel.click(); return; } catch (_) {}
+        }
+        try { overlay.click(); } catch (_) {}
+        try { overlay.remove(); } catch (_) {}
+    });
+    document.querySelectorAll('.rf-multicam').forEach((el) => {
+        try { el.querySelector('.rf-multicam-cancel')?.click(); } catch (_) {}
+        try { el.remove(); } catch (_) {}
+    });
+}
+
+function toggleSidebar() {
+    const app = document.getElementById("appContainer");
+    const opening = app.classList.contains("sidebar-hidden");
+    app.classList.toggle("sidebar-hidden");
+    if (opening) closeAllOverlaysExceptMenu();
+    updateMapNextChip();
+    setTimeout(() => {
+        if (map && window.google?.maps?.event) google.maps.event.trigger(map, 'resize');
+    }, 200);
+}
+
+// ========== PERFIL ==========
+function showProfileModal() {
+    const overlay = document.createElement('div');
+    overlay.className = 'modal-overlay';
+    const accountLabel = currentUser
+        ? (currentUser.provider === 'local' ? 'Conta neste aparelho' : (currentUser.email || currentUser.displayName || 'Conta'))
+        : 'Sem conta';
+    overlay.innerHTML = `
+        <div class="modal-container" style="max-width:450px;">
+            <h3 class="modal-title">Perfil e preferências</h3>
+            <div class="form-group">
+                <label>Conta</label>
+                <div class="profile-account-chip">${escapeHtml(accountLabel)}</div>
+            </div>
+            <div class="form-group">
+                <label for="profileMotorista">Nome do motorista</label>
+                <input type="text" id="profileMotorista" value="${escapeHtml(userProfile.motorista)}" class="edit-input">
+            </div>
+            <div class="form-group">
+                <label for="profileEmpresa">Nome da empresa</label>
+                <input type="text" id="profileEmpresa" value="${escapeHtml(userProfile.empresa || EMPRESA_PADRAO)}" class="edit-input" placeholder="${escapeHtml(EMPRESA_PADRAO)}">
+                <span class="profile-hint">Usado no WhatsApp como 📦 {empresa}</span>
+            </div>
+            <div class="form-group">
+                <label for="profileMensagem">Mensagem padrão do WhatsApp</label>
+                <textarea id="profileMensagem" class="edit-input" rows="8" style="resize:vertical;">${escapeHtml(userProfile.mensagemPadrao)}</textarea>
+                <span class="profile-hint">Placeholders: {nome}, {id}, {pacotes}, {endereco}, {empresa}, {obs}, {link}</span>
+            </div>
+            <div class="form-group">
+                <label>Tamanho dos pins no mapa</label>
+                <div class="pin-size-options" id="pinSizeOptions">
+                    <button type="button" class="pin-size-option${pinSizePref === 'p' ? ' active' : ''}" data-size="p">Pequeno</button>
+                    <button type="button" class="pin-size-option${pinSizePref === 'm' ? ' active' : ''}" data-size="m">Médio</button>
+                    <button type="button" class="pin-size-option${pinSizePref === 'g' ? ' active' : ''}" data-size="g">Grande</button>
+                </div>
+            </div>
+            <div class="form-group">
+                <label>Feedback ao entregar</label>
+                <div class="pref-toggle-row">
+                    <div>
+                        <span>Vibração</span>
+                        <small>Ao concluir entrega ou lembrete</small>
+                    </div>
+                    <input type="checkbox" id="profileVibrate" ${feedbackVibrateEnabled ? 'checked' : ''} aria-label="Ativar vibração">
+                </div>
+                <div class="pref-toggle-row">
+                    <div>
+                        <span>Som</span>
+                        <small>Beep curto de confirmação</small>
+                    </div>
+                    <input type="checkbox" id="profileSound" ${feedbackSoundEnabled ? 'checked' : ''} aria-label="Ativar som">
+                </div>
+            </div>
+            <div class="form-group">
+                <label>Backup</label>
+                <div class="pref-toggle-row">
+                    <div>
+                        <span>Exportar dados</span>
+                        <small id="profileBackupMeta">${escapeHtml((() => {
+                            const m = readBackupMeta();
+                            if (!m.lastBackupAt) return 'Nenhum backup registrado neste aparelho';
+                            try {
+                                return 'Último: ' + new Date(m.lastBackupAt).toLocaleString('pt-BR');
+                            } catch (_) {
+                                return 'Último backup registrado';
+                            }
+                        })())}</small>
+                    </div>
+                    <button type="button" class="action-btn backup-agenda-btn" id="profileBackupBtn" style="margin:0;white-space:nowrap;"><i class="fas fa-download"></i> Backup</button>
+                </div>
+            </div>
+            <div class="modal-buttons">
+                <button type="button" class="modal-confirm" id="saveProfileBtn">Salvar</button>
+                <button type="button" class="modal-cancel" id="cancelProfileBtn">Fechar</button>
+            </div>
+            <button type="button" class="modal-text-danger" id="logoutProfileBtn">Sair da conta</button>
+        </div>
+    `;
+    document.body.appendChild(overlay);
+
+    let pendingPinSize = pinSizePref;
+    overlay.querySelectorAll('.pin-size-option').forEach((btn) => {
+        btn.addEventListener('click', () => {
+            pendingPinSize = btn.dataset.size;
+            overlay.querySelectorAll('.pin-size-option').forEach((b) => b.classList.toggle('active', b === btn));
+        });
+    });
+
+    document.getElementById('profileBackupBtn')?.addEventListener('click', async () => {
+        await backupData();
+        const metaEl = document.getElementById('profileBackupMeta');
+        const m = readBackupMeta();
+        if (metaEl && m.lastBackupAt) {
+            try {
+                metaEl.textContent = 'Último: ' + new Date(m.lastBackupAt).toLocaleString('pt-BR');
+            } catch (_) {}
+        }
+    });
+
+    document.getElementById('saveProfileBtn').onclick = () => {
+        userProfile.motorista = document.getElementById('profileMotorista').value.trim() || 'Motorista';
+        userProfile.empresa = document.getElementById('profileEmpresa').value.trim() || EMPRESA_PADRAO;
+        userProfile.mensagemPadrao = document.getElementById('profileMensagem').value.trim() || userProfile.mensagemPadrao;
+        setPinSizePref(pendingPinSize);
+        setFeedbackPrefs({
+            vibrate: !!document.getElementById('profileVibrate')?.checked,
+            sound: !!document.getElementById('profileSound')?.checked
+        });
+        saveStorage();
+        showToast("Perfil salvo");
+        overlay.remove();
+    };
+    document.getElementById('cancelProfileBtn').onclick = () => overlay.remove();
+    document.getElementById('logoutProfileBtn').onclick = () => {
+        overlay.remove();
+        logoutUser();
+    };
+}
+
+// ========== SUGESTÕES (SEM BADGE "NA AGENDA") ==========
+/** Rank match quality of text vs query (lower = better). */
+function suggestionFieldRank(text, query) {
+    const t = String(text || '').toLowerCase().trim();
+    const q = String(query || '').toLowerCase().trim();
+    if (!q || !t.includes(q)) return 10000;
+
+    if (t === q) return 0;
+
+    const isNumericQ = /^\d+$/.test(q);
+    const lengthDelta = Math.abs(t.length - q.length);
+
+    if (isNumericQ) {
+        // Scan all occurrences; prefer exact number tokens over substrings of longer numbers (80 vs 8050).
+        let best = 9000;
+        for (let idx = t.indexOf(q); idx !== -1; idx = t.indexOf(q, idx + 1)) {
+            const before = idx > 0 ? t[idx - 1] : '';
+            const after = idx + q.length < t.length ? t[idx + q.length] : '';
+            const beforeDigit = /\d/.test(before);
+            const afterDigit = /\d/.test(after);
+            let score;
+            if (!beforeDigit && !afterDigit) {
+                // Number-boundary: "80", "casa 80", "A80", "80-B"
+                score = idx === 0 ? 10 : 20;
+            } else if (!beforeDigit && afterDigit) {
+                // Prefix of a longer number: "8050" when typing "80"
+                score = 200 + Math.min(40, lengthDelta);
+            } else if (beforeDigit && !afterDigit) {
+                // Suffix of a longer number: "180"
+                score = 220 + Math.min(40, lengthDelta);
+            } else {
+                score = 250 + Math.min(40, lengthDelta);
+            }
+            if (score < best) best = score;
+        }
+        return best + Math.min(15, lengthDelta);
+    }
+
+    if (t.startsWith(q)) return 10 + Math.min(20, lengthDelta);
+
+    // Word-boundary / token start (space, punctuation, hyphen)
+    const boundaryRe = new RegExp('(?:^|[\\s\\-_/.,;:#()\\[\\]])' + q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
+    if (boundaryRe.test(t)) return 30 + Math.min(20, lengthDelta);
+
+    const pos = t.indexOf(q);
+    return 100 + Math.min(50, pos) + Math.min(30, lengthDelta);
+}
+
+function suggestionItemRank(item, query) {
+    const nome = String(item.nome || '').toLowerCase();
+    const end = String(item.endereco || '').toLowerCase();
+    const q = String(query || '').toLowerCase();
+    const nomeRank = nome.includes(q) ? suggestionFieldRank(nome, q) : 10000;
+    const endRank = end.includes(q) ? suggestionFieldRank(end, q) + 8 : 10000; // slight preference for nome
+    return Math.min(nomeRank, endRank);
+}
+
+function initNameSuggestions() {
+    const input = document.getElementById('customerName');
+    const suggestionsDiv = document.getElementById('nameSuggestions');
+    input.addEventListener('input', debounce(function() {
+        const query = this.value.trim().toLowerCase();
+        if (query.length < 1) { suggestionsDiv.style.display = 'none'; return; }
+
+        let agendaMatches = agenda.filter(item => 
+            item.nome.toLowerCase().includes(query) || 
+            item.endereco.toLowerCase().includes(query)
+        );
+
+        let routeMatches = deliveries.filter(del => 
+            del.nome.toLowerCase().includes(query) || 
+            del.endereco.toLowerCase().includes(query)
+        );
+
+        let combined = [];
+
+        routeMatches.forEach(del => {
+            combined.push({
+                type: 'route',
+                item: del,
+                nome: del.nome,
+                endereco: del.endereco,
+                telefones: del.telefones || [],
+                pacotes: del.pacotes || 1,
+                notes: del.notes || '',
+                favorito: del.favorito || false,
+                sequentialId: del.sequentialId,
+                id: del.id
+            });
+        });
+
+        agendaMatches.forEach(item => {
+            const onRoute = findActiveRouteByAddress(item.endereco);
+            combined.push({
+                type: 'agenda',
+                item: item,
+                nome: item.nome,
+                endereco: item.endereco,
+                telefones: item.telefones || [],
+                pacotes: item.pacotes || 1,
+                notes: item.notes || '',
+                favorito: item.favorito || false,
+                agendaId: item.agendaId,
+                isInRoute: !!onRoute,
+                sequentialId: onRoute ? onRoute.sequentialId : null
+            });
+        });
+
+        const unique = [];
+        const seen = new Set();
+        combined.forEach(item => {
+            const key = item.endereco.toLowerCase();
+            if (!seen.has(key)) {
+                seen.add(key);
+                unique.push(item);
+            } else {
+                const existingIndex = unique.findIndex(u => u.endereco.toLowerCase() === key);
+                if (existingIndex !== -1 && item.type === 'route') {
+                    unique[existingIndex] = item;
+                }
+            }
+        });
+
+        const isNumericQuery = /^\d+$/.test(query);
+        unique.sort((a, b) => {
+            const ra = suggestionItemRank(a, query);
+            const rb = suggestionItemRank(b, query);
+            if (ra !== rb) return ra - rb;
+            if (a.favorito && !b.favorito) return -1;
+            if (!a.favorito && b.favorito) return 1;
+            if (a.type === 'route' && b.type !== 'route') return -1;
+            if (a.type !== 'route' && b.type === 'route') return 1;
+            if (isNumericQuery) {
+                const lenDiff = String(a.nome || '').length - String(b.nome || '').length;
+                if (lenDiff !== 0) return lenDiff;
+            }
+            return String(a.nome || '').localeCompare(String(b.nome || ''), 'pt', { sensitivity: 'base' });
+        });
+
+        const limited = unique.slice(0, 50);
+        if (limited.length === 0) { suggestionsDiv.style.display = 'none'; return; }
+
+        let html = '';
+        limited.forEach(item => {
+            const isRoute = item.type === 'route';
+            const isAgendaInRoute = item.type === 'agenda' && item.isInRoute;
+            const matchedBy = (item.nome.toLowerCase().includes(query) ? 'nome' : 'endereço');
+            const icon = matchedBy === 'nome' ? 'fa-user' : 'fa-location-dot';
+            const phones = (item.telefones || []).map(p => {
+                const label = p.label ? p.label + ': ' : '';
+                return label + formatPhoneShort(p.numero);
+            }).join(', ');
+            const favoritoIcon = item.favorito ? '⭐ ' : '';
+
+            let badgeHtml = '';
+            if (isRoute) {
+                badgeHtml = `<span class="suggestion-badge route">🚀 ID ${item.sequentialId}</span>`;
+            } else if (isAgendaInRoute) {
+                const routeItem = deliveries.find(d => d.endereco.toLowerCase() === item.endereco.toLowerCase());
+                badgeHtml = routeItem ? `<span class="suggestion-badge route">🚀 Na rota (ID ${routeItem.sequentialId})</span>` : `<span class="suggestion-badge route">🚀 Na rota</span>`;
+            } else {
+                // SEM BADGE para itens da agenda não rota
+                badgeHtml = '';
+            }
+
+            const routeClass = isRoute ? 'suggestion-route' : 'suggestion-agenda';
+            const pacotesVal = item.pacotes || 1;
+            const dataIdAttr = isRoute ? `data-id="${item.id}"` : '';
+
+            let actionBtnHtml;
+            if (isRoute) {
+                actionBtnHtml = `<button class="suggestion-btn-save" data-action="save" data-id="${item.id}" data-pacotes="${pacotesVal}"><i class="fas fa-save"></i> Salvar</button>`;
+            } else if (isAgendaInRoute) {
+                actionBtnHtml = `<button class="suggestion-btn-add disabled" disabled>🔒 Na rota</button>`;
+            } else {
+                // Item da agenda que NÃO está na rota => botão "+ Rota" habilitado
+                actionBtnHtml = `<button class="suggestion-btn-add" data-name="${escapeHtml(item.nome)}" data-address="${escapeHtml(item.endereco)}" data-phones='${JSON.stringify(item.telefones || [])}' data-pacotes="${pacotesVal}" data-notes="${escapeHtml(item.notes || '')}"><i class="fas fa-plus"></i> Rota</button>`;
+            }
+
+            html += `<div class="suggestion-item ${routeClass}" ${dataIdAttr} data-name="${escapeHtml(item.nome)}" data-address="${escapeHtml(item.endereco)}" data-phones='${JSON.stringify(item.telefones || [])}' data-pacotes="${pacotesVal}" data-notes="${escapeHtml(item.notes || '')}" data-isroute="${isRoute}">
+                        <div class="suggestion-info">
+                            <div><i class="fas ${icon}" style="color:#3b82f6; margin-right:8px;"></i><strong>${favoritoIcon}${escapeHtml(item.nome)}</strong> ${badgeHtml}</div>
+                            <div style="font-size:0.7rem; color:#475569;">${escapeHtml(item.endereco)} ${phones ? `<span style="margin-left:6px;">📞 ${escapeHtml(phones)}</span>` : ''}</div>
+                            <div style="font-size:0.65rem; color:#3b82f6;">${matchedBy}</div>
+                        </div>
+                        <div class="suggestion-actions">
+                            <div class="suggestion-pacotes-control" data-pacotes="${pacotesVal}">
+                                <button class="suggestion-pacotes-minus">−</button>
+                                <span class="suggestion-pacotes-value">${pacotesVal}</span>
+                                <button class="suggestion-pacotes-plus">+</button>
+                            </div>
+                            ${actionBtnHtml}
+                        </div>
+                    </div>`;
+        });
+        suggestionsDiv.innerHTML = html;
+        suggestionsDiv.style.display = 'block';
+
+        document.querySelectorAll('.suggestion-pacotes-control').forEach(control => {
+            const minus = control.querySelector('.suggestion-pacotes-minus');
+            const plus = control.querySelector('.suggestion-pacotes-plus');
+            const valueSpan = control.querySelector('.suggestion-pacotes-value');
+            const itemDiv = control.closest('.suggestion-item');
+            const actionBtn = itemDiv.querySelector('.suggestion-btn-save, .suggestion-btn-add');
+
+            let currentVal = parseInt(control.dataset.pacotes) || 1;
+
+            function updateValue(newVal) {
+                if (newVal < 1) newVal = 1;
+                currentVal = newVal;
+                valueSpan.textContent = currentVal;
+                control.dataset.pacotes = currentVal;
+                itemDiv.dataset.pacotes = currentVal;
+                if (actionBtn) actionBtn.dataset.pacotes = currentVal;
+            }
+
+            minus.addEventListener('click', (e) => {
+                e.stopPropagation();
+                updateValue(currentVal - 1);
+            });
+            plus.addEventListener('click', (e) => {
+                e.stopPropagation();
+                updateValue(currentVal + 1);
+            });
+        });
+
+        document.querySelectorAll('#nameSuggestions .suggestion-item').forEach(el => {
+            el.addEventListener('click', (e) => {
+                if (e.target.closest('.suggestion-btn-save') || e.target.closest('.suggestion-btn-add') || e.target.closest('.suggestion-pacotes-control')) return;
+                const name = el.dataset.name;
+                const address = el.dataset.address;
+                const phones = JSON.parse(el.dataset.phones || '[]');
+                const pacotes = parseInt(el.dataset.pacotes) || 1;
+                const notes = el.dataset.notes || '';
+
+                document.getElementById('customerName').value = name;
+                document.getElementById('address').value = address;
+                tempPhones = phones;
+                renderTempPhones();
+                document.getElementById('pacotes').value = pacotes;
+                suggestionsDiv.style.display = 'none';
+                checkAddressDuplicate();
+            });
+        });
+
+        document.querySelectorAll('.suggestion-btn-save').forEach(btn => {
+            btn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                const id = parseInt(btn.dataset.id);
+                const pacotes = parseInt(btn.dataset.pacotes) || 1;
+                const delivery = deliveries.find(d => d.id === id);
+                if (delivery) {
+                    delivery.pacotes = pacotes;
+                    saveStorage();
+                    renderDeliveriesList();
+                    const marker = getMarker(delivery.sequentialId);
+                    if (marker) updateMarkerIcon(marker, delivery);
+                    updateDeliveryStats();
+                    showToast(`Entrega ${delivery.sequentialId}: pacotes atualizados para ${pacotes}`);
+                    suggestionsDiv.style.display = 'none';
+                } else {
+                    showToast("Entrega não encontrada", true);
+                }
+            });
+        });
+
+        document.querySelectorAll('.suggestion-btn-add:not(.disabled)').forEach(btn => {
+            btn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                const name = btn.dataset.name;
+                const address = btn.dataset.address;
+                const phones = JSON.parse(btn.dataset.phones || '[]');
+                const pacotes = parseInt(btn.dataset.pacotes) || 1;
+                const notes = btn.dataset.notes || '';
+                // Verifica se já está na rota (pendente / em rota)
+                const already = findActiveRouteByAddress(address);
+                if (already) {
+                    showToast(`Este endereço já está na rota (ID ${already.sequentialId})`, true);
+                    suggestionsDiv.style.display = 'none';
+                    return;
+                }
+                // Permite adicionar mesmo que esteja na agenda
+                tempPhones = phones;
+                renderTempPhones();
+                addDeliveryDirect(name, address, phones, pacotes, notes);
+                suggestionsDiv.style.display = 'none';
+            });
+        });
+    }, 180));
+    document.addEventListener('click', (e) => {
+        if (e.target !== input && !suggestionsDiv.contains(e.target)) suggestionsDiv.style.display = 'none';
+    });
+}
+
+// ========== ADICIONAR ENTREGA DIRETO (PERMITE AGENDA) ==========
+function addDeliveryDirect(nome, endereco, telefones, pacotes, notes) {
+    if (!nome || !endereco) { showToast("Preencha nome e endereço para continuar", true); return; }
+
+    // Verifica se já está na rota (pendente / em rota)
+    const already = findActiveRouteByAddress(endereco);
+    if (already) {
+        showToast(`Este endereço já está na rota (ID ${already.sequentialId})`, true);
+        return;
+    }
+
+    // Permite adicionar mesmo que esteja na agenda (não verifica agenda)
+
+    const known = agenda.find(a => a.endereco.toLowerCase() === endereco.toLowerCase());
+    const finish = (lat, lng) => {
+        let seqId = getSequentialId(nextSequenceNumber);
+        let newDelivery = { 
+            id: newId(), 
+            sequentialId: seqId, 
+            nome, 
+            endereco, 
+            telefones: telefones || [], 
+            pacotes, 
+            status: "pendente", 
+            lat, 
+            lng, 
+            savedToAgenda: !!known, 
+            photos: known ? [...(known.photos || [])] : [], 
+            notes: notes || '',
+            favorito: known ? !!known.favorito : false
+        };
+        deliveries.push(newDelivery);
+        nextSequenceNumber++;
+        persistStorageNow(); renderDeliveriesList(); upsertMarker(newDelivery);
+        updateLastIdDisplay(seqId);
+        clearRouteOverlay();
+        updateProgressAndEstimates();
+        showToast(`Entrega ${seqId} incluída na rota`);
+        if (deliveries.length === 1) centerMapOnMarkers();
+        clearForm();
+    };
+    if (known && known.lat && known.lng) {
+        finish(known.lat, known.lng);
+        return;
+    }
+    showToast("Localizando endereço…");
+    geocoder.geocode({ address: endereco }, (res, stat) => {
+        let lat = PORTO_VELHO_CENTER.lat, lng = PORTO_VELHO_CENTER.lng;
+        if (stat === "OK" && res[0]) {
+            lat = res[0].geometry.location.lat();
+            lng = res[0].geometry.location.lng();
+        } else {
+            showToast("Endereço não encontrado. Usando o centro do mapa", true);
+        }
+        finish(lat, lng);
+    });
+}
+
+// ========== ROTA OTIMIZADA (Directions API) ==========
+// A Directions API aceita no máximo 25 pontos intermediários por requisição.
+const MAX_WAYPOINTS = 23;
+let directionsService = null;
+let routeRenderers = [];
+let optimizing = false;
+let startPoint = null;
+let gpsDenied = false;
+let routeRefreshTimer = null;
+
+function isPendingStop(d) {
+    return !!d && d.status !== 'entregue' && d.status !== 'falhou' && hasMapCoords(d);
+}
+function pendingStops() { return deliveries.filter(isPendingStop); }
+
+/** Coerce lat/lng from storage/backup strings so pendingStops() / FAB don't stay empty. */
+function hasMapCoords(d) {
+    if (!d) return false;
+    const lat = Number(d.lat);
+    const lng = Number(d.lng);
+    return Number.isFinite(lat) && Number.isFinite(lng);
+}
+function normalizeDeliveryCoords(d) {
+    if (!d) return d;
+    if (d.lat != null && d.lat !== '') {
+        const lat = Number(d.lat);
+        if (Number.isFinite(lat)) d.lat = lat;
+    }
+    if (d.lng != null && d.lng !== '') {
+        const lng = Number(d.lng);
+        if (Number.isFinite(lng)) d.lng = lng;
+    }
+    return d;
+}
+
+function routeSignature(stops) {
+    const start = startPoint ? `${startPoint.lat.toFixed(3)},${startPoint.lng.toFixed(3)}` : 'lista';
+    return start + '|' + stops.map(d => d.id).join('>');
+}
+
+function formatKm(meters) { return (meters / 1000).toFixed(1).replace('.', ',') + ' km'; }
+function formatDuration(seconds) {
+    const min = Math.round(seconds / 60);
+    if (min < 60) return `${min} min`;
+    return `${Math.floor(min / 60)}h${String(min % 60).padStart(2, '0')}`;
+}
+
+// Sempre tenta a localização atual. Se GPS estiver desligado/negado,
+// a primeira entrega pendente vira o ponto de partida.
+function persistGpsPreference() {
+    localStorage.setItem('rotaflow_gps', gpsEnabled ? '1' : '0');
+}
+
+function updateGpsButton() {
+    const btn = document.getElementById('gpsBtn');
+    if (!btn) return;
+    const on = gpsEnabled && !!startPoint;
+    btn.classList.toggle('active', on);
+    btn.classList.toggle('off', !gpsEnabled);
+    btn.setAttribute('aria-pressed', gpsEnabled ? 'true' : 'false');
+    btn.title = gpsEnabled
+        ? (startPoint ? 'GPS ligado — clique para desligar' : 'GPS ligado — buscando…')
+        : 'GPS desligado — clique para ligar';
+    btn.innerHTML = gpsEnabled
+        ? '<i class="fas fa-location-crosshairs"></i>'
+        : '<i class="fas fa-location-slash"></i>';
+}
+
+function clearGpsTracking() {
+    stopBackgroundGpsWatch();
+    if (watchId != null) {
+        if (isNativeApp() && window.RotaFlowCap?.Geolocation) {
+            window.RotaFlowCap.Geolocation.clearWatch({ id: watchId }).catch(() => {});
+        } else if (navigator.geolocation) {
+            navigator.geolocation.clearWatch(watchId);
+        }
+        watchId = null;
+    }
+    startPoint = null;
+    gpsAccuracyMeters = 0;
+    updateOptimizeFabVisibility();
+    if (gpsMarker) {
+        gpsMarker.setMap(null);
+        gpsMarker = null;
+    }
+    if (gpsAccuracyCircle) {
+        gpsAccuracyCircle.setMap(null);
+        gpsAccuracyCircle = null;
+    }
+    if (useNativeMap && nativeGoogleMap) {
+        nativeGoogleMap.enableCurrentLocation(false).catch(() => {});
+    }
+}
+
+function clearGpsWatchOnly() {
+    if (watchId == null) return;
+    if (isNativeApp() && window.RotaFlowCap?.Geolocation) {
+        window.RotaFlowCap.Geolocation.clearWatch({ id: watchId }).catch(() => {});
+    } else if (navigator.geolocation) {
+        navigator.geolocation.clearWatch(watchId);
+    }
+    watchId = null;
+}
+
+function gpsErrorMessage(err) {
+    // No celular, file:// e http:// (sem HTTPS) bloqueiam o GPS.
+    if (!isNativeApp() && !window.isSecureContext) {
+        return 'Localização indisponível neste contexto. Abra o app por HTTPS ou instale como aplicativo';
+    }
+    if (!isNativeApp() && !navigator.geolocation) return 'Este navegador não oferece suporte à localização';
+    const code = err && err.code;
+    if (code === 1) return 'Permissão de localização negada. Ative-a nas configurações do aparelho';
+    if (code === 2) return 'Localização indisponível. Verifique se o GPS está ativo e tente novamente';
+    if (code === 3) return 'Tempo esgotado ao obter a localização. Tente novamente em área aberta';
+    return 'Não foi possível obter a localização atual';
+}
+
+let bgGpsStarted = false;
+
+function activeTrackTargets() {
+    return deliveries.filter(d => d.trackToken && isActiveStop(d) && typeof d.lat === 'number' && typeof d.lng === 'number')
+        .map(d => ({
+            token: d.trackToken,
+            lat: d.lat,
+            lng: d.lng,
+            nearNotified: !!d.nearNotified
+        }));
+}
+
+function applyGpsWatchPosition(p) {
+    if (!gpsEnabled || !p?.coords) return;
+    startPoint = { lat: p.coords.latitude, lng: p.coords.longitude };
+    gpsAccuracyMeters = typeof p.coords.accuracy === 'number' ? p.coords.accuracy : gpsAccuracyMeters;
+    publishDriverGpsFromWatch(p);
+    // Atualiza ETA aproximado do chip sem sobrecarregar o mapa nativo.
+    if (!applyGpsWatchPosition._chipTimer) {
+        applyGpsWatchPosition._chipTimer = setTimeout(() => {
+            applyGpsWatchPosition._chipTimer = null;
+            updateMapNextChip();
+        }, 4000);
+    }
+    if (useNativeMap) return;
+    if (gpsMarker) gpsMarker.setPosition(startPoint);
+    else showStartMarker();
+    if (gpsAccuracyCircle) {
+        gpsAccuracyCircle.setCenter(startPoint);
+        if (gpsAccuracyMeters > 0) gpsAccuracyCircle.setRadius(gpsAccuracyMeters);
+    }
+}
+
+async function startBackgroundGpsWatch() {
+    const bg = window.RotaFlowCap && window.RotaFlowCap.BackgroundGps;
+    if (!isNativeApp() || !bg) return;
+    try {
+        if (typeof bg.removeAllListeners === 'function') await bg.removeAllListeners();
+        await bg.addListener('location', (loc) => {
+            if (!loc || typeof loc.latitude !== 'number') return;
+            applyGpsWatchPosition({
+                coords: {
+                    latitude: loc.latitude,
+                    longitude: loc.longitude,
+                    accuracy: loc.accuracy || 0
+                }
+            });
+        });
+        await bg.addListener('near', (data) => {
+            if (!data || !data.token) return;
+            const delivery = deliveries.find(d => d.trackToken === data.token);
+            if (!delivery) return;
+            maybeMarkNearCustomer(delivery, {
+                lat: Number(data.latitude),
+                lng: Number(data.longitude)
+            }, { skipPush: true });
+        });
+        if (!startBackgroundGpsWatch.extrasAsked && typeof bg.requestExtras === 'function') {
+            startBackgroundGpsWatch.extrasAsked = true;
+            await bg.requestExtras().catch(() => {});
+        }
+        const fb = window.ROTAFLOW_FIREBASE || {};
+        await bg.start({
+            notificationTitle: 'RotaFlow rastreando',
+            notificationText: 'GPS ativo — avisos ao cliente mesmo em segundo plano',
+            intervalMs: 4000,
+            minDistanceM: 12,
+            nearMeters: TRACK_NEAR_METERS,
+            projectId: fb.projectId || 'rotaflow-83610',
+            apiKey: fb.apiKey || '',
+            trackHost: window.ROTAFLOW_TRACK_HOST || 'https://rotaflow-83610.web.app',
+            // Push: Cloud Functions (onTrackNotify). Sem VAPID private no APK.
+            targets: activeTrackTargets()
+        });
+        bgGpsStarted = true;
+    } catch (err) {
+        console.warn('bg gps start', err);
+    }
+}
+
+function syncBackgroundGpsTargets() {
+    const bg = window.RotaFlowCap && window.RotaFlowCap.BackgroundGps;
+    if (!bgGpsStarted || !bg || typeof bg.updateTargets !== 'function') return;
+    bg.updateTargets({ targets: activeTrackTargets() }).catch(() => {});
+}
+
+async function stopBackgroundGpsWatch() {
+    const bg = window.RotaFlowCap && window.RotaFlowCap.BackgroundGps;
+    bgGpsStarted = false;
+    if (!bg) return;
+    try { if (typeof bg.removeAllListeners === 'function') await bg.removeAllListeners(); } catch (_) {}
+    try { await bg.stop(); } catch (_) {}
+}
+
+function readGpsPosition(options) {
+    if (isNativeApp() && window.RotaFlowCap?.Geolocation) {
+        return window.RotaFlowCap.Geolocation.getCurrentPosition(options);
+    }
+    return new Promise((resolve, reject) => {
+        if (!navigator.geolocation) return reject({ code: 0, message: 'unsupported' });
+        navigator.geolocation.getCurrentPosition(resolve, reject, options);
+    });
+}
+
+async function enableGpsTracking() {
+    const canWeb = window.isSecureContext && navigator.geolocation;
+    const canNative = isNativeApp() && window.RotaFlowCap?.Geolocation;
+    if (!canNative && !canWeb) {
+        gpsDenied = true;
+        return false;
+    }
+    try {
+        if (canNative) {
+            const perm = await window.RotaFlowCap.Geolocation.requestPermissions();
+            if (perm.location === 'denied') throw { code: 1 };
+        }
+        let pos;
+        try {
+            pos = await readGpsPosition({ enableHighAccuracy: true, timeout: 20000, maximumAge: 10000 });
+        } catch (firstErr) {
+            // Segunda tentativa mais tolerante (rede/Wi‑Fi), útil em ambiente fechado.
+            if (firstErr && firstErr.code === 3) {
+                pos = await readGpsPosition({ enableHighAccuracy: false, timeout: 20000, maximumAge: 60000 });
+            } else {
+                throw firstErr;
+            }
+        }
+        startPoint = { lat: pos.coords.latitude, lng: pos.coords.longitude };
+        gpsAccuracyMeters = typeof pos.coords.accuracy === 'number' ? pos.coords.accuracy : 0;
+        gpsDenied = false;
+        showStartMarker();
+        updateGpsButton();
+        updateOptimizeFabVisibility();
+        clearGpsWatchOnly();
+        applyGpsWatchPosition(pos);
+        const onWatch = applyGpsWatchPosition;
+        const watchOpts = { enableHighAccuracy: true, maximumAge: 10000, timeout: 20000 };
+        if (canNative) {
+            watchId = await window.RotaFlowCap.Geolocation.watchPosition(watchOpts, (p, err) => {
+                if (!err) onWatch(p);
+            });
+            await startBackgroundGpsWatch();
+        } else {
+            watchId = navigator.geolocation.watchPosition(onWatch, () => {}, watchOpts);
+        }
+        return true;
+    } catch (err) {
+        gpsDenied = true;
+        startPoint = null;
+        updateGpsButton();
+        updateOptimizeFabVisibility();
+        enableGpsTracking.lastError = err;
+        return false;
+    }
+}
+
+async function toggleGps() {
+    if (gpsEnabled) {
+        gpsEnabled = false;
+        gpsDenied = true;
+        clearGpsTracking();
+        persistGpsPreference();
+        updateGpsButton();
+        showToast('GPS desligado. A rota usará a primeira entrega como partida');
+        return;
+    }
+    if (!isNativeApp() && !window.isSecureContext) {
+        showToast(gpsErrorMessage(), true);
+        updateGpsButton();
+        return;
+    }
+    gpsEnabled = true;
+    gpsDenied = false;
+    persistGpsPreference();
+    updateGpsButton();
+    showToast('Obtendo localização…');
+    const ok = await enableGpsTracking();
+    if (!ok) {
+        gpsEnabled = false;
+        persistGpsPreference();
+        updateGpsButton();
+        showToast(gpsErrorMessage(enableGpsTracking.lastError), true);
+        return;
+    }
+    if (map && startPoint) {
+        map.panTo(startPoint);
+        if (map.getZoom() < 14) map.setZoom(15);
+    }
+    showToast('Localização ativada');
+}
+
+function requestStartPoint() {
+    if (!gpsEnabled) {
+        clearGpsTracking();
+        return Promise.resolve(null);
+    }
+    if (startPoint) return Promise.resolve(startPoint);
+    return enableGpsTracking().then(ok => (ok ? startPoint : null));
+}
+
+function showStartMarker() {
+    if (!startPoint || !map || !gpsEnabled) return;
+
+    // App nativo: usa a camada oficial "minha localização" (círculo azul do Google Maps)
+    if (useNativeMap && nativeGoogleMap) {
+        if (gpsMarker) {
+            gpsMarker.setMap(null);
+            gpsMarker = null;
+        }
+        nativeGoogleMap.enableCurrentLocation(true).catch(e => console.warn('my location', e));
+        return;
+    }
+
+    if (gpsMarker) {
+        gpsMarker.setMap(null);
+        gpsMarker = null;
+    }
+    if (gpsAccuracyCircle) {
+        gpsAccuracyCircle.setMap(null);
+        gpsAccuracyCircle = null;
+    }
+
+    // Web: mesmo visual do Google Maps — ponto azul #4285F4 + anel branco + área de precisão
+    const radius = Math.max(gpsAccuracyMeters || 0, 25);
+    gpsAccuracyCircle = new google.maps.Circle({
+        map,
+        center: startPoint,
+        radius,
+        clickable: false,
+        fillColor: '#4285F4',
+        fillOpacity: 0.16,
+        strokeColor: '#4285F4',
+        strokeOpacity: 0.4,
+        strokeWeight: 1,
+        zIndex: 998
+    });
+    gpsMarker = new google.maps.Marker({
+        position: startPoint,
+        map: map,
+        title: 'Sua localização',
+        zIndex: 999,
+        clickable: false,
+        icon: {
+            path: google.maps.SymbolPath.CIRCLE,
+            scale: 8,
+            fillColor: '#4285F4',
+            fillOpacity: 1,
+            strokeColor: '#ffffff',
+            strokeWeight: 2
+        }
+    });
+}
+
+function routeDirections(request) {
+    return new Promise((resolve, reject) => {
+        directionsService.route(request, (result, status) => {
+            if (status === 'OK' && result) resolve(result);
+            else reject(new Error(status));
+        });
+    });
+}
+
+function directionsErrorMessage(err) {
+    switch (err && err.message) {
+        case 'REQUEST_DENIED': return "A Directions API precisa ser habilitada na chave do Google Maps";
+        case 'OVER_QUERY_LIMIT': return "Limite de consultas do Google atingido. Tente novamente em instantes";
+        case 'ZERO_RESULTS': return "Não foi encontrado um trajeto por rua entre essas paradas";
+        case 'MAX_WAYPOINTS_EXCEEDED': return "Há paradas demais para calcular em uma única rota";
+        default: return "Não foi possível calcular a rota neste momento";
+    }
+}
+
+// Sem destino fixo, a parada mais distante da partida é o melhor ponto final:
+// a otimização resolve o caminho no meio.
+function farthestFrom(point, stops) {
+    let best = stops[0], bestDist = -1;
+    stops.forEach(s => {
+        const dist = haversineDistance(point.lat, point.lng, s.lat, s.lng);
+        if (dist > bestDist) { bestDist = dist; best = s; }
+    });
+    return best;
+}
+
+async function orderByDirections(stops) {
+    const fixedStart = startPoint ? null : stops[0];
+    const origin = startPoint || { lat: fixedStart.lat, lng: fixedStart.lng };
+    const rest = fixedStart ? stops.slice(1) : stops.slice();
+    const end = farthestFrom(origin, rest);
+    const waypoints = rest.filter(s => s !== end);
+    const result = await routeDirections({
+        origin: origin,
+        destination: { lat: end.lat, lng: end.lng },
+        waypoints: waypoints.map(s => ({ location: { lat: s.lat, lng: s.lng }, stopover: true })),
+        optimizeWaypoints: true,
+        travelMode: google.maps.TravelMode.DRIVING
+    });
+    const order = result.routes[0].waypoint_order || waypoints.map((_, i) => i);
+    const middle = order.map(i => waypoints[i]);
+    return { ordered: fixedStart ? [fixedStart, ...middle, end] : [...middle, end], result: result };
+}
+
+// Acima do limite da API: vizinho mais próximo, sempre indo para a parada
+// pendente mais perto da atual.
+function orderByProximity(stops) {
+    const fixedStart = startPoint ? null : stops[0];
+    let current = startPoint || { lat: fixedStart.lat, lng: fixedStart.lng };
+    const remaining = fixedStart ? stops.slice(1) : stops.slice();
+    const ordered = fixedStart ? [fixedStart] : [];
+    while (remaining.length) {
+        let bestIdx = 0, bestDist = Infinity;
+        remaining.forEach((s, i) => {
+            const dist = haversineDistance(current.lat, current.lng, s.lat, s.lng);
+            if (dist < bestDist) { bestDist = dist; bestIdx = i; }
+        });
+        current = remaining.splice(bestIdx, 1)[0];
+        ordered.push(current);
+    }
+    return ordered;
+}
+
+// Reposiciona as pendentes nos lugares que já ocupavam, sem mexer nas
+// entregues nem renumerar os IDs colados nos pacotes.
+function applyStopOrder(ordered) {
+    const slots = [];
+    deliveries.forEach((d, i) => { if (isPendingStop(d)) slots.push(i); });
+    // Reordenar com uma lista incompleta deixaria buracos na rota e no backup.
+    if (ordered.length !== slots.length) throw new Error('ORDER_MISMATCH');
+    ordered.forEach((d, i) => { deliveries[slots[i]] = d; });
+}
+
+function clearRouteOverlay() {
+    routeRenderers.forEach(r => r.setMap(null));
+    routeRenderers = [];
+    routeMetrics = null;
+    routeActive = false;
+    deliveries.forEach(d => {
+        delete d.legMeters; delete d.legSeconds; delete d.routeOrder;
+        delete d.etaMeters; delete d.etaSeconds;
+    });
+    updateOptimizeFabVisibility();
+    updateProgressAndEstimates();
+}
+
+function updateOptimizeFabVisibility() {
+    const pending = pendingStops();
+    const optimizedForCurrent = !!(
+        routeActive && routeMetrics && routeMetrics.signature === routeSignature(pending)
+    );
+    // ≥2 pendentes e rota ainda não otimizada para esta assinatura.
+    // Após otimizar com sucesso some; volta se paradas/ordem/endereços mudarem.
+    const show = pending.length >= 2 && !optimizedForCurrent;
+    const label = 'Otimizar rota';
+    const shortLabel = 'Otimizar';
+    const idleIcon = 'fas fa-route';
+
+    const fab = document.getElementById('optimizeRouteBtn');
+    if (fab) {
+        fab.classList.toggle('rf-fab-hidden', !show);
+        fab.classList.remove('is-optimized');
+        fab.removeAttribute('hidden');
+        fab.style.display = '';
+        fab.style.opacity = '';
+        fab.style.visibility = '';
+        fab.style.pointerEvents = '';
+        fab.setAttribute('aria-hidden', show ? 'false' : 'true');
+        fab.title = label;
+        fab.setAttribute('aria-label', label);
+        if (!optimizing) {
+            fab.disabled = false;
+            const icon = fab.querySelector('i');
+            if (icon) icon.className = idleIcon;
+        }
+    }
+
+    const tool = document.getElementById('optimizeRouteToolBtn');
+    if (tool) {
+        tool.classList.toggle('rf-tool-hidden', !show);
+        tool.classList.remove('is-optimized');
+        tool.setAttribute('aria-hidden', show ? 'false' : 'true');
+        tool.title = label;
+        tool.setAttribute('aria-label', label);
+        const text = tool.querySelector('.rt-label');
+        if (text) text.textContent = shortLabel;
+        if (!optimizing) {
+            tool.disabled = false;
+            const icon = tool.querySelector('.rt-icon i');
+            if (icon) icon.className = idleIcon;
+        }
+    }
+}
+
+function chunkPoints(points) {
+    const perRequest = MAX_WAYPOINTS + 2;
+    const chunks = [];
+    for (let i = 0; i < points.length - 1; i += perRequest - 1) {
+        chunks.push(points.slice(i, i + perRequest));
+    }
+    return chunks;
+}
+
+async function renderRoute(ordered, precomputed) {
+    // Não apaga routeOrder de entregues/falhou — só recalcula as pendentes da sequência.
+    ordered.forEach(d => {
+        delete d.legMeters; delete d.legSeconds;
+        delete d.etaMeters; delete d.etaSeconds;
+    });
+
+    const points = ordered.map(s => ({ lat: s.lat, lng: s.lng }));
+    if (startPoint) points.unshift(startPoint);
+
+    let results = precomputed ? [precomputed] : [];
+    if (!precomputed) {
+        for (const chunk of chunkPoints(points)) {
+            results.push(await routeDirections({
+                origin: chunk[0],
+                destination: chunk[chunk.length - 1],
+                waypoints: chunk.slice(1, -1).map(p => ({ location: p, stopover: true })),
+                travelMode: google.maps.TravelMode.DRIVING
+            }));
+        }
+    }
+
+    // Por enquanto não desenha a linha azul no mapa — só calcula km/tempo.
+    routeRenderers.forEach(r => r.setMap(null));
+    routeRenderers = [];
+
+    let meters = 0, seconds = 0;
+    const legs = results.reduce((acc, r) => acc.concat(r.routes[0].legs), []);
+    legs.forEach((leg, i) => {
+        const legMeters = leg.distance ? leg.distance.value : 0;
+        const legSeconds = leg.duration ? leg.duration.value : 0;
+        meters += legMeters;
+        seconds += legSeconds;
+        const stop = ordered[startPoint ? i : i + 1];
+        if (stop) { stop.legMeters = legMeters; stop.legSeconds = legSeconds; }
+    });
+    let cumM = 0, cumS = 0;
+    // routeOrder segue a posição na lista da rota (deliveries), estável para o motorista
+    const orderIndex = new Map(ordered.map((s, i) => [s.id, i + 1]));
+    deliveries.forEach(d => {
+        if (orderIndex.has(d.id)) d.routeOrder = orderIndex.get(d.id);
+    });
+    ordered.forEach((s) => {
+        cumM += s.legMeters || 0;
+        cumS += s.legSeconds || 0;
+        s.etaMeters = cumM;
+        s.etaSeconds = cumS;
+    });
+    routeMetrics = { signature: routeSignature(pendingStops()), meters: meters, seconds: seconds };
+    routeActive = true;
+    updateOptimizeFabVisibility();
+}
+
+function fitMapToRoute() {
+    centerMapOnMarkers();
+}
+
+function setOptimizeControlsBusy(busy) {
+    const fab = document.getElementById('optimizeRouteBtn');
+    const tool = document.getElementById('optimizeRouteToolBtn');
+    [fab, tool].forEach((btn) => {
+        if (!btn) return;
+        btn.disabled = !!busy;
+        if (busy) {
+            btn.classList.remove('rf-fab-hidden', 'rf-tool-hidden', 'is-optimized');
+            btn.removeAttribute('hidden');
+            btn.setAttribute('aria-hidden', 'false');
+            const icon = btn.querySelector('i');
+            if (icon) icon.className = 'fas fa-spinner fa-spin';
+        }
+    });
+}
+
+async function optimizeRoute() {
+    if (optimizing) return;
+    if (!directionsService) return showToast("Aguarde o mapa carregar completamente", true);
+    const stops = pendingStops();
+    if (stops.length < 2) return showToast("São necessárias pelo menos 2 entregas pendentes", true);
+
+    optimizing = true;
+    setOptimizeControlsBusy(true);
+    // Libera o gesto do toque antes do trabalho pesado (Directions / proximity).
+    await yieldToUiFrame();
+    await new Promise((r) => setTimeout(r, 0));
+
+    try {
+        await requestStartPoint();
+        showStartMarker();
+        await yieldToUiFrame();
+
+        let ordered, precomputed = null;
+        if (stops.length <= MAX_WAYPOINTS + 1) {
+            const planned = await orderByDirections(stops);
+            ordered = planned.ordered;
+            precomputed = planned.result;
+        } else {
+            ordered = orderByProximity(stops);
+            showToast(`${stops.length} paradas: ordem por proximidade; distância calculada pelas ruas`);
+        }
+
+        applyStopOrder(ordered);
+        await yieldToUiFrame();
+        await renderRoute(ordered, precomputed);
+        saveStorage();
+        renderDeliveriesList();
+        rebuildMarkers(false);
+        fitMapToRoute();
+        switchSidebarTab('rota');
+        // Republica ETA/ordem nos tracks — fora do caminho crítico do mapa.
+        const kickTracks = () => refreshActiveTrackSessions({ force: true }).catch(() => {});
+        if (typeof requestIdleCallback === 'function') requestIdleCallback(kickTracks, { timeout: 2500 });
+        else setTimeout(kickTracks, 400);
+        const origem = startPoint ? 'sua localização' : 'a 1ª entrega';
+        showToast(`Rota otimizada (partida: ${origem}): ${formatKm(routeMetrics.meters)} · ${formatDuration(routeMetrics.seconds)}`);
+    } catch (e) {
+        clearRouteOverlay();
+        renderDeliveriesList();
+        showToast(directionsErrorMessage(e), true);
+    } finally {
+        optimizing = false;
+        setOptimizeControlsBusy(false);
+        updateOptimizeFabVisibility();
+    }
+}
+
+// Redesenha a linha nas paradas que ainda faltam, sem mudar a ordem.
+// Usado ao marcar entregue para a otimização não sumir do mapa.
+async function refreshRouteKeepOrder() {
+    if (optimizing || !directionsService || !routeActive) return;
+    const stops = pendingStops();
+    if (stops.length < 2) {
+        clearRouteOverlay();
+        updateProgressAndEstimates();
+        renderDeliveriesList();
+        refreshActiveTrackSessions({ force: true }).catch(() => {});
+        return;
+    }
+    try {
+        await requestStartPoint();
+        showStartMarker();
+        await renderRoute(stops, null);
+        renderDeliveriesList();
+        updateProgressAndEstimates();
+        refreshActiveTrackSessions({ force: true }).catch(() => {});
+    } catch (e) {
+        clearRouteOverlay();
+        updateProgressAndEstimates();
+        renderDeliveriesList();
+        refreshActiveTrackSessions({ force: true }).catch(() => {});
+    }
+}
+
+function scheduleRouteRefresh() {
+    if (!routeActive) return;
+    clearTimeout(routeRefreshTimer);
+    // Fora do gesto "Entregar" — Directions compete com painel/fotos.
+    routeRefreshTimer = setTimeout(() => { refreshRouteKeepOrder(); }, 400);
+}
+
+function notifyRouteCompositionChanged({ keepRoute = false } = {}) {
+    syncBackgroundGpsTargets();
+    if (keepRoute && routeActive) scheduleRouteRefresh();
+    else {
+        clearRouteOverlay();
+        updateProgressAndEstimates();
+        refreshActiveTrackSessions({ force: true }).catch(() => {});
+    }
+}
+
+// ========== MAPA E INICIALIZAÇÃO ==========
+async function ensurePlacesAutocomplete() {
+    if (autocomplete || !document.getElementById('address')) return;
+    try {
+        if (google.maps.importLibrary) {
+            await google.maps.importLibrary('places');
+        }
+        const addressInput = document.getElementById('address');
+        autocomplete = new google.maps.places.Autocomplete(addressInput, {
+            componentRestrictions: { country: 'br' },
+            fields: ['formatted_address', 'geometry'],
+            types: ['address'],
+            location: PORTO_VELHO_CENTER,
+            radius: PORTO_VELHO_RADIUS,
+            strictBounds: false
+        });
+        autocomplete.addListener('place_changed', () => {
+            const place = autocomplete.getPlace();
+            if (place && place.formatted_address) addressInput.value = place.formatted_address;
+        });
+    } catch (e) {
+        console.warn('Places autocomplete', e);
+    }
+}
+
+async function initNativeGoogleMap() {
+    const cap = window.RotaFlowCap;
+    document.documentElement.classList.add('native-map');
+    try {
+        await cap.StatusBar.setStyle({ style: cap.Style.Dark });
+    } catch (_) {}
+
+    const old = document.getElementById('map');
+    const el = document.createElement('capacitor-google-map');
+    el.id = 'map';
+    el.setAttribute('role', 'application');
+    el.setAttribute('aria-label', 'Mapa das entregas');
+    el.style.display = 'block';
+    el.style.width = '100%';
+    el.style.height = '100%';
+    old.replaceWith(el);
+
+    await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
+
+    nativeGoogleMap = await cap.GoogleMap.create({
+        id: 'rotaflow',
+        element: el,
+        apiKey: cap.MAPS_API_KEY || MAPS_WEB_KEY,
+        config: {
+            center: PORTO_VELHO_CENTER,
+            zoom: 12,
+            disableDefaultUI: true,
+            // Maps SDK nativo: rotação/inclinação com dois dedos (360°) como no Google Maps
+            heading: 0,
+            styles: mapStyle
+        }
+    });
+    nativeMapZoom = 12;
+    map = createNativeMapFacade(nativeGoogleMap);
+    useNativeMap = true;
+
+    await nativeGoogleMap.setOnMarkerClickListener((ev) => {
+        const m = nativeMarkerById.get(ev.markerId);
+        if (m && typeof m._onClick === 'function') m._onClick();
+    });
+}
+
+/**
+ * CameraPreview toBack foi removido do caminho multi-foto.
+ * O mapa nativo já não precisa de suspend/destroy/recreate por causa da câmera.
+ */
+
+async function initMap() {
+    useNativeMap = false;
+    nativeGoogleMap = null;
+    nativeMarkerById = new Map();
+
+    if (isNativeApp()) {
+        try {
+            await initNativeGoogleMap();
+        } catch (e) {
+            console.warn('Native map failed, falling back to JS Maps', e);
+            document.documentElement.classList.remove('native-map');
+            useNativeMap = false;
+            if (!document.getElementById('map')) {
+                const area = document.querySelector('.map-area');
+                const div = document.createElement('div');
+                div.id = 'map';
+                div.setAttribute('role', 'application');
+                area.prepend(div);
+            }
+        }
+    }
+
+    if (!useNativeMap) {
+        const mapOpts = {
+            center: PORTO_VELHO_CENTER,
+            zoom: 12,
+            mapTypeControl: false,
+            fullscreenControl: false,
+            streetViewControl: false,
+            gestureHandling: 'greedy',
+            // Rotação 360° (dois dedos) + bússola para voltar ao norte, como no Google Maps
+            rotateControl: true,
+            rotateControlOptions: { position: google.maps.ControlPosition.LEFT_BOTTOM },
+            clickableIcons: false,
+            keyboardShortcuts: false,
+            disableDoubleClickZoom: false,
+            styles: mapStyle
+        };
+        // Mapa vetorial (quando disponível) costuma ser mais fluido no celular
+        // e é o que permite girar/inclinar livremente.
+        try {
+            if (google.maps.RenderingType && google.maps.RenderingType.VECTOR) {
+                mapOpts.renderingType = google.maps.RenderingType.VECTOR;
+            }
+        } catch (e) {}
+
+        map = new google.maps.Map(document.getElementById('map'), mapOpts);
+    }
+
+    geocoder = new google.maps.Geocoder();
+    directionsService = new google.maps.DirectionsService();
+    const addressInput = document.getElementById('address');
+    // Places só quando o usuário for digitar endereço (menos peso no boot).
+    addressInput.addEventListener('focus', () => { ensurePlacesAutocomplete(); }, { once: true });
+
+    // Login automático já rodou loadStorage no DOMContentLoaded: não reler/re-renderizar tudo.
+    if (authReady) {
+        if (storageLoadedUid === currentUid()) refreshMapAfterStorageLoad();
+        else loadStorage();
+    }
+    initNameSuggestions();
+    setupNewDeliveryPhoneUI();
+
+    addressInput.addEventListener('input', function() {
+        clearTimeout(duplicateCheckTimer);
+        duplicateCheckTimer = setTimeout(checkAddressDuplicate, 300);
+    });
+
+    document.getElementById('closeGalleryBtn').addEventListener('click', closeGallery);
+    document.getElementById('prevPhotoBtn').addEventListener('click', prevPhoto);
+    document.getElementById('nextPhotoBtn').addEventListener('click', nextPhoto);
+    document.getElementById('fullscreenGallery').addEventListener('click', (e) => { if (e.target === document.getElementById('fullscreenGallery')) closeGallery(); });
+    setupGallerySwipe();
+    document.getElementById('closePanelBtn').addEventListener('click', closeDeliveryPanel);
+    document.getElementById('panelPacotesPlus').addEventListener('click', () => adjustPacotes(1));
+    document.getElementById('panelPacotesMinus').addEventListener('click', () => adjustPacotes(-1));
+    document.getElementById('editObsBtn').addEventListener('click', editObservation);
+    document.getElementById('editPhoneBtn').addEventListener('click', editPhonesPanel);
+    setupPanelSwipe();
+    setupPanelPhotoCapture();
+    setupUndoSnackbar();
+    setupHistoryListDelegation();
+    setupOverflowMenus();
+    setupBackupReminderUi();
+    setupAutoBackupScheduler();
+    document.getElementById('mapNextChip')?.addEventListener('click', () => {
+        const selected = currentSelectedDelivery;
+        if (!selected) return;
+        focusDeliveryInPanel(selected, 0, { keepMinimized: false, pan: true, zoom: 16 });
+    });
+    if (isNativeApp()) {
+        setupScreenLockNotificationBridge();
+        setupCameraRestoreHandler();
+    }
+
+    document.getElementById('profileBtn').addEventListener('click', showProfileModal);
+    document.getElementById('backupBtn').addEventListener('click', backupData);
+    document.getElementById('restoreBtn').addEventListener('click', () => document.getElementById('importFileInput').click());
+    document.getElementById('importFileInput').addEventListener('change', (e) => {
+        if (e.target.files.length) {
+            restoreData(e.target.files[0]);
+            e.target.value = '';
+        }
+    });
+
+    document.getElementById('backupAgendaBtn').addEventListener('click', backupAgenda);
+    document.getElementById('restoreAgendaBtn').addEventListener('click', () => document.getElementById('restoreAgendaInput').click());
+    document.getElementById('restoreAgendaInput').addEventListener('change', (e) => {
+        if (e.target.files.length) {
+            restoreAgenda(e.target.files[0]);
+            e.target.value = '';
+        }
+    });
+
+    document.getElementById('optimizeRouteBtn').addEventListener('click', optimizeRoute);
+    document.getElementById('optimizeRouteToolBtn')?.addEventListener('click', optimizeRoute);
+    updateOptimizeFabVisibility();
+    document.getElementById('archiveDayBtn')?.addEventListener('click', () => archiveCurrentRouteDay({ silent: false }));
+    document.getElementById('newRouteBtn')?.addEventListener('click', startNewRoute);
+    document.getElementById('newRouteMenuBtn')?.addEventListener('click', startNewRoute);
+    document.getElementById('clearRouteBtn').addEventListener('click', clearRoute);
+    document.getElementById('toggleSidebarBtn').addEventListener('click', toggleSidebar);
+    document.getElementById('copyFromRouteBtn').addEventListener('click', copyFromOtherRoute);
+    document.getElementById('gpsBtn').addEventListener('click', toggleGps);
+    updateGpsButton();
+    // No celular nativo o GPS funciona sem HTTPS; no browser precisa de contexto seguro.
+    if (gpsEnabled && (isNativeApp() || window.isSecureContext)) {
+        enableGpsTracking().then(ok => {
+            if (!ok) updateGpsButton();
+        });
+    } else if (gpsEnabled && !window.isSecureContext) {
+        updateGpsButton();
+    }
+
+    document.querySelectorAll('.sidebar-tabs button').forEach(btn => {
+        btn.addEventListener('click', () => switchSidebarTab(btn.dataset.tab));
+    });
+    document.getElementById('mapLoading')?.classList.add('hidden');
+
+    document.addEventListener('keydown', (e) => {
+        const gallery = document.getElementById('fullscreenGallery');
+        const galleryOpen = gallery && gallery.style.display === 'flex';
+        if (e.key === 'Escape') {
+            if (galleryOpen) closeGallery();
+            else closeDeliveryPanel();
+        }
+        if (galleryOpen && e.key === 'ArrowRight') nextPhoto();
+        if (galleryOpen && e.key === 'ArrowLeft') prevPhoto();
+    });
+}
+
+function setupNewDeliveryPhoneUI() {
+    const addBtn = document.getElementById('addPhoneBtn');
+    const numInput = document.getElementById('newPhoneInput');
+    const labelInput = document.getElementById('newPhoneLabel');
+    addBtn.addEventListener('click', () => {
+        const numero = numInput.value.trim();
+        const label = labelInput.value.trim();
+        if (!numero) return showToast("Informe um número de telefone", true);
+        const formatted = formatPhoneNumber(numero);
+        if (!formatted) return showToast("Número de telefone inválido", true);
+        tempPhones.push({ numero: formatted, label: label || '' });
+        renderTempPhones();
+        numInput.value = '';
+        labelInput.value = '';
+    });
+    numInput.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') addBtn.click();
+    });
+    labelInput.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') addBtn.click();
+    });
+    renderTempPhones();
+}
+
+// ========== GALERIA ==========
+let currentGalleryPhotos = null, currentGalleryIndex = 0;
+let gallerySwipeBound = false;
+
+function updateGalleryChrome() {
+    const counter = document.getElementById('galleryCounter');
+    const prevBtn = document.getElementById('prevPhotoBtn');
+    const nextBtn = document.getElementById('nextPhotoBtn');
+    const total = currentGalleryPhotos ? currentGalleryPhotos.length : 0;
+    const idx = currentGalleryIndex;
+    if (counter) {
+        if (total > 1) {
+            counter.hidden = false;
+            counter.textContent = `${idx + 1} / ${total}`;
+        } else {
+            counter.hidden = true;
+            counter.textContent = '';
+        }
+    }
+    if (prevBtn) prevBtn.disabled = !(total > 1 && idx > 0);
+    if (nextBtn) nextBtn.disabled = !(total > 1 && idx < total - 1);
+}
+
+function showGalleryPhotoAt(index, direction = 0) {
+    const img = document.getElementById('galleryImg');
+    if (!currentGalleryPhotos || !img) return;
+    if (index < 0 || index >= currentGalleryPhotos.length) return;
+    currentGalleryIndex = index;
+    if (direction !== 0) {
+        img.classList.remove('gallery-swipe-out-left', 'gallery-swipe-out-right');
+        // Force reflow so the next class transition runs.
+        void img.offsetWidth;
+        img.classList.add(direction > 0 ? 'gallery-swipe-out-left' : 'gallery-swipe-out-right');
+        requestAnimationFrame(() => {
+            img.src = currentGalleryPhotos[currentGalleryIndex];
+            img.classList.remove('gallery-swipe-out-left', 'gallery-swipe-out-right');
+            updateGalleryChrome();
+        });
+    } else {
+        img.src = currentGalleryPhotos[index];
+        updateGalleryChrome();
+    }
+}
+
+function openGallery(photos, index) {
+    const gallery = document.getElementById('fullscreenGallery');
+    if (!photos || photos.length === 0) return;
+    currentGalleryPhotos = photos;
+    currentGalleryIndex = Math.max(0, Math.min(index || 0, photos.length - 1));
+    showGalleryPhotoAt(currentGalleryIndex, 0);
+    gallery.style.display = 'flex';
+}
+function closeGallery() {
+    document.getElementById('fullscreenGallery').style.display = 'none';
+    currentGalleryPhotos = null;
+    const img = document.getElementById('galleryImg');
+    if (img) {
+        img.classList.remove('gallery-swipe-out-left', 'gallery-swipe-out-right');
+        img.removeAttribute('src');
+    }
+    updateGalleryChrome();
+}
+function nextPhoto() {
+    if (!currentGalleryPhotos || currentGalleryIndex >= currentGalleryPhotos.length - 1) return;
+    showGalleryPhotoAt(currentGalleryIndex + 1, 1);
+}
+function prevPhoto() {
+    if (!currentGalleryPhotos || currentGalleryIndex <= 0) return;
+    showGalleryPhotoAt(currentGalleryIndex - 1, -1);
+}
+
+function setupGallerySwipe() {
+    const gallery = document.getElementById('fullscreenGallery');
+    if (!gallery || gallerySwipeBound) return;
+    gallerySwipeBound = true;
+    let startX = 0;
+    let startY = 0;
+    let tracking = false;
+    let moved = false;
+
+    gallery.addEventListener('touchstart', (e) => {
+        if (!currentGalleryPhotos || e.touches.length !== 1) return;
+        const t = e.touches[0];
+        startX = t.clientX;
+        startY = t.clientY;
+        tracking = true;
+        moved = false;
+    }, { passive: true });
+
+    gallery.addEventListener('touchmove', (e) => {
+        if (!tracking || e.touches.length !== 1) return;
+        const t = e.touches[0];
+        const dx = t.clientX - startX;
+        const dy = t.clientY - startY;
+        if (Math.abs(dx) > 12 && Math.abs(dx) > Math.abs(dy)) moved = true;
+    }, { passive: true });
+
+    gallery.addEventListener('touchend', (e) => {
+        if (!tracking) return;
+        tracking = false;
+        if (!moved || !currentGalleryPhotos || currentGalleryPhotos.length < 2) return;
+        const t = e.changedTouches[0];
+        if (!t) return;
+        const dx = t.clientX - startX;
+        const dy = t.clientY - startY;
+        if (Math.abs(dx) < 48 || Math.abs(dx) < Math.abs(dy) * 1.15) return;
+        // Deslizar para a esquerda → próxima; para a direita → anterior
+        if (dx < 0) nextPhoto();
+        else prevPhoto();
+    }, { passive: true });
+
+    gallery.addEventListener('touchcancel', () => { tracking = false; moved = false; }, { passive: true });
+}
+
+function geocodeAddressAndUpdate(delivery, newAddress, callback) {
+    // Adia 1 frame para não competir com o fecho do modal / gesto.
+    if (newAddress === delivery.endereco) { callback?.(true); return; }
+    if (!geocoder) {
+        showToast('Aguarde o mapa carregar para localizar o endereço', true);
+        callback?.(false);
+        return;
+    }
+    showToast("Localizando endereço…");
+    const run = () => {
+        geocoder.geocode({ address: newAddress }, (res, stat) => {
+            if (stat === "OK" && res[0]) {
+                delivery.lat = res[0].geometry.location.lat();
+                delivery.lng = res[0].geometry.location.lng();
+                delivery.endereco = newAddress;
+                saveStorage();
+                syncTrackingStatus(delivery);
+                const marker = getMarker(delivery.sequentialId);
+                if (marker) { marker.setPosition({ lat: delivery.lat, lng: delivery.lng }); updateMarkerIcon(marker, delivery); } else { rebuildMarkers(false); }
+                renderDeliveriesList();
+                showToast("Endereço atualizado");
+                callback?.(true);
+            } else { showToast("Não foi possível localizar este endereço", true); callback?.(false); }
+        });
+    };
+    if (typeof requestIdleCallback === 'function') requestIdleCallback(run, { timeout: 600 });
+    else setTimeout(run, 50);
+}
+
+async function markDelivered(id, { advance = false } = {}) {
+    try {
+        let d = deliveries.find(x => x.id === id);
+        if (!d || d.status === 'entregue') return;
+        const normalsBefore = countNormalActiveStops();
+        d.status = 'entregue';
+        d.voltarDepois = false;
+        delete d.failReason;
+        // Libera JPEGs em memória de outras paradas — o backup/auto e o avanço no painel matavam o WebView.
+        try { releaseInMemoryPhotosExcept(d.id); } catch (_) {}
+        try { saveStorage(); } catch (_) {}
+        try { syncTrackingStatus(d); } catch (e) { console.warn('syncTrackingStatus', e); }
+        try { sendDeliveredPush(d); } catch (e) { console.warn('sendDeliveredPush', e); }
+        try { upsertMarker(d); } catch (e) { console.warn('upsertMarker', e); }
+        try { updateDeliveryStats(); } catch (_) {}
+        try { renderDeliveriesList(); } catch (_) {}
+        try { notifyRouteCompositionChanged({ keepRoute: true }); } catch (_) {}
+        try { playDeliveryFeedback(); } catch (_) {}
+        try { noteDeliveryCompletedForBackup(); } catch (_) {}
+        try { maybeNotifyVoltarDepois(normalsBefore); } catch (_) {}
+        if (advance) {
+            try { minimizeDeliveryPanel(); } catch (_) {}
+            try {
+                goToAdjacentDelivery(1, { preferPending: true, keepMinimized: true });
+            } catch (e) {
+                console.warn('goToAdjacentDelivery', e);
+            }
+        } else if (currentSelectedDelivery && currentSelectedDelivery.id === id) {
+            const mini = !!document.getElementById('deliveryPanel')?.classList.contains('minimized');
+            try { await openDeliveryPanel(d, { keepMinimized: mini }); } catch (_) {}
+        } else {
+            try { syncActiveStopNotification(currentSelectedDelivery); } catch (_) {}
+        }
+    } catch (e) {
+        console.error('markDelivered', e);
+        try { showToast('Não foi possível concluir a entrega', true); } catch (_) {}
+    }
+}
+
+/** Descarta URLs em RAM (mantém photoIds no IndexedDB; revoga blob:). */
+function releaseInMemoryPhotosExcept(keepDeliveryId) {
+    const clear = (item) => {
+        if (!item || !Array.isArray(item.photos) || !item.photos.length) return;
+        for (const u of item.photos) revokeDisplayUrl(u);
+        const ids = Array.isArray(item.photoIds) ? item.photoIds : [];
+        for (const id of ids) revokePhotoObjectUrl(id);
+        item.photos = [];
+    };
+    for (const d of deliveries) {
+        if (keepDeliveryId != null && d.id === keepDeliveryId) continue;
+        clear(d);
+    }
+    // Agenda thumbs: limpa se lista grande.
+    if (agenda && agenda.length > 40) {
+        for (const a of agenda) clear(a);
+    }
+}
+
+function undoDeliveryStatus(id, { keepPanel = false, keepMinimized = false } = {}) {
+    let d = deliveries.find(d => d.id === id);
+    if (!d) return;
+    if (d.status !== 'entregue' && d.status !== 'falhou') return;
+    d.status = 'pendente';
+    d.voltarDepois = false;
+    delete d.failReason;
+    delete d.deliveredNotified;
+    delete d.absentNotified;
+    saveStorage();
+    syncTrackingStatus(d);
+    upsertMarker(d);
+    updateDeliveryStats();
+    renderDeliveriesList();
+    notifyRouteCompositionChanged({ keepRoute: true });
+    showToast(`Entrega ${d.sequentialId} reaberta como pendente`);
+    if (keepPanel || (currentSelectedDelivery && currentSelectedDelivery.id === id)) {
+        openDeliveryPanel(d, { keepMinimized });
+    }
+}
+
+// ========== NÃO ENTREGUE / VOLTAR DEPOIS ==========
+const FAIL_REASON_LABELS = {
+    ausente: 'Ausente',
+    'endereco-errado': 'Endereço errado',
+    recusou: 'Recusou',
+    'voltar-depois': 'Voltar depois'
+};
+const FAIL_REASON_OPTIONS = [
+    { id: 'ausente', label: 'Ausente', icon: 'fas fa-house-user', iconColor: '#ea580c' },
+    { id: 'endereco-errado', label: 'Endereço errado', icon: 'fas fa-map-location-dot', iconColor: '#ea580c' },
+    { id: 'recusou', label: 'Recusou', icon: 'fas fa-hand', iconColor: '#ea580c' },
+    { id: 'voltar-depois', label: 'Voltar depois', icon: 'fas fa-clock', iconColor: '#b45309' }
+];
+
+let voltarDepoisAlertShown = false;
+
+function playDeliveryFeedback() {
+    try {
+        if (feedbackVibrateEnabled && navigator.vibrate) navigator.vibrate([35, 25, 45]);
+    } catch (e) {}
+    if (!feedbackSoundEnabled) return;
+    try {
+        const Ctx = window.AudioContext || window.webkitAudioContext;
+        if (!Ctx) return;
+        const ctx = new Ctx();
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        osc.type = 'sine';
+        osc.frequency.value = 880;
+        gain.gain.value = 0.07;
+        osc.connect(gain);
+        gain.connect(ctx.destination);
+        osc.start();
+        gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.12);
+        osc.stop(ctx.currentTime + 0.13);
+        setTimeout(() => { try { ctx.close(); } catch (e) {} }, 250);
+    } catch (e) {}
+}
+
+async function ensureNotificationPermission() {
+    if (!('Notification' in window)) return false;
+    if (Notification.permission === 'granted') return true;
+    if (Notification.permission === 'denied') return false;
+    try {
+        const result = await Notification.requestPermission();
+        return result === 'granted';
+    } catch (e) {
+        return false;
+    }
+}
+
+function countNormalActiveStops() {
+    return deliveries.filter(d => isActiveStop(d) && !d.voltarDepois).length;
+}
+
+function getVoltarDepoisStops() {
+    return deliveries.filter(d => isActiveStop(d) && d.voltarDepois);
+}
+
+// Avisa ao terminar a penúltima (ou a última) entrega "normal",
+// para o motorista lembrar de voltar às paradas adiadas.
+function maybeNotifyVoltarDepois(normalsBefore) {
+    const postponed = getVoltarDepoisStops();
+    if (!postponed.length) {
+        voltarDepoisAlertShown = false;
+        return;
+    }
+    const normalsAfter = countNormalActiveStops();
+    // Penúltima: saiu de 2+ normais para 1 (ou 0).
+    if (!(normalsBefore > 1 && normalsAfter <= 1)) return;
+    if (voltarDepoisAlertShown) return;
+    voltarDepoisAlertShown = true;
+    notifyVoltarDepoisStops(postponed);
+}
+
+function notifyVoltarDepoisStops(list) {
+    const items = list || getVoltarDepoisStops();
+    if (!items.length) return;
+
+    const names = items.map(d => `${d.sequentialId} · ${d.nome}`).join(', ');
+    const msg = items.length === 1
+        ? `Lembrete: retornar à entrega ${names}`
+        : `Lembrete: retornar a ${items.length} entregas adiadas — ${names}`;
+    showToast(msg, true);
+
+    try {
+        if (feedbackVibrateEnabled && navigator.vibrate) navigator.vibrate([120, 60, 120, 60, 180]);
+    } catch (e) {}
+
+    if (feedbackSoundEnabled) {
+        try {
+            const Ctx = window.AudioContext || window.webkitAudioContext;
+            if (Ctx) {
+                const ctx = new Ctx();
+                const osc = ctx.createOscillator();
+                const gain = ctx.createGain();
+                osc.type = 'triangle';
+                osc.frequency.value = 660;
+                gain.gain.value = 0.08;
+                osc.connect(gain);
+                gain.connect(ctx.destination);
+                osc.start();
+                gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.25);
+                osc.stop(ctx.currentTime + 0.26);
+                setTimeout(() => { try { ctx.close(); } catch (e) {} }, 350);
+            }
+        } catch (e) {}
+    }
+
+    if ('Notification' in window && Notification.permission === 'granted') {
+        try {
+            new Notification('RotaFlow — Voltar depois', {
+                body: names,
+                tag: 'voltar-depois-penultima',
+                renotify: true,
+                icon: APP_ICON
+            });
+        } catch (e) {}
+    }
+}
+
+async function markNotDelivered(id) {
+    try {
+        const d = deliveries.find(x => x.id === id);
+        if (!d || d.status === 'entregue') return;
+
+        const choice = await showChoiceModal({
+            title: 'Não entregue',
+            message: `Selecione o motivo para a entrega ${d.sequentialId} (${d.nome}):`,
+            options: FAIL_REASON_OPTIONS.map(o => ({
+                label: o.label,
+                value: o.id,
+                icon: o.icon,
+                iconColor: o.iconColor
+            }))
+        });
+        if (!choice) return;
+
+        const normalsBefore = countNormalActiveStops();
+
+        if (choice === 'voltar-depois') {
+            d.status = 'pendente';
+            d.voltarDepois = true;
+            d.failReason = 'voltar-depois';
+            try { await ensureNotificationPermission(); } catch (_) {}
+            try { saveStorage(); } catch (_) {}
+            try {
+                const marker = getMarker(d.sequentialId);
+                if (marker) updateMarkerIcon(marker, d);
+            } catch (_) {}
+            try { updateDeliveryStats(); } catch (_) {}
+            try { renderDeliveriesList(); } catch (_) {}
+            voltarDepoisAlertShown = false;
+            showToast(`Entrega ${d.sequentialId} adiada. Aviso na penúltima parada`);
+            try { minimizeDeliveryPanel(); } catch (_) {}
+            try { goToAdjacentDelivery(1, { preferPending: true, keepMinimized: true }); } catch (_) {}
+            return;
+        }
+
+        d.status = 'falhou';
+        d.voltarDepois = false;
+        d.failReason = choice;
+        try { releaseInMemoryPhotosExcept(d.id); } catch (_) {}
+        try { saveStorage(); } catch (_) {}
+        try { syncTrackingStatus(d); } catch (_) {}
+        if (choice === 'ausente') {
+            try { sendAbsentPush(d); } catch (_) {}
+        }
+        try {
+            const marker = getMarker(d.sequentialId);
+            if (marker) updateMarkerIcon(marker, d);
+            else rebuildMarkers(false);
+        } catch (_) {}
+        try { updateDeliveryStats(); } catch (_) {}
+        try { renderDeliveriesList(); } catch (_) {}
+        try { notifyRouteCompositionChanged({ keepRoute: true }); } catch (_) {}
+        try { noteDeliveryCompletedForBackup(); } catch (_) {}
+        showUndoSnackbar(d.id, `Entrega ${d.sequentialId}: ${FAIL_REASON_LABELS[choice] || 'não entregue'}`);
+        try { maybeNotifyVoltarDepois(normalsBefore); } catch (_) {}
+        try { minimizeDeliveryPanel(); } catch (_) {}
+        try { goToAdjacentDelivery(1, { preferPending: true, keepMinimized: true }); } catch (_) {}
+    } catch (e) {
+        console.error('markNotDelivered', e);
+        try { showToast('Não foi possível atualizar a entrega', true); } catch (_) {}
+    }
+}
+
+// ========== EVENTO DO BOTÃO "ADICIONAR ENTREGA" (FORMULÁRIO MANUAL) ==========
+document.addEventListener('DOMContentLoaded', function() {
+    initAuthUi();
+    localStorage.removeItem('rotaflow_reminders');
+    voltarDepoisAlertShown = false;
+    document.getElementById("routeSearchInput").addEventListener("input", debounce((e) => { routeFilter = e.target.value.toLowerCase(); renderDeliveriesList(); }, 150));
+    document.getElementById("agendaSearchInput").addEventListener("input", debounce((e) => { agendaFilter = e.target.value.toLowerCase(); renderAgendaList(); }, 150));
+
+    document.getElementById("addDeliveryBtn").addEventListener('click', function() {
+        let nome = document.getElementById("customerName").value.trim();
+        let end = document.getElementById("address").value.trim();
+        let pacotes = parseInt(document.getElementById("pacotes").value) || 1;
+        let saveAgenda = document.getElementById("saveToAgendaCheckbox").checked;
+        let telefones = [...tempPhones];
+        let notes = "";
+        if (!nome || !end) { showToast("Preencha nome e endereço para continuar", true); return; }
+        if (!geocoder) { showToast("Aguarde o mapa carregar completamente", true); return; }
+
+        // Verifica se o endereço já está na rota (pendente / em rota)
+        const already = findActiveRouteByAddress(end);
+        if (already) {
+            showToast(`Este endereço já está na rota (ID ${already.sequentialId})`, true);
+            return;
+        }
+
+        // *** BLOQUEIA SE O ENDEREÇO JÁ ESTIVER NA AGENDA ***
+        if (agenda.some(item => item.endereco.toLowerCase() === end.toLowerCase())) {
+            showToast("Este endereço já está na agenda. Use '+ Rota' na agenda para incluí-lo.", true);
+            return;
+        }
+
+        showToast("Localizando endereço…");
+        geocoder.geocode({ address: end }, (res, stat) => {
+            let lat = PORTO_VELHO_CENTER.lat, lng = PORTO_VELHO_CENTER.lng;
+            if (stat === "OK" && res[0]) {
+                lat = res[0].geometry.location.lat();
+                lng = res[0].geometry.location.lng();
+            } else {
+                showToast("Endereço não encontrado. Usando o centro do mapa", true);
+            }
+            let seqId = getSequentialId(nextSequenceNumber);
+            let newDelivery = { 
+                id: newId(), 
+                sequentialId: seqId, 
+                nome, 
+                endereco: end, 
+                telefones, 
+                pacotes, 
+                status: "pendente", 
+                lat, 
+                lng, 
+                savedToAgenda: false, 
+                photos: [],
+                photoIds: [],
+                notes: notes,
+                favorito: false
+            };
+            deliveries.push(newDelivery); nextSequenceNumber++;
+            persistStorageNow(); renderDeliveriesList(); upsertMarker(newDelivery);
+            updateLastIdDisplay(seqId);
+            clearRouteOverlay();
+            updateProgressAndEstimates();
+            if (saveAgenda) {
+                const agendaDup = agenda.some(item => item.endereco.toLowerCase() === end.toLowerCase());
+                if (agendaDup) {
+                    showToast(`Entrega ${seqId} incluída na rota. Endereço já constava na agenda`);
+                } else {
+                    agenda.push({ agendaId: nextAgendaId++, nome, endereco: end, telefones, pacotes, lat, lng, photos: [], photoIds: [], notes: notes });
+                    newDelivery.savedToAgenda = true;
+                    saveStorage();
+                    renderAgendaList();
+                    renderDeliveriesList();
+                    showToast(`Entrega ${seqId} incluída na rota e salva na agenda`);
+                }
+            } else {
+                showToast(`Entrega ${seqId} incluída na rota`);
+            }
+            if (deliveries.length === 1) centerMapOnMarkers();
+            clearForm();
+        });
+    });
+});
+
+
+window.initMap = initMap;
+window.addEventListener('beforeunload', persistStorageNow);
+
+if ('serviceWorker' in navigator && !isNativeApp()) {
+    navigator.serviceWorker.register('./sw.js').catch(() => {});
+}
+
+// ========== MANIFESTO PWA (embutido, pois o app é um arquivo único) ==========
+(function () {
+    const dir = location.pathname.replace(/[^/]*$/, '');
+    const manifest = {
+        name: 'RotaFlow Pro',
+        short_name: 'RotaFlow',
+        description: 'Gestão de entregas com mapa, rota e agenda',
+        start_url: location.pathname + location.search,
+        scope: dir,
+        display: 'standalone',
+        orientation: 'portrait-primary',
+        lang: 'pt-BR',
+        theme_color: '#0f172a',
+        background_color: '#ffffff',
+        icons: [
+            { src: APP_ICON, sizes: '192x192', type: 'image/svg+xml', purpose: 'any' },
+            { src: APP_ICON, sizes: '512x512', type: 'image/svg+xml', purpose: 'maskable' }
+        ]
+    };
+    const url = URL.createObjectURL(new Blob([JSON.stringify(manifest)], { type: 'application/manifest+json' }));
+    const link = document.createElement('link');
+    link.rel = 'manifest';
+    link.href = url;
+    document.head.appendChild(link);
+})();
+
+(function () {
+    let deferredPrompt;
+    window.addEventListener('beforeinstallprompt', (e) => {
+        e.preventDefault();
+        deferredPrompt = e;
+        const installBtn = document.getElementById('installBtn');
+        if (!installBtn) return;
+        installBtn.style.display = 'flex';
+        installBtn.onclick = () => {
+            installBtn.style.display = 'none';
+            deferredPrompt.prompt();
+            deferredPrompt.userChoice.then(() => { deferredPrompt = null; });
+        };
+    });
+})();

@@ -1,0 +1,48 @@
+{
+  "name": "rotaflow-pro",
+  "version": "1.5.29",
+  "description": "RotaFlow Pro — gestão de entregas",
+  "main": "index.js",
+  "scripts": {
+    "test": "node --test test/*.test.js",
+    "build": "node scripts/build-web.js",
+    "build:dev": "node scripts/build-web.js --dev",
+    "icons": "node scripts/build-icons.js",
+    "prepare:www": "node scripts/prepare-www.js",
+    "cap:sync": "npm run prepare:www && npx cap sync && node scripts/patch-screen-events-android.js",
+    "cap:open": "npx cap open android",
+    "android": "npm run cap:sync && npx cap open android",
+    "android:release": "bash scripts/android-release.sh",
+    "android:install-release": "bash scripts/android-release.sh && adb install -r dist/rotaflow-pro-release.apk",
+    "deploy": "npm run build && firebase deploy --only hosting,firestore,storage,functions",
+    "deploy:rules": "firebase deploy --only firestore:rules,storage",
+    "login": "firebase login",
+    "deploy:hosting": "npm run build && firebase deploy --only hosting",
+    "preview": "npm run build && python3 -m http.server 4173 --bind 127.0.0.1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "devDependencies": {
+    "@fortawesome/fontawesome-free": "6.5.1",
+    "esbuild": "^0.28.2",
+    "firebase-tools": "^15.29.0",
+    "subset-font": "^2.9.0"
+  },
+  "dependencies": {
+    "@capacitor-firebase/crashlytics": "^8.5.2",
+    "@capacitor/android": "^8.5.1",
+    "@capacitor/app": "^8.1.1",
+    "@capacitor/app-launcher": "^8.0.1",
+    "@capacitor/camera": "^8.2.4",
+    "@capacitor/cli": "^8.5.1",
+    "@capacitor/core": "^8.5.1",
+    "@capacitor/filesystem": "^8.1.3",
+    "@capacitor/geolocation": "^8.2.2",
+    "@capacitor/google-maps": "^8.0.1",
+    "@capacitor/local-notifications": "^8.3.1",
+    "@capacitor/share": "^8.0.1",
+    "@capacitor/status-bar": "^8.0.3"
+  }
+}
