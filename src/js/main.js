@@ -18,28 +18,23 @@ import {
     DEFAULT_FINISHED_PHOTO_TTL_DAYS
 } from '../../lib/photo-helpers.js';
 import {
-    haversineDistance as haversineDistanceShared,
-    formatKm as formatKmShared,
-    formatDuration as formatDurationShared
+    haversineDistance as haversineDistanceShared
 } from '../../lib/track-schema.js';
 import {
-    MAX_WAYPOINTS,
-    isPendingStop,
-    pendingStops as pendingStopsOf,
     hasMapCoords,
     normalizeDeliveryCoords,
-    routeSignature as routeSignatureOf,
-    farthestFrom,
-    orderByProximity as orderByProximityOf,
-    chunkPoints,
-    applyStopOrder as applyStopOrderOn
+    gpsErrorMessage as gpsErrorMessageOf
 } from '../../lib/routing-helpers.js';
 import {
     isMutedPin,
-    pinTextColorFor,
     markerColorFor,
     hexToTint,
-    markerScaleForActiveCount
+    markerScaleForActiveCount,
+    iconFillColor,
+    iconFillOpacity,
+    boundsFromPoints,
+    pointsForMapFit,
+    shortStreetAddress
 } from '../../lib/map-helpers.js';
 import { routeDayStats } from '../../lib/history-helpers.js';
 import { escapeHtml } from '../../lib/html.js';
@@ -60,6 +55,31 @@ import {
     isGalleryOpen,
     bindGalleryChrome
 } from './gallery.js';
+import {
+    showToast,
+    showConfirmModal,
+    showPromptModal,
+    showChoiceModal
+} from './modals.js';
+import {
+    configureMapPins,
+    buildMapPinIcon,
+    nativePinDisplaySize
+} from './map-pins.js';
+import {
+    configureRouting,
+    setDirectionsService,
+    pendingStops,
+    routeSignature,
+    clearRouteOverlay,
+    updateOptimizeFabVisibility,
+    optimizeRoute,
+    refreshRouteKeepOrder,
+    scheduleRouteRefresh,
+    notifyRouteCompositionChanged,
+    formatKm,
+    formatDuration
+} from './routing.js';
 import {
     configureTracking,
     TRACK_NEAR_METERS,
@@ -149,17 +169,6 @@ function isNativeApp() {
     }
 }
 
-function iconFillColor(icon) {
-    if (!icon) return '#3b82f6';
-    if (typeof icon === 'string') return icon;
-    return icon.fillColor || '#3b82f6';
-}
-
-function iconFillOpacity(icon) {
-    if (!icon || typeof icon !== 'object') return 1;
-    return typeof icon.fillOpacity === 'number' ? icon.fillOpacity : 1;
-}
-
 function createNativeMapFacade(gmap) {
     return {
         panTo(pos) {
@@ -213,16 +222,6 @@ let feedbackVibrateEnabled = (() => {
 })();
 let pinRefreshTimer = null;
 
-const PIN_SIZE_PX = { p: 16, m: 22, g: 28 };
-
-function nativePinDisplaySize() {
-    let base = PIN_SIZE_PX[pinSizePref] || PIN_SIZE_PX.p;
-    const n = deliveries.filter(d => shouldShowOnMap(d) && !isMutedPin(d)).length;
-    if (n > 60) base = Math.max(12, base - 2);
-    else if (n > 30) base = Math.max(13, base - 1);
-    return base;
-}
-
 function schedulePinSizeRefresh() {
     clearTimeout(pinRefreshTimer);
     pinRefreshTimer = setTimeout(() => {
@@ -262,56 +261,7 @@ function markerScaleForCount(muted) {
     return markerScaleForActiveCount(muted, n);
 }
 
-/** Pins quadrados (estilo Spoke): ativos coloridos, entregues cinza claro */
-function buildMapPinIcon(delivery, { highlighted = false } = {}) {
-    const muted = isMutedPin(delivery) && !highlighted;
-    const label = String(delivery?.sequentialId ?? '');
-    const fill = highlighted ? '#174EA6' : markerColorFor(delivery);
-    const textColor = pinTextColorFor(delivery, highlighted);
-    const display = nativePinDisplaySize();
-    const scale = 2;
-    const w = Math.round(display * scale);
-    const h = w;
-    const canvas = document.createElement('canvas');
-    canvas.width = w;
-    canvas.height = h;
-    const ctx = canvas.getContext('2d');
-    ctx.clearRect(0, 0, w, h);
-
-    const pad = Math.round(w * (muted ? 0.06 : 0.04));
-    const rw = w - pad * 2;
-    const rh = h - pad * 2;
-    const r = Math.max(2, Math.round(rw * (muted ? 0.14 : 0.16)));
-    const x = pad, y = pad;
-    ctx.beginPath();
-    ctx.moveTo(x + r, y);
-    ctx.arcTo(x + rw, y, x + rw, y + rh, r);
-    ctx.arcTo(x + rw, y + rh, x, y + rh, r);
-    ctx.arcTo(x, y + rh, x, y, r);
-    ctx.arcTo(x, y, x + rw, y, r);
-    ctx.closePath();
-    ctx.fillStyle = fill;
-    ctx.fill();
-    ctx.lineWidth = Math.max(1, w * (muted ? 0.035 : 0.05));
-    ctx.strokeStyle = muted ? '#DADCE0' : '#ffffff';
-    ctx.stroke();
-    ctx.fillStyle = textColor;
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'middle';
-    const fontSize = label.length > 3 ? w * 0.34 : label.length > 2 ? w * 0.4 : w * 0.46;
-    ctx.font = `${muted ? '600' : 'bold'} ${Math.round(fontSize)}px -apple-system, BlinkMacSystemFont, sans-serif`;
-    ctx.fillText(label, w / 2, h / 2 + 1);
-
-    return {
-        url: canvas.toDataURL('image/png'),
-        size: display,
-        width: display,
-        height: display,
-        anchorX: display / 2,
-        anchorY: display / 2,
-        muted
-    };
-}
+// Pins canvas: src/js/map-pins.js (configureMapPins no boot).
 
 function createNativeMarkerShim(opts) {
     const color = iconFillColor(opts.icon);
@@ -638,15 +588,7 @@ async function openWhatsAppChat(phone, msg) {
     return false;
 }
 
-function showToast(msg, err = false) {
-    let t = document.createElement('div'); t.className = 'toast-message' + (err ? ' err' : '');
-    const icon = document.createElement('i');
-    icon.className = `fas ${err ? 'fa-exclamation-circle' : 'fa-check'}`;
-    t.appendChild(icon);
-    t.appendChild(document.createTextNode(' ' + msg));
-    document.body.appendChild(t);
-    setTimeout(() => t.remove(), Math.min(4500, 2800 + String(msg).length * 18));
-}
+// Toast/modais: src/js/modals.js
 
 /** Catch silent crashes / rejected promises + Crashlytics (nativo). Rate-limited toast. */
 (function installGlobalErrorHooks() {
@@ -674,113 +616,8 @@ function showToast(msg, err = false) {
     });
 })();
 
-// ========== MODAIS (substitui prompt / confirm) ==========
-function openAppModal({ title, bodyHtml, buttons }) {
-    return new Promise(resolve => {
-        const overlay = document.createElement('div');
-        overlay.className = 'modal-overlay';
-        overlay.innerHTML = `
-            <div class="modal-container" style="max-width:420px;" role="dialog" aria-modal="true">
-                <h3 class="modal-title">${title}</h3>
-                <div class="modal-body">${bodyHtml || ''}</div>
-                <div class="modal-buttons"></div>
-            </div>`;
-        const btnRow = overlay.querySelector('.modal-buttons');
-        const finish = (value) => {
-            overlay.remove();
-            document.removeEventListener('keydown', onKey);
-            resolve(value);
-        };
-        const onKey = (e) => {
-            if (e.key === 'Escape') finish(null);
-        };
-        (buttons || []).forEach(btn => {
-            const el = document.createElement('button');
-            el.type = 'button';
-            el.className = btn.className || 'modal-cancel';
-            el.textContent = btn.label;
-            el.addEventListener('click', () => {
-                if (btn.getValue) finish(btn.getValue());
-                else finish(btn.value);
-            });
-            btnRow.appendChild(el);
-        });
-        overlay.addEventListener('click', (e) => { if (e.target === overlay) finish(null); });
-        document.addEventListener('keydown', onKey);
-        document.body.appendChild(overlay);
-        const focusEl = overlay.querySelector('textarea, input, .modal-choice-btn, .modal-confirm, .modal-cancel');
-        if (focusEl) setTimeout(() => focusEl.focus(), 30);
-    });
-}
+// Modais: src/js/modals.js
 
-function showConfirmModal({ title = 'Confirmar', message, confirmText = 'Confirmar', cancelText = 'Cancelar', danger = false } = {}) {
-    return openAppModal({
-        title,
-        bodyHtml: `<p class="modal-message">${escapeHtml(message || '')}</p>`,
-        buttons: [
-            { label: confirmText, className: danger ? 'modal-confirm danger' : 'modal-confirm', value: true },
-            { label: cancelText, className: 'modal-cancel', value: false }
-        ]
-    }).then(v => v === true);
-}
-
-function showPromptModal({ title = 'Editar', message = '', defaultValue = '', placeholder = '', multiline = false } = {}) {
-    const field = multiline
-        ? `<textarea id="appModalInput" class="edit-input" rows="4" style="resize:vertical;" placeholder="${escapeHtml(placeholder)}">${escapeHtml(defaultValue)}</textarea>`
-        : `<input id="appModalInput" class="edit-input" type="text" value="${escapeHtml(defaultValue)}" placeholder="${escapeHtml(placeholder)}">`;
-    return openAppModal({
-        title,
-        bodyHtml: `${message ? `<p class="modal-message">${escapeHtml(message)}</p>` : ''}${field}`,
-        buttons: [
-            {
-                label: 'Salvar',
-                className: 'modal-confirm',
-                getValue: () => {
-                    const el = document.getElementById('appModalInput');
-                    return el ? el.value : '';
-                }
-            },
-            { label: 'Cancelar', className: 'modal-cancel', value: null }
-        ]
-    });
-}
-
-function showChoiceModal({ title = 'Escolher', message = '', options = [] } = {}) {
-    return new Promise(resolve => {
-        const overlay = document.createElement('div');
-        overlay.className = 'modal-overlay';
-        const list = options.map((opt, i) => `
-            <button type="button" class="modal-choice-btn" data-choice-index="${i}">
-                <i class="${escapeHtml(opt.icon || 'fas fa-circle')}" style="color:${escapeHtml(opt.iconColor || '#64748b')}"></i>
-                <span>${escapeHtml(opt.label)}</span>
-            </button>`).join('');
-        overlay.innerHTML = `
-            <div class="modal-container" style="max-width:420px;" role="dialog" aria-modal="true">
-                <h3 class="modal-title">${title}</h3>
-                ${message ? `<p class="modal-message">${escapeHtml(message)}</p>` : ''}
-                <div class="modal-choice-list">${list}</div>
-                <div class="modal-buttons">
-                    <button type="button" class="modal-cancel">Cancelar</button>
-                </div>
-            </div>`;
-        const finish = (value) => {
-            overlay.remove();
-            document.removeEventListener('keydown', onKey);
-            resolve(value);
-        };
-        const onKey = (e) => { if (e.key === 'Escape') finish(null); };
-        overlay.querySelectorAll('.modal-choice-btn').forEach(btn => {
-            btn.addEventListener('click', () => {
-                const idx = parseInt(btn.dataset.choiceIndex, 10);
-                finish(options[idx] ? options[idx].value : null);
-            });
-        });
-        overlay.querySelector('.modal-cancel').addEventListener('click', () => finish(null));
-        overlay.addEventListener('click', (e) => { if (e.target === overlay) finish(null); });
-        document.addEventListener('keydown', onKey);
-        document.body.appendChild(overlay);
-    });
-}
 // Identificador único e crescente, mesmo com duas entregas no mesmo milissegundo.
 const idState = { lastGeneratedId: 0 };
 function newId() {
@@ -1820,8 +1657,7 @@ function syncActiveRouteIntoRoutes() {
 }
 
 function clearMapRouteLines() {
-    routeRenderers.forEach(r => { try { r.setMap(null); } catch (_) {} });
-    routeRenderers = [];
+    // Overlay Directions vive em routing.js; a linha azul não é desenhada no mapa.
 }
 
 function applyLoadedRouteState(route, { refreshMap = true } = {}) {
@@ -1921,6 +1757,31 @@ function saveStorage() {
 }
 
 function configureExtractedModules() {
+    configureMapPins({
+        getPinSizePref: () => pinSizePref,
+        countActivePins: () => deliveries.filter((d) => shouldShowOnMap(d) && !isMutedPin(d)).length
+    });
+    configureRouting({
+        getDeliveries: () => deliveries,
+        getStartPoint: () => startPoint,
+        getRouteActive: () => routeActive,
+        setRouteActive: (v) => { routeActive = !!v; },
+        getRouteMetrics: () => routeMetrics,
+        setRouteMetrics: (m) => { routeMetrics = m; },
+        requestStartPoint,
+        showStartMarker,
+        saveStorage,
+        renderDeliveriesList,
+        rebuildMarkers,
+        centerMapOnMarkers,
+        switchSidebarTab,
+        refreshActiveTrackSessions,
+        updateProgressAndEstimates,
+        syncBackgroundGpsTargets,
+        showToast,
+        yieldToUiFrame,
+        getTravelMode: () => google.maps.TravelMode.DRIVING
+    });
     configureTracking({
         isNativeApp,
         getDeliveries: () => deliveries,
@@ -2326,24 +2187,14 @@ function rebuildMarkers(centerMap = true) {
 
 function centerMapOnMarkers() {
     if (!map) return;
-    // Prioriza pendentes no enquadramento; se todas entregues, usa todas
-    let pts = deliveries.filter(d => shouldShowOnMap(d) && d.status !== 'entregue').map(d => ({ lat: d.lat, lng: d.lng }));
-    if (!pts.length) pts = deliveries.filter(shouldShowOnMap).map(d => ({ lat: d.lat, lng: d.lng }));
+    const pts = pointsForMapFit(deliveries, shouldShowOnMap);
     if (!pts.length) {
         map.setCenter(PORTO_VELHO_CENTER);
         return;
     }
     if (useNativeMap) {
-        let minLat = pts[0].lat, maxLat = pts[0].lat, minLng = pts[0].lng, maxLng = pts[0].lng;
-        pts.forEach(p => {
-            minLat = Math.min(minLat, p.lat); maxLat = Math.max(maxLat, p.lat);
-            minLng = Math.min(minLng, p.lng); maxLng = Math.max(maxLng, p.lng);
-        });
-        map.fitBounds({
-            southwest: { lat: minLat, lng: minLng },
-            northeast: { lat: maxLat, lng: maxLng },
-            center: { lat: (minLat + maxLat) / 2, lng: (minLng + maxLng) / 2 }
-        });
+        const b = boundsFromPoints(pts);
+        if (b) map.fitBounds(b);
         return;
     }
     let bounds = new google.maps.LatLngBounds();
@@ -2634,13 +2485,6 @@ function goToAdjacentDelivery(direction, { preferPending = false, keepMinimized 
         return;
     }
     focusDeliveryInPanel(seq[next], direction, { keepMinimized: stayMini, pan: false });
-}
-
-function shortStreetAddress(endereco) {
-    if (!endereco) return '—';
-    const parts = String(endereco).split(',').map(s => s.trim()).filter(Boolean);
-    if (parts.length >= 2) return parts.slice(0, 2).join(', ');
-    return parts[0] || '—';
 }
 
 function deliveryProgressInfo(delivery) {
@@ -5375,25 +5219,9 @@ function addDeliveryDirect(nome, endereco, telefones, pacotes, notes) {
 }
 
 // ========== ROTA OTIMIZADA (Directions API) ==========
-// Geometria (ordem, assinatura, blocos) está em lib/routing-helpers.js.
-// A Directions API aceita no máximo 25 pontos intermediários por requisição (MAX_WAYPOINTS = 23).
-let directionsService = null;
-let routeRenderers = [];
-let optimizing = false;
+// Geometria: lib/routing-helpers.js · orquestração: src/js/routing.js (configureRouting).
 let startPoint = null;
 let gpsDenied = false;
-let routeRefreshTimer = null;
-
-function pendingStops() { return pendingStopsOf(deliveries); }
-
-function routeSignature(stops) {
-    return routeSignatureOf(stops, startPoint);
-}
-
-function formatKm(meters) { return formatKmShared(meters); }
-function formatDuration(seconds) {
-    return formatDurationShared(seconds);
-}
 
 // Sempre tenta a localização atual. Se GPS estiver desligado/negado,
 // a primeira entrega pendente vira o ponto de partida.
@@ -5453,16 +5281,11 @@ function clearGpsWatchOnly() {
 }
 
 function gpsErrorMessage(err) {
-    // No celular, file:// e http:// (sem HTTPS) bloqueiam o GPS.
-    if (!isNativeApp() && !window.isSecureContext) {
-        return 'Localização indisponível neste contexto. Abra o app por HTTPS ou instale como aplicativo';
-    }
-    if (!isNativeApp() && !navigator.geolocation) return 'Este navegador não oferece suporte à localização';
-    const code = err && err.code;
-    if (code === 1) return 'Permissão de localização negada. Ative-a nas configurações do aparelho';
-    if (code === 2) return 'Localização indisponível. Verifique se o GPS está ativo e tente novamente';
-    if (code === 3) return 'Tempo esgotado ao obter a localização. Tente novamente em área aberta';
-    return 'Não foi possível obter a localização atual';
+    return gpsErrorMessageOf(err, {
+        isNative: isNativeApp(),
+        isSecureContext: !!window.isSecureContext,
+        hasGeolocation: !!navigator.geolocation
+    });
 }
 
 let bgGpsStarted = false;
@@ -5718,283 +5541,7 @@ function showStartMarker() {
     });
 }
 
-function routeDirections(request) {
-    return new Promise((resolve, reject) => {
-        directionsService.route(request, (result, status) => {
-            if (status === 'OK' && result) resolve(result);
-            else reject(new Error(status));
-        });
-    });
-}
-
-function directionsErrorMessage(err) {
-    switch (err && err.message) {
-        case 'REQUEST_DENIED': return "A Directions API precisa ser habilitada na chave do Google Maps";
-        case 'OVER_QUERY_LIMIT': return "Limite de consultas do Google atingido. Tente novamente em instantes";
-        case 'ZERO_RESULTS': return "Não foi encontrado um trajeto por rua entre essas paradas";
-        case 'MAX_WAYPOINTS_EXCEEDED': return "Há paradas demais para calcular em uma única rota";
-        default: return "Não foi possível calcular a rota neste momento";
-    }
-}
-
-async function orderByDirections(stops) {
-    const fixedStart = startPoint ? null : stops[0];
-    const origin = startPoint || { lat: fixedStart.lat, lng: fixedStart.lng };
-    const rest = fixedStart ? stops.slice(1) : stops.slice();
-    const end = farthestFrom(origin, rest);
-    const waypoints = rest.filter(s => s !== end);
-    const result = await routeDirections({
-        origin: origin,
-        destination: { lat: end.lat, lng: end.lng },
-        waypoints: waypoints.map(s => ({ location: { lat: s.lat, lng: s.lng }, stopover: true })),
-        optimizeWaypoints: true,
-        travelMode: google.maps.TravelMode.DRIVING
-    });
-    const order = result.routes[0].waypoint_order || waypoints.map((_, i) => i);
-    const middle = order.map(i => waypoints[i]);
-    return { ordered: fixedStart ? [fixedStart, ...middle, end] : [...middle, end], result: result };
-}
-
-// Acima do limite da API: vizinho mais próximo, sempre indo para a parada pendente mais perto.
-function orderByProximity(stops) {
-    return orderByProximityOf(stops, startPoint);
-}
-
-// Reposiciona as pendentes nos lugares que já ocupavam, sem mexer nas
-// entregues nem renumerar os IDs colados nos pacotes.
-function applyStopOrder(ordered) {
-    applyStopOrderOn(deliveries, ordered);
-}
-
-function clearRouteOverlay() {
-    routeRenderers.forEach(r => r.setMap(null));
-    routeRenderers = [];
-    routeMetrics = null;
-    routeActive = false;
-    deliveries.forEach(d => {
-        delete d.legMeters; delete d.legSeconds; delete d.routeOrder;
-        delete d.etaMeters; delete d.etaSeconds;
-    });
-    updateOptimizeFabVisibility();
-    updateProgressAndEstimates();
-}
-
-function updateOptimizeFabVisibility() {
-    const pending = pendingStops();
-    const optimizedForCurrent = !!(
-        routeActive && routeMetrics && routeMetrics.signature === routeSignature(pending)
-    );
-    // ≥2 pendentes e rota ainda não otimizada para esta assinatura.
-    // Após otimizar com sucesso some; volta se paradas/ordem/endereços mudarem.
-    const show = pending.length >= 2 && !optimizedForCurrent;
-    const label = 'Otimizar rota';
-    const shortLabel = 'Otimizar';
-    const idleIcon = 'fas fa-route';
-
-    const fab = document.getElementById('optimizeRouteBtn');
-    if (fab) {
-        fab.classList.toggle('rf-fab-hidden', !show);
-        fab.classList.remove('is-optimized');
-        fab.removeAttribute('hidden');
-        fab.style.display = '';
-        fab.style.opacity = '';
-        fab.style.visibility = '';
-        fab.style.pointerEvents = '';
-        fab.setAttribute('aria-hidden', show ? 'false' : 'true');
-        fab.title = label;
-        fab.setAttribute('aria-label', label);
-        if (!optimizing) {
-            fab.disabled = false;
-            const icon = fab.querySelector('i');
-            if (icon) icon.className = idleIcon;
-        }
-    }
-
-    const tool = document.getElementById('optimizeRouteToolBtn');
-    if (tool) {
-        tool.classList.toggle('rf-tool-hidden', !show);
-        tool.classList.remove('is-optimized');
-        tool.setAttribute('aria-hidden', show ? 'false' : 'true');
-        tool.title = label;
-        tool.setAttribute('aria-label', label);
-        const text = tool.querySelector('.rt-label');
-        if (text) text.textContent = shortLabel;
-        if (!optimizing) {
-            tool.disabled = false;
-            const icon = tool.querySelector('.rt-icon i');
-            if (icon) icon.className = idleIcon;
-        }
-    }
-}
-
-async function renderRoute(ordered, precomputed) {
-    // Não apaga routeOrder de entregues/falhou — só recalcula as pendentes da sequência.
-    ordered.forEach(d => {
-        delete d.legMeters; delete d.legSeconds;
-        delete d.etaMeters; delete d.etaSeconds;
-    });
-
-    const points = ordered.map(s => ({ lat: s.lat, lng: s.lng }));
-    if (startPoint) points.unshift(startPoint);
-
-    let results = precomputed ? [precomputed] : [];
-    if (!precomputed) {
-        for (const chunk of chunkPoints(points)) {
-            results.push(await routeDirections({
-                origin: chunk[0],
-                destination: chunk[chunk.length - 1],
-                waypoints: chunk.slice(1, -1).map(p => ({ location: p, stopover: true })),
-                travelMode: google.maps.TravelMode.DRIVING
-            }));
-        }
-    }
-
-    // Por enquanto não desenha a linha azul no mapa — só calcula km/tempo.
-    routeRenderers.forEach(r => r.setMap(null));
-    routeRenderers = [];
-
-    let meters = 0, seconds = 0;
-    const legs = results.reduce((acc, r) => acc.concat(r.routes[0].legs), []);
-    legs.forEach((leg, i) => {
-        const legMeters = leg.distance ? leg.distance.value : 0;
-        const legSeconds = leg.duration ? leg.duration.value : 0;
-        meters += legMeters;
-        seconds += legSeconds;
-        const stop = ordered[startPoint ? i : i + 1];
-        if (stop) { stop.legMeters = legMeters; stop.legSeconds = legSeconds; }
-    });
-    let cumM = 0, cumS = 0;
-    // routeOrder segue a posição na lista da rota (deliveries), estável para o motorista
-    const orderIndex = new Map(ordered.map((s, i) => [s.id, i + 1]));
-    deliveries.forEach(d => {
-        if (orderIndex.has(d.id)) d.routeOrder = orderIndex.get(d.id);
-    });
-    ordered.forEach((s) => {
-        cumM += s.legMeters || 0;
-        cumS += s.legSeconds || 0;
-        s.etaMeters = cumM;
-        s.etaSeconds = cumS;
-    });
-    routeMetrics = { signature: routeSignature(pendingStops()), meters: meters, seconds: seconds };
-    routeActive = true;
-    updateOptimizeFabVisibility();
-}
-
-function fitMapToRoute() {
-    centerMapOnMarkers();
-}
-
-function setOptimizeControlsBusy(busy) {
-    const fab = document.getElementById('optimizeRouteBtn');
-    const tool = document.getElementById('optimizeRouteToolBtn');
-    [fab, tool].forEach((btn) => {
-        if (!btn) return;
-        btn.disabled = !!busy;
-        if (busy) {
-            btn.classList.remove('rf-fab-hidden', 'rf-tool-hidden', 'is-optimized');
-            btn.removeAttribute('hidden');
-            btn.setAttribute('aria-hidden', 'false');
-            const icon = btn.querySelector('i');
-            if (icon) icon.className = 'fas fa-spinner fa-spin';
-        }
-    });
-}
-
-async function optimizeRoute() {
-    if (optimizing) return;
-    if (!directionsService) return showToast("Aguarde o mapa carregar completamente", true);
-    const stops = pendingStops();
-    if (stops.length < 2) return showToast("São necessárias pelo menos 2 entregas pendentes", true);
-
-    optimizing = true;
-    setOptimizeControlsBusy(true);
-    // Libera o gesto do toque antes do trabalho pesado (Directions / proximity).
-    await yieldToUiFrame();
-    await new Promise((r) => setTimeout(r, 0));
-
-    try {
-        await requestStartPoint();
-        showStartMarker();
-        await yieldToUiFrame();
-
-        let ordered, precomputed = null;
-        if (stops.length <= MAX_WAYPOINTS + 1) {
-            const planned = await orderByDirections(stops);
-            ordered = planned.ordered;
-            precomputed = planned.result;
-        } else {
-            ordered = orderByProximity(stops);
-            showToast(`${stops.length} paradas: ordem por proximidade; distância calculada pelas ruas`);
-        }
-
-        applyStopOrder(ordered);
-        await yieldToUiFrame();
-        await renderRoute(ordered, precomputed);
-        saveStorage();
-        renderDeliveriesList();
-        rebuildMarkers(false);
-        fitMapToRoute();
-        switchSidebarTab('rota');
-        // Republica ETA/ordem nos tracks — fora do caminho crítico do mapa.
-        const kickTracks = () => refreshActiveTrackSessions({ force: true }).catch(() => {});
-        if (typeof requestIdleCallback === 'function') requestIdleCallback(kickTracks, { timeout: 2500 });
-        else setTimeout(kickTracks, 400);
-        const origem = startPoint ? 'sua localização' : 'a 1ª entrega';
-        showToast(`Rota otimizada (partida: ${origem}): ${formatKm(routeMetrics.meters)} · ${formatDuration(routeMetrics.seconds)}`);
-    } catch (e) {
-        clearRouteOverlay();
-        renderDeliveriesList();
-        showToast(directionsErrorMessage(e), true);
-    } finally {
-        optimizing = false;
-        setOptimizeControlsBusy(false);
-        updateOptimizeFabVisibility();
-    }
-}
-
-// Redesenha a linha nas paradas que ainda faltam, sem mudar a ordem.
-// Usado ao marcar entregue para a otimização não sumir do mapa.
-async function refreshRouteKeepOrder() {
-    if (optimizing || !directionsService || !routeActive) return;
-    const stops = pendingStops();
-    if (stops.length < 2) {
-        clearRouteOverlay();
-        updateProgressAndEstimates();
-        renderDeliveriesList();
-        refreshActiveTrackSessions({ force: true }).catch(() => {});
-        return;
-    }
-    try {
-        await requestStartPoint();
-        showStartMarker();
-        await renderRoute(stops, null);
-        renderDeliveriesList();
-        updateProgressAndEstimates();
-        refreshActiveTrackSessions({ force: true }).catch(() => {});
-    } catch (e) {
-        clearRouteOverlay();
-        updateProgressAndEstimates();
-        renderDeliveriesList();
-        refreshActiveTrackSessions({ force: true }).catch(() => {});
-    }
-}
-
-function scheduleRouteRefresh() {
-    if (!routeActive) return;
-    clearTimeout(routeRefreshTimer);
-    // Fora do gesto "Entregar" — Directions compete com painel/fotos.
-    routeRefreshTimer = setTimeout(() => { refreshRouteKeepOrder(); }, 400);
-}
-
-function notifyRouteCompositionChanged({ keepRoute = false } = {}) {
-    syncBackgroundGpsTargets();
-    if (keepRoute && routeActive) scheduleRouteRefresh();
-    else {
-        clearRouteOverlay();
-        updateProgressAndEstimates();
-        refreshActiveTrackSessions({ force: true }).catch(() => {});
-    }
-}
+// Directions/otimização: src/js/routing.js
 
 // ========== MAPA E INICIALIZAÇÃO ==========
 async function ensurePlacesAutocomplete() {
@@ -6118,7 +5665,7 @@ async function initMap() {
     }
 
     geocoder = new google.maps.Geocoder();
-    directionsService = new google.maps.DirectionsService();
+    setDirectionsService(new google.maps.DirectionsService());
     const addressInput = document.getElementById('address');
     // Places só quando o usuário for digitar endereço (menos peso no boot).
     addressInput.addEventListener('focus', () => { ensurePlacesAutocomplete(); }, { once: true });

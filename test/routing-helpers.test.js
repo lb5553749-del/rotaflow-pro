@@ -12,7 +12,19 @@ const {
   farthestFrom,
   orderByProximity,
   chunkPoints,
-  applyStopOrder
+  applyStopOrder,
+  planDirectionsLegs,
+  orderedFromDirectionsPlan,
+  buildRoutePoints,
+  clearStopRouteFields,
+  applyLegsToOrdered,
+  assignCumulativeEtas,
+  assignRouteOrderIndexes,
+  buildRouteMetrics,
+  isRouteOptimizedFor,
+  shouldShowOptimizeFab,
+  directionsErrorMessage,
+  gpsErrorMessage
 } = require('../lib/routing-helpers.js');
 
 describe('hasMapCoords / normalizeDeliveryCoords', () => {
@@ -108,5 +120,69 @@ describe('applyStopOrder', () => {
       { id: 2, status: 'pendente', lat: 2, lng: 2 }
     ];
     assert.throws(() => applyStopOrder(deliveries, [deliveries[0]]), /ORDER_MISMATCH/);
+  });
+});
+
+describe('Directions plan / order / metrics', () => {
+  it('plans origin, farthest end and middle waypoints', () => {
+    const origin = { lat: 0, lng: 0 };
+    const stops = [
+      { id: 'a', lat: 0.01, lng: 0 },
+      { id: 'b', lat: 1, lng: 0 },
+      { id: 'c', lat: 0.2, lng: 0 }
+    ];
+    const plan = planDirectionsLegs(stops, origin);
+    assert.equal(plan.end.id, 'b');
+    assert.deepEqual(plan.waypoints.map((s) => s.id).sort(), ['a', 'c']);
+    const ordered = orderedFromDirectionsPlan(plan, [1, 0]);
+    assert.deepEqual(ordered.map((s) => s.id), ['c', 'a', 'b']);
+  });
+
+  it('builds route points with optional GPS start', () => {
+    const ordered = [{ lat: 1, lng: 2 }, { lat: 3, lng: 4 }];
+    assert.deepEqual(buildRoutePoints(ordered, null), ordered);
+    assert.deepEqual(buildRoutePoints(ordered, { lat: 0, lng: 0 })[0], { lat: 0, lng: 0 });
+  });
+
+  it('applies legs, cumulative ETAs and routeOrder', () => {
+    const a = { id: 'a' };
+    const b = { id: 'b' };
+    const ordered = [a, b];
+    clearStopRouteFields(ordered);
+    const totals = applyLegsToOrdered(ordered, [
+      { distance: { value: 1000 }, duration: { value: 120 } },
+      { distance: { value: 500 }, duration: { value: 60 } }
+    ], true);
+    assert.equal(totals.meters, 1500);
+    assert.equal(a.legMeters, 1000);
+    assignCumulativeEtas(ordered);
+    assert.equal(b.etaMeters, 1500);
+    assert.equal(b.etaSeconds, 180);
+    const deliveries = [{ id: 'x' }, a, b];
+    assignRouteOrderIndexes(deliveries, ordered);
+    assert.equal(a.routeOrder, 1);
+    assert.equal(b.routeOrder, 2);
+    assert.equal(deliveries[0].routeOrder, undefined);
+  });
+
+  it('decides optimize FAB visibility from signature', () => {
+    const metrics = buildRouteMetrics('sig-a', 100, 60);
+    assert.equal(isRouteOptimizedFor(true, metrics, 'sig-a'), true);
+    assert.equal(shouldShowOptimizeFab(3, true, metrics, 'sig-a'), false);
+    assert.equal(shouldShowOptimizeFab(3, true, metrics, 'sig-b'), true);
+    assert.equal(shouldShowOptimizeFab(1, false, null, 'x'), false);
+  });
+});
+
+describe('directionsErrorMessage / gpsErrorMessage', () => {
+  it('maps Directions statuses', () => {
+    assert.match(directionsErrorMessage({ message: 'ZERO_RESULTS' }), /trajeto/);
+    assert.match(directionsErrorMessage(null), /Não foi possível/);
+  });
+
+  it('maps GPS context and codes', () => {
+    assert.match(gpsErrorMessage(null, { isNative: false, isSecureContext: false }), /HTTPS/);
+    assert.match(gpsErrorMessage({ code: 1 }, { isNative: true }), /Permissão/);
+    assert.match(gpsErrorMessage({ code: 3 }, { isNative: false, isSecureContext: true, hasGeolocation: true }), /Tempo esgotado/);
   });
 });

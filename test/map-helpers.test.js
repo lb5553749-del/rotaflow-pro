@@ -3,11 +3,18 @@
 const { describe, it } = require('node:test');
 const assert = require('node:assert/strict');
 const {
+  PIN_SIZE_PX,
   isMutedPin,
   pinTextColorFor,
   markerColorFor,
   hexToTint,
-  markerScaleForActiveCount
+  markerScaleForActiveCount,
+  nativePinDisplaySize,
+  iconFillColor,
+  iconFillOpacity,
+  boundsFromPoints,
+  pointsForMapFit,
+  shortStreetAddress
 } = require('../lib/map-helpers.js');
 
 describe('isMutedPin / markerColorFor', () => {
@@ -44,5 +51,41 @@ describe('pinTextColorFor / hexToTint / markerScaleForActiveCount', () => {
     assert.equal(markerScaleForActiveCount(false, 40), 7);
     assert.equal(markerScaleForActiveCount(false, 20), 8);
     assert.equal(markerScaleForActiveCount(false, 5), 10);
+  });
+});
+
+describe('nativePinDisplaySize / iconFill / bounds / street', () => {
+  it('shrinks pin size when the map is dense', () => {
+    assert.equal(nativePinDisplaySize('p', 5), PIN_SIZE_PX.p);
+    assert.ok(nativePinDisplaySize('p', 70) < PIN_SIZE_PX.p);
+    assert.equal(nativePinDisplaySize('g', 5), PIN_SIZE_PX.g);
+  });
+
+  it('reads fill color/opacity from icon objects', () => {
+    assert.equal(iconFillColor('#abc'), '#abc');
+    assert.equal(iconFillColor({ fillColor: '#112233' }), '#112233');
+    assert.equal(iconFillOpacity(null), 1);
+    assert.equal(iconFillOpacity({ fillOpacity: 0.4 }), 0.4);
+  });
+
+  it('builds bounds and prefers pending points for fit', () => {
+    const b = boundsFromPoints([
+      { lat: 0, lng: 0 },
+      { lat: 2, lng: 4 }
+    ]);
+    assert.deepEqual(b.center, { lat: 1, lng: 2 });
+    const pts = pointsForMapFit(
+      [
+        { status: 'entregue', lat: 9, lng: 9 },
+        { status: 'pendente', lat: 1, lng: 2 }
+      ],
+      (d) => d.lat != null
+    );
+    assert.deepEqual(pts, [{ lat: 1, lng: 2 }]);
+  });
+
+  it('shortens street addresses', () => {
+    assert.equal(shortStreetAddress('Rua A, 10, Centro'), 'Rua A, 10');
+    assert.equal(shortStreetAddress(''), '—');
   });
 });
