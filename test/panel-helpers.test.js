@@ -11,7 +11,11 @@ const {
   shouldKeepPanelMinimized,
   adjacentIndexResult,
   panelOpenClassPlan,
-  panelCloseClassPlan
+  panelCloseClassPlan,
+  formatPanelPhonesText,
+  panelMiniPhotoUiState,
+  resolvePanelSwipeGesture,
+  panelActionFlags
 } = require('../lib/panel-helpers.js');
 
 describe('isActiveStop / isPreferredNextStop', () => {
@@ -72,5 +76,44 @@ describe('deliveryProgressInfo / photo count / class plans', () => {
     assert.deepEqual(panelCloseClassPlan(), {
       open: false, minimized: false, redBg: false
     });
+  });
+});
+
+describe('formatPanelPhonesText / panelMiniPhotoUiState', () => {
+  it('formats phones or fallback', () => {
+    assert.equal(formatPanelPhonesText(null), 'Não informado');
+    assert.equal(
+      formatPanelPhonesText([{ label: 'Cel', numero: '69999990000' }], (n) => `F:${n}`),
+      'Cel: F:69999990000'
+    );
+  });
+
+  it('builds mini photo UI state from count', () => {
+    assert.equal(panelMiniPhotoUiState(0).miniHidden, true);
+    assert.equal(panelMiniPhotoUiState(0).saveAgendaDisabled, true);
+    assert.equal(panelMiniPhotoUiState(1).panelCountText, '1 foto');
+    assert.equal(panelMiniPhotoUiState(3).miniTitle, '3 fotos nesta entrega');
+  });
+});
+
+describe('resolvePanelSwipeGesture / panelActionFlags', () => {
+  it('classifies vertical minimize/expand and horizontal next/prev', () => {
+    assert.deepEqual(resolvePanelSwipeGesture(0, 80), { type: 'minimize' });
+    assert.deepEqual(resolvePanelSwipeGesture(0, -80), { type: 'expand' });
+    assert.deepEqual(resolvePanelSwipeGesture(-80, 0), { type: 'next' });
+    assert.deepEqual(resolvePanelSwipeGesture(80, 0), { type: 'prev' });
+    assert.equal(resolvePanelSwipeGesture(10, 10), null);
+  });
+
+  it('derives action flags from status / phone / coords', () => {
+    const pending = panelActionFlags({ status: 'pendente', telefones: [{ numero: '1' }] }, true);
+    assert.equal(pending.showNav, true);
+    assert.equal(pending.showWhatsApp, true);
+    assert.equal(pending.showFailDeliver, true);
+    assert.equal(pending.hasDualCta, true);
+    const done = panelActionFlags({ status: 'entregue', telefones: [] }, false);
+    assert.equal(done.showUndo, true);
+    assert.equal(done.showFailDeliver, false);
+    assert.equal(done.showNav, false);
   });
 });

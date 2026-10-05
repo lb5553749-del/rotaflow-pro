@@ -70,18 +70,16 @@ import {
 import {
     configureDeliveryPanel,
     isActiveStop,
-    isPreferredNextStop,
-    findNextInSequence,
-    deliveryProgressInfo,
     deliveryPhotoCount,
-    shouldKeepPanelMinimized,
-    adjacentIndexResult,
-    wasPanelSwipeJustConsumed,
-    markPanelSwipeConsumed,
-    withMiniActionGuard,
     minimizeDeliveryPanel,
-    expandDeliveryPanel,
-    closeDeliveryPanelShell
+    closeDeliveryPanel,
+    openDeliveryPanel,
+    setupPanelSwipe,
+    refreshPanelPhotos,
+    updatePanelMiniPhotoUi,
+    showOptimisticPanelPhoto,
+    goToAdjacentDelivery,
+    focusDeliveryInPanel
 } from './delivery-panel.js';
 import {
     configureRouting,
@@ -1632,14 +1630,32 @@ function configureExtractedModules() {
         getCurrentSelected: () => currentSelectedDelivery,
         setCurrentSelected: (d) => { currentSelectedDelivery = d; },
         ensureItemPhotos,
-        refreshPanelPhotos,
         resetHighlightedMarker: () => {
             if (highlightedMarker) {
                 resetMarkerStyle(highlightedMarker);
                 highlightedMarker = null;
             }
         },
-        hideMapSelectedChip
+        hideMapSelectedChip,
+        isNativeApp,
+        openExternalUrl,
+        sendWhatsApp,
+        undoDeliveryStatus,
+        markNotDelivered,
+        markDelivered,
+        capturePhotoForSelectedDelivery,
+        showToast,
+        syncActiveStopNotification,
+        clearActiveStopNotification,
+        updateMapNextChip,
+        getMarker,
+        highlightMarker,
+        focusMapOnDelivery,
+        openGallery,
+        saveDeliveryPhotoToAgenda,
+        idbDeletePhoto,
+        saveStorage,
+        scheduleDeliveriesListPhotoRefresh
     });
     configureMapLayer({
         isNativeApp,
@@ -2312,389 +2328,8 @@ function focusMapOnDelivery(delivery, opts = {}) {
     }
 }
 
-function focusDeliveryInPanel(delivery, direction = 0, opts = {}) {
-    if (!delivery) return;
-    openDeliveryPanel(delivery, opts);
-    const marker = getMarker(delivery.sequentialId);
-    if (marker) highlightMarker(marker, delivery);
-    // Swipe entre entregas: não mexe no mapa. Chip / foco explícito: pan + zoom.
-    if (opts.pan === true) focusMapOnDelivery(delivery, { zoom: opts.zoom });
-    if (direction !== 0) animatePanelSwipe(direction);
-}
-
-function animatePanelSwipe(direction) {
-    const content = document.querySelector('#deliveryPanel .panel-content');
-    if (!content) return;
-    content.classList.remove('swipe-anim-next', 'swipe-anim-prev');
-    void content.offsetWidth;
-    content.classList.add(direction > 0 ? 'swipe-anim-next' : 'swipe-anim-prev');
-}
-
-function getPanelDeliveryIndex() {
-    if (!currentSelectedDelivery) return -1;
-    return deliveries.findIndex(d => d.id === currentSelectedDelivery.id);
-}
-
-/** Ordem de navegação = ordem física da lista (Otimizar já reordena o array). */
-function getNavigationSequence() {
-    return deliveries;
-}
-
-// Navegação do painel: lib/panel-helpers.js · src/js/delivery-panel.js
-
-// direction: 1 = próxima (deslize esquerda), -1 = anterior (deslize direita)
-function goToAdjacentDelivery(direction, { preferPending = false, keepMinimized = false } = {}) {
-    if (!deliveries.length) {
-        closeDeliveryPanel();
-        return;
-    }
-    const panel = document.getElementById('deliveryPanel');
-    const stayMini = shouldKeepPanelMinimized(panel, keepMinimized);
-    const seq = getNavigationSequence();
-    const idx = getPanelDeliveryIndex();
-
-    if (preferPending) {
-        // Primeiro só para frente (evita pular para outra rua no início da rota).
-        // Só dá a volta se não houver nada à frente.
-        const next =
-            findNextInSequence(seq, idx, isPreferredNextStop, { wrap: false }) ||
-            findNextInSequence(seq, idx, isActiveStop, { wrap: false }) ||
-            findNextInSequence(seq, idx, isPreferredNextStop, { wrap: true }) ||
-            findNextInSequence(seq, idx, isActiveStop, { wrap: true });
-        if (next) {
-            focusDeliveryInPanel(next, 1, { keepMinimized: stayMini, pan: false });
-            return;
-        }
-        if (idx >= 0) openDeliveryPanel(seq[idx], { keepMinimized: stayMini });
-        else {
-            closeDeliveryPanel();
-            clearActiveStopNotification();
-        }
-        showToast('Todas as entregas foram concluídas');
-        return;
-    }
-
-    const adj = adjacentIndexResult(idx, direction, seq.length);
-    if (!adj.ok) {
-        if (adj.reason === 'first') showToast('Você está na primeira entrega');
-        else if (adj.reason === 'last') showToast('Você está na última entrega');
-        return;
-    }
-    focusDeliveryInPanel(seq[adj.next], direction, { keepMinimized: stayMini, pan: false });
-}
-
-function fillDeliveryPanelMeta(delivery) {
-    const street = shortStreetAddress(delivery.endereco);
-    const { current, total } = deliveryProgressInfo(delivery);
-    const progress = `${current}/${total || 0}`;
-    const idText = String(delivery.sequentialId || '—');
-
-    const miniAddr = document.getElementById('panelMiniAddress');
-    const miniId = document.getElementById('panelMiniId');
-    const miniQty = document.getElementById('panelMiniQty');
-    const qty = delivery.pacotes || 1;
-    if (miniAddr) miniAddr.textContent = street;
-    if (miniId) miniId.textContent = idText;
-    if (miniQty) {
-        miniQty.textContent = String(qty);
-        miniQty.classList.toggle('pacotes-highlight', qty >= 2);
-    }
-    updatePanelMiniPhotoUi(delivery);
-
-    const title = document.getElementById('panelAddressTitle');
-    const prog = document.getElementById('panelProgressText');
-    const idBadge = document.getElementById('panelIdBadge');
-    if (title) title.textContent = street;
-    if (prog) prog.textContent = progress;
-    if (idBadge) idBadge.textContent = idText;
-}
-
-// minimize/expand/swipe-guard: src/js/delivery-panel.js
-
-async function openMapsNavigation(delivery) {
-    if (!delivery || !hasMapCoords(delivery)) return;
-    const lat = Number(delivery.lat);
-    const lng = Number(delivery.lng);
-    const webUrl = `https://www.google.com/maps/dir/?api=1&destination=${lat},${lng}&travelmode=driving`;
-    if (isNativeApp()) {
-        // Preferência: app Google Maps em modo navegação no Android
-        const nativeNav = `google.navigation:q=${lat},${lng}`;
-        const ok = await openExternalUrl(nativeNav);
-        if (ok) return;
-    }
-    const opened = await openExternalUrl(webUrl);
-    if (!opened) showToast('Não foi possível abrir a navegação', true);
-}
-
-function setupPanelSwipe() {
-    const panel = document.getElementById('deliveryPanel');
-    if (!panel || panel.dataset.swipeReady) return;
-    panel.dataset.swipeReady = '1';
-    const mini = document.getElementById('panelMini');
-    let startX = 0, startY = 0, tracking = false;
-
-    const onStart = (x, y) => {
-        startX = x;
-        startY = y;
-        tracking = true;
-    };
-    const onEnd = (x, y) => {
-        if (!tracking || !panel.classList.contains('open')) return;
-        tracking = false;
-        const dx = x - startX;
-        const dy = y - startY;
-        const isMini = panel.classList.contains('minimized');
-        // Puxar para baixo → minimizar; para cima → expandir
-        if (Math.abs(dy) > 55 && Math.abs(dy) > Math.abs(dx) * 1.1) {
-            if (dy > 0) minimizeDeliveryPanel();
-            else expandDeliveryPanel();
-            return;
-        }
-        if (Math.abs(dx) < 55 || Math.abs(dx) < Math.abs(dy) * 1.15) return;
-        markPanelSwipeConsumed();
-        // Minimizado: troca entrega e permanece mini (não expandir).
-        goToAdjacentDelivery(dx < 0 ? 1 : -1, { keepMinimized: isMini });
-    };
-
-    const bindSwipeTarget = (el, { stopBubble = false, allowButtons = false } = {}) => {
-        if (!el) return;
-        el.addEventListener('touchstart', (e) => {
-            if (e.touches.length !== 1) return;
-            if (stopBubble) e.stopPropagation();
-            onStart(e.touches[0].clientX, e.touches[0].clientY);
-        }, { passive: true });
-        el.addEventListener('touchend', (e) => {
-            if (!e.changedTouches.length) return;
-            if (stopBubble) e.stopPropagation();
-            onEnd(e.changedTouches[0].clientX, e.changedTouches[0].clientY);
-        }, { passive: true });
-        el.addEventListener('pointerdown', (e) => {
-            if (e.pointerType === 'touch') return;
-            if (!allowButtons && e.target.closest('button, a, input, select, textarea')) return;
-            if (stopBubble) e.stopPropagation();
-            onStart(e.clientX, e.clientY);
-        });
-        el.addEventListener('pointerup', (e) => {
-            if (e.pointerType === 'touch') return;
-            if (stopBubble) e.stopPropagation();
-            onEnd(e.clientX, e.clientY);
-        });
-    };
-
-    // Expandido: gesto no painel. Mini: listener dedicado (pointer-events próprios).
-    bindSwipeTarget(panel, { allowButtons: false });
-    bindSwipeTarget(mini, { stopBubble: true, allowButtons: true });
-
-    document.getElementById('panelMiniInfo')?.addEventListener('click', (e) => {
-        if (wasPanelSwipeJustConsumed()) {
-            e.preventDefault();
-            e.stopPropagation();
-            return;
-        }
-        expandDeliveryPanel();
-    });
-    document.getElementById('panelHandle')?.addEventListener('click', () => {
-        if (panel.classList.contains('minimized')) expandDeliveryPanel();
-        else minimizeDeliveryPanel();
-    });
-}
-
-function renderDeliveryPanelActions(delivery) {
-    const actionsDiv = document.getElementById('panelActions');
-    const miniActions = document.getElementById('panelMiniActions');
-    if (!actionsDiv || !delivery) return;
-    actionsDiv.innerHTML = '';
-    if (miniActions) miniActions.innerHTML = '';
-
-    const hasPhone = !!(delivery.telefones && delivery.telefones.length);
-    const hasCoords = hasMapCoords(delivery);
-
-    // Expandido: Navegar e WhatsApp sempre que relevantes (não se excluem).
-    if (hasCoords) {
-        const navBtn = document.createElement('button');
-        navBtn.type = 'button';
-        navBtn.className = 'panel-action-btn nav-fallback';
-        navBtn.innerHTML = '<i class="fas fa-location-arrow"></i><span>Navegar</span>';
-        navBtn.onclick = () => openMapsNavigation(delivery);
-        actionsDiv.appendChild(navBtn);
-    }
-    if (hasPhone) {
-        const waBtn = document.createElement('button');
-        waBtn.type = 'button';
-        waBtn.className = 'panel-action-btn whatsapp-primary';
-        waBtn.innerHTML = '<i class="fab fa-whatsapp"></i><span>WhatsApp</span>';
-        waBtn.onclick = () => sendWhatsApp(delivery);
-        actionsDiv.appendChild(waBtn);
-    }
-
-    if (delivery.status === 'entregue' || delivery.status === 'falhou') {
-        const undoBtn = document.createElement('button');
-        undoBtn.type = 'button';
-        undoBtn.className = 'panel-action-btn undo';
-        undoBtn.innerHTML = '<i class="fas fa-rotate-left"></i><span>Desfazer</span>';
-        undoBtn.onclick = () => {
-            const mini = document.getElementById('deliveryPanel')?.classList.contains('minimized');
-            undoDeliveryStatus(delivery.id, { keepPanel: true, keepMinimized: mini });
-        };
-        actionsDiv.appendChild(undoBtn);
-    } else {
-        const failBtn = document.createElement('button');
-        failBtn.type = 'button';
-        failBtn.className = 'panel-action-btn fail';
-        failBtn.innerHTML = '<i class="fas fa-box"></i><span>Falhou</span>';
-        failBtn.onclick = () => markNotDelivered(delivery.id);
-        actionsDiv.appendChild(failBtn);
-
-        const deliverBtn = document.createElement('button');
-        deliverBtn.type = 'button';
-        deliverBtn.className = 'panel-action-btn deliver';
-        deliverBtn.innerHTML = '<i class="fas fa-box-open"></i><span>Entregar</span>';
-        deliverBtn.onclick = () => { markDelivered(delivery.id, { advance: true }); };
-        actionsDiv.appendChild(deliverBtn);
-    }
-
-    if (!miniActions) return;
-
-    const miniPhoto = document.createElement('button');
-    miniPhoto.type = 'button';
-    miniPhoto.className = 'mini-action-btn photo';
-    miniPhoto.title = 'Tirar foto desta entrega';
-    miniPhoto.setAttribute('aria-label', 'Tirar foto');
-    miniPhoto.innerHTML = '<i class="fas fa-camera"></i><span>Tirar foto</span>';
-    miniPhoto.onclick = withMiniActionGuard(() => capturePhotoForSelectedDelivery('camera'));
-    miniActions.appendChild(miniPhoto);
-
-    // Mini: Navegar + WhatsApp sempre que houver coords / telefone (mesmo com rota ativa).
-    if (hasCoords) {
-        const miniNav = document.createElement('button');
-        miniNav.type = 'button';
-        miniNav.className = 'mini-action-btn nav';
-        miniNav.innerHTML = '<i class="fas fa-location-arrow"></i><span>Navegar</span>';
-        miniNav.onclick = withMiniActionGuard(() => openMapsNavigation(delivery));
-        miniActions.appendChild(miniNav);
-    }
-    if (hasPhone) {
-        const miniWa = document.createElement('button');
-        miniWa.type = 'button';
-        miniWa.className = 'mini-action-btn whatsapp';
-        miniWa.innerHTML = '<i class="fab fa-whatsapp"></i><span>WhatsApp</span>';
-        miniWa.onclick = withMiniActionGuard(() => sendWhatsApp(delivery));
-        miniActions.appendChild(miniWa);
-    }
-    miniActions.classList.toggle('has-dual-cta', hasCoords && hasPhone);
-
-    if (delivery.status === 'entregue' || delivery.status === 'falhou') {
-        const miniUndo = document.createElement('button');
-        miniUndo.type = 'button';
-        miniUndo.className = 'mini-action-btn undo';
-        miniUndo.innerHTML = '<i class="fas fa-rotate-left"></i><span>Desfazer</span>';
-        miniUndo.onclick = withMiniActionGuard(() => {
-            undoDeliveryStatus(delivery.id, { keepPanel: true, keepMinimized: true });
-        });
-        miniActions.appendChild(miniUndo);
-    } else {
-        const miniFail = document.createElement('button');
-        miniFail.type = 'button';
-        miniFail.className = 'mini-action-btn fail';
-        miniFail.innerHTML = '<i class="fas fa-box"></i><span>Falhou</span>';
-        miniFail.onclick = withMiniActionGuard(() => markNotDelivered(delivery.id));
-        miniActions.appendChild(miniFail);
-
-        const miniDeliver = document.createElement('button');
-        miniDeliver.type = 'button';
-        miniDeliver.className = 'mini-action-btn deliver';
-        miniDeliver.innerHTML = '<i class="fas fa-box-open"></i><span>Entregar</span>';
-        miniDeliver.onclick = withMiniActionGuard(() => markDelivered(delivery.id, { advance: true }));
-        miniActions.appendChild(miniDeliver);
-    }
-}
-
-async function openDeliveryPanel(delivery, { keepMinimized = false } = {}) {
-    if (!delivery) return;
-    const stayMini = !!keepMinimized;
-    // Painel mini só precisa do contador — hidratar JPEGs aqui estoura RAM no Android ao "baixar" e avançar.
-    if (!stayMini) {
-        try {
-            await ensureItemPhotos(delivery);
-        } catch (e) {
-            console.warn('ensureItemPhotos', e);
-        }
-    }
-    currentSelectedDelivery = delivery;
-    const panel = document.getElementById('deliveryPanel');
-    if (!panel) return;
-    if (!stayMini) panel.classList.remove('minimized');
-    if ((delivery.pacotes || 1) >= 2) panel.classList.add('red-bg');
-    else panel.classList.remove('red-bg');
-
-    try {
-        fillDeliveryPanelMeta(delivery);
-        const nameEl = document.getElementById('panelName');
-        if (nameEl) nameEl.textContent = delivery.nome || '';
-
-        const pacotesSpan = document.getElementById('panelPacotesValue');
-        if (pacotesSpan) {
-            pacotesSpan.innerText = delivery.pacotes || 1;
-            pacotesSpan.classList.toggle('pacotes-highlight', (delivery.pacotes || 1) >= 2);
-        }
-
-        const phoneContainer = document.getElementById('panelPhone');
-        if (phoneContainer) {
-            if (delivery.telefones && delivery.telefones.length) {
-                phoneContainer.textContent = delivery.telefones.map(p => {
-                    const label = p.label ? p.label + ': ' : '';
-                    return label + formatPhoneShort(p.numero);
-                }).join(', ');
-            } else {
-                phoneContainer.textContent = 'Não informado';
-            }
-        }
-        const obsEl = document.getElementById('panelObsText');
-        if (obsEl) obsEl.innerText = delivery.notes ? delivery.notes : 'Nenhuma observação';
-        if (stayMini) updatePanelMiniPhotoUi(delivery);
-        else refreshPanelPhotos(delivery);
-        renderDeliveryPanelActions(delivery);
-    } catch (e) {
-        console.warn('openDeliveryPanel ui', e);
-    }
-    panel.classList.add('open');
-    if (stayMini) panel.classList.add('minimized');
-    else panel.classList.remove('minimized');
-    try { syncActiveStopNotification(delivery); } catch (_) {}
-    try { updateMapNextChip(); } catch (_) {}
-}
-
-function updatePanelMiniPhotoUi(delivery) {
-    const count = deliveryPhotoCount(delivery);
-    const mini = document.getElementById('panelMiniPhoto');
-    const miniCount = document.getElementById('panelMiniPhotoCount');
-    const panelCount = document.getElementById('panelPhotoCount');
-    const saveAgendaBtn = document.getElementById('panelSavePhotoAgendaBtn');
-    if (miniCount) miniCount.textContent = String(count);
-    if (mini) {
-        if (count > 0) {
-            mini.hidden = false;
-            mini.title = count === 1 ? '1 foto nesta entrega' : `${count} fotos nesta entrega`;
-        } else {
-            mini.hidden = true;
-        }
-    }
-    if (panelCount) {
-        if (count > 0) {
-            panelCount.hidden = false;
-            panelCount.textContent = count === 1 ? '1 foto' : `${count} fotos`;
-        } else {
-            panelCount.hidden = true;
-            panelCount.textContent = '';
-        }
-    }
-    if (saveAgendaBtn) {
-        saveAgendaBtn.disabled = count === 0;
-        saveAgendaBtn.title = count === 0
-            ? 'Tire ou escolha uma foto primeiro'
-            : 'Salvar a última foto na agenda deste cliente';
-    }
-}
+// Painel inferior (open/actions/fotos/swipe/nav):
+// lib/panel-helpers.js · src/js/delivery-panel.js (configureDeliveryPanel).
 
 async function copyDeliveryPhotoIndexToAgenda(agendaItem, delivery, idx) {
     await ensureItemPhotos(delivery);
@@ -2761,92 +2396,11 @@ async function saveDeliveryPhotoToAgenda(delivery, photoIndex = null) {
     return true;
 }
 
-function refreshPanelPhotos(delivery) {
-    const container = document.getElementById('panelPhotos');
-    updatePanelMiniPhotoUi(delivery);
-    if (!container) return;
-    container.innerHTML = '';
-    if (delivery && delivery.photos && delivery.photos.length) {
-        delivery.photos.forEach((photo, idx) => {
-            appendPanelPhotoNode(delivery, photo, idx, container);
-        });
-    } else {
-        container.innerHTML = '<span class="panel-photos-empty" style="color:#94a3b8; font-size:0.75rem;">Nenhuma foto</span>';
-    }
-}
-
-function appendPanelPhotoNode(delivery, photo, idx, container = null) {
-    const host = container || document.getElementById('panelPhotos');
-    if (!host) return null;
-    host.querySelector('.panel-photos-empty')?.remove();
-    const emptyHint = host.querySelector('span[style*="94a3b8"]');
-    if (emptyHint && emptyHint.textContent && emptyHint.textContent.includes('Nenhuma')) emptyHint.remove();
-
-    const wrapper = document.createElement('div');
-    wrapper.className = 'photo-wrapper';
-    if (String(photo || '').startsWith('blob:') || wrapper.dataset.optimistic) {
-        wrapper.dataset.optimistic = '1';
-    }
-    const img = document.createElement('img');
-    img.src = photo;
-    img.className = 'panel-photo';
-    img.loading = 'lazy';
-    img.addEventListener('click', (e) => {
-        e.stopPropagation();
-        openGallery(delivery.photos, idx);
-    });
-    const saveAgendaBtn = document.createElement('button');
-    saveAgendaBtn.type = 'button';
-    saveAgendaBtn.className = 'save-panel-photo-agenda';
-    saveAgendaBtn.title = 'Salvar na agenda';
-    saveAgendaBtn.setAttribute('aria-label', 'Salvar foto na agenda');
-    saveAgendaBtn.innerHTML = '<i class="fas fa-bookmark"></i>';
-    saveAgendaBtn.addEventListener('click', async (e) => {
-        e.stopPropagation();
-        await saveDeliveryPhotoToAgenda(delivery, idx);
-    });
-    const removeBtn = document.createElement('button');
-    removeBtn.className = 'remove-panel-photo';
-    removeBtn.innerHTML = '<i class="fas fa-times"></i>';
-    removeBtn.addEventListener('click', async (e) => {
-        e.stopPropagation();
-        const pid = delivery.photoIds && delivery.photoIds[idx];
-        if (pid) {
-            try { await idbDeletePhoto(pid); } catch (err) {}
-            delivery.photoIds.splice(idx, 1);
-        }
-        delivery.photos.splice(idx, 1);
-        saveStorage();
-        refreshPanelPhotos(delivery);
-        scheduleDeliveriesListPhotoRefresh();
-        showToast('Foto removida com sucesso');
-    });
-    wrapper.appendChild(img);
-    wrapper.appendChild(saveAgendaBtn);
-    wrapper.appendChild(removeBtn);
-    host.appendChild(wrapper);
-    return wrapper;
-}
-
 /** Atualiza só a lista de entregas depois (badge de fotos) sem travar o thumb. */
 function scheduleDeliveriesListPhotoRefresh() {
     const run = () => renderDeliveriesList();
     if (typeof requestIdleCallback === 'function') requestIdleCallback(run, { timeout: 700 });
     else setTimeout(run, 120);
-}
-
-function showOptimisticPanelPhoto(delivery, previewUrl) {
-    if (!delivery || !previewUrl) return null;
-    if (!Array.isArray(delivery.photos)) delivery.photos = [];
-    // Contagem visual imediata (sem photoId ainda).
-    updatePanelMiniPhotoUi({
-        ...delivery,
-        photos: [...delivery.photos, previewUrl],
-        photoIds: [...(delivery.photoIds || []), 'pending']
-    });
-    const wrapper = appendPanelPhotoNode(delivery, previewUrl, delivery.photos.length, document.getElementById('panelPhotos'));
-    if (wrapper) wrapper.dataset.optimistic = '1';
-    return wrapper;
 }
 
 async function addPhotoDataUrlsToDelivery(delivery, dataUrls, opts = {}) {
@@ -2983,11 +2537,6 @@ function setupPanelPhotoCapture() {
             await saveDeliveryPhotoToAgenda(currentSelectedDelivery, null);
         });
     }
-}
-
-function closeDeliveryPanel() {
-    closeDeliveryPanelShell();
-    // Entrega ativa continua no nativo para a tela de bloqueio.
 }
 
 // ========== INFO NA TELA DE BLOQUEIO (nativo, sem alerta) ==========
