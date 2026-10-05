@@ -68,6 +68,22 @@ import {
     PORTO_VELHO_CENTER
 } from './map-layer.js';
 import {
+    configureDeliveryPanel,
+    isActiveStop,
+    isPreferredNextStop,
+    findNextInSequence,
+    deliveryProgressInfo,
+    deliveryPhotoCount,
+    shouldKeepPanelMinimized,
+    adjacentIndexResult,
+    wasPanelSwipeJustConsumed,
+    markPanelSwipeConsumed,
+    withMiniActionGuard,
+    minimizeDeliveryPanel,
+    expandDeliveryPanel,
+    closeDeliveryPanelShell
+} from './delivery-panel.js';
+import {
     configureRouting,
     pendingStops,
     routeSignature,
@@ -1611,6 +1627,20 @@ function configureExtractedModules() {
         getPinSizePref: () => pinSizePref,
         countActivePins: () => deliveries.filter((d) => shouldShowOnMap(d) && !isMutedPin(d)).length
     });
+    configureDeliveryPanel({
+        getDeliveries: () => deliveries,
+        getCurrentSelected: () => currentSelectedDelivery,
+        setCurrentSelected: (d) => { currentSelectedDelivery = d; },
+        ensureItemPhotos,
+        refreshPanelPhotos,
+        resetHighlightedMarker: () => {
+            if (highlightedMarker) {
+                resetMarkerStyle(highlightedMarker);
+                highlightedMarker = null;
+            }
+        },
+        hideMapSelectedChip
+    });
     configureMapLayer({
         isNativeApp,
         getMap: () => map,
@@ -2310,26 +2340,7 @@ function getNavigationSequence() {
     return deliveries;
 }
 
-function isActiveStop(d) {
-    return d && d.status !== 'entregue' && d.status !== 'falhou';
-}
-
-function isPreferredNextStop(d) {
-    return isActiveStop(d) && !d.voltarDepois;
-}
-
-function findNextInSequence(seq, fromIdx, pred, { wrap = false } = {}) {
-    const start = Math.max(fromIdx, -1) + 1;
-    for (let i = start; i < seq.length; i++) {
-        if (pred(seq[i])) return seq[i];
-    }
-    if (!wrap) return null;
-    const end = Math.max(fromIdx, 0);
-    for (let i = 0; i < end; i++) {
-        if (pred(seq[i])) return seq[i];
-    }
-    return null;
-}
+// Navegação do painel: lib/panel-helpers.js · src/js/delivery-panel.js
 
 // direction: 1 = próxima (deslize esquerda), -1 = anterior (deslize direita)
 function goToAdjacentDelivery(direction, { preferPending = false, keepMinimized = false } = {}) {
@@ -2338,7 +2349,7 @@ function goToAdjacentDelivery(direction, { preferPending = false, keepMinimized 
         return;
     }
     const panel = document.getElementById('deliveryPanel');
-    const stayMini = keepMinimized || !!(panel && panel.classList.contains('open') && panel.classList.contains('minimized'));
+    const stayMini = shouldKeepPanelMinimized(panel, keepMinimized);
     const seq = getNavigationSequence();
     const idx = getPanelDeliveryIndex();
 
@@ -2363,29 +2374,13 @@ function goToAdjacentDelivery(direction, { preferPending = false, keepMinimized 
         return;
     }
 
-    if (idx < 0) {
-        focusDeliveryInPanel(seq[0], direction, { keepMinimized: stayMini, pan: false });
+    const adj = adjacentIndexResult(idx, direction, seq.length);
+    if (!adj.ok) {
+        if (adj.reason === 'first') showToast('Você está na primeira entrega');
+        else if (adj.reason === 'last') showToast('Você está na última entrega');
         return;
     }
-    const next = idx + direction;
-    if (next < 0) {
-        showToast('Você está na primeira entrega');
-        return;
-    }
-    if (next >= seq.length) {
-        showToast('Você está na última entrega');
-        return;
-    }
-    focusDeliveryInPanel(seq[next], direction, { keepMinimized: stayMini, pan: false });
-}
-
-function deliveryProgressInfo(delivery) {
-    const total = deliveries.length;
-    let idx = deliveries.findIndex(d => d.id === delivery.id);
-    if (idx < 0) idx = 0;
-    const current = (typeof delivery.routeOrder === 'number') ? delivery.routeOrder : (idx + 1);
-    const remaining = deliveries.filter(isActiveStop).length;
-    return { current, total, remaining };
+    focusDeliveryInPanel(seq[adj.next], direction, { keepMinimized: stayMini, pan: false });
 }
 
 function fillDeliveryPanelMeta(delivery) {
@@ -2414,50 +2409,7 @@ function fillDeliveryPanelMeta(delivery) {
     if (idBadge) idBadge.textContent = idText;
 }
 
-function minimizeDeliveryPanel() {
-    const panel = document.getElementById('deliveryPanel');
-    if (!panel || !panel.classList.contains('open')) return;
-    panel.classList.add('minimized');
-}
-
-function expandDeliveryPanel() {
-    const panel = document.getElementById('deliveryPanel');
-    if (!panel || !panel.classList.contains('open')) return;
-    panel.classList.remove('minimized');
-    const d = currentSelectedDelivery;
-    if (!d) return;
-    // Se abriu em modo mini sem hidratar fotos, completa ao expandir.
-    ensureItemPhotos(d).then(() => {
-        if (currentSelectedDelivery && currentSelectedDelivery.id === d.id) {
-            refreshPanelPhotos(d);
-        }
-    }).catch(() => {});
-}
-
-let panelSwipeConsumedUntil = 0;
-function wasPanelSwipeJustConsumed() {
-    return Date.now() < panelSwipeConsumedUntil;
-}
-function markPanelSwipeConsumed(ms = 400) {
-    panelSwipeConsumedUntil = Date.now() + ms;
-}
-
-function withMiniActionGuard(handler) {
-    return (e) => {
-        if (wasPanelSwipeJustConsumed()) {
-            if (e) {
-                e.preventDefault();
-                e.stopPropagation();
-            }
-            return;
-        }
-        if (e) {
-            e.preventDefault();
-            e.stopPropagation();
-        }
-        handler(e);
-    };
-}
+// minimize/expand/swipe-guard: src/js/delivery-panel.js
 
 async function openMapsNavigation(delivery) {
     if (!delivery || !hasMapCoords(delivery)) return;
@@ -2710,13 +2662,6 @@ async function openDeliveryPanel(delivery, { keepMinimized = false } = {}) {
     else panel.classList.remove('minimized');
     try { syncActiveStopNotification(delivery); } catch (_) {}
     try { updateMapNextChip(); } catch (_) {}
-}
-
-function deliveryPhotoCount(delivery) {
-    if (!delivery) return 0;
-    if (Array.isArray(delivery.photoIds) && delivery.photoIds.length) return delivery.photoIds.length;
-    if (Array.isArray(delivery.photos) && delivery.photos.length) return delivery.photos.length;
-    return 0;
 }
 
 function updatePanelMiniPhotoUi(delivery) {
@@ -3041,16 +2986,7 @@ function setupPanelPhotoCapture() {
 }
 
 function closeDeliveryPanel() {
-    const panel = document.getElementById('deliveryPanel');
-    panel.classList.remove('open');
-    panel.classList.remove('minimized');
-    panel.classList.remove('red-bg');
-    currentSelectedDelivery = null;
-    if (highlightedMarker) {
-        resetMarkerStyle(highlightedMarker);
-        highlightedMarker = null;
-    }
-    hideMapSelectedChip();
+    closeDeliveryPanelShell();
     // Entrega ativa continua no nativo para a tela de bloqueio.
 }
 
