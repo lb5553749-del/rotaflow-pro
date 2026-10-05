@@ -14,7 +14,10 @@ const {
   iconFillOpacity,
   boundsFromPoints,
   pointsForMapFit,
-  shortStreetAddress
+  shortStreetAddress,
+  plainLatLng,
+  boundsCorners,
+  pacotesFromPinColor
 } = require('../lib/map-helpers.js');
 
 describe('isMutedPin / markerColorFor', () => {
@@ -87,5 +90,18 @@ describe('nativePinDisplaySize / iconFill / bounds / street', () => {
   it('shortens street addresses', () => {
     assert.equal(shortStreetAddress('Rua A, 10, Centro'), 'Rua A, 10');
     assert.equal(shortStreetAddress(''), '—');
+  });
+
+  it('normalizes LatLng and bounds corners for the native facade', () => {
+    assert.deepEqual(plainLatLng({ lat: 1, lng: 2 }), { lat: 1, lng: 2 });
+    assert.deepEqual(plainLatLng({ lat: () => 3, lng: () => 4 }), { lat: 3, lng: 4 });
+    assert.equal(plainLatLng(null), null);
+    const corners = boundsCorners({
+      getSouthWest: () => ({ lat: () => 0, lng: () => 0 }),
+      getNorthEast: () => ({ lat: () => 2, lng: () => 4 })
+    });
+    assert.deepEqual(corners.center, { lat: 1, lng: 2 });
+    assert.equal(pacotesFromPinColor('#EF4444'), 2);
+    assert.equal(pacotesFromPinColor('#1A73E8'), 1);
   });
 });

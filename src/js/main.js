@@ -27,10 +27,7 @@ import {
 import {
     isMutedPin,
     markerColorFor,
-    hexToTint,
     markerScaleForActiveCount,
-    iconFillColor,
-    iconFillOpacity,
     boundsFromPoints,
     pointsForMapFit,
     shortStreetAddress
@@ -62,12 +59,16 @@ import {
 } from './modals.js';
 import {
     configureMapPins,
-    buildMapPinIcon,
-    nativePinDisplaySize
+    buildMapPinIcon
 } from './map-pins.js';
 import {
+    configureMapLayer,
+    createNativeMarkerShim,
+    initMap,
+    PORTO_VELHO_CENTER
+} from './map-layer.js';
+import {
     configureRouting,
-    setDirectionsService,
     pendingStops,
     routeSignature,
     clearRouteOverlay,
@@ -165,8 +166,6 @@ let markersList = [], markersBySeq = new Map();
 let gpsAccuracyMeters = 0;
 let useNativeMap = false, nativeGoogleMap = null, nativeMarkerById = new Map();
 let nativeMapZoom = 12;
-const MAPS_WEB_KEY = 'AIzaSyCRcCeryXHln-E84STTLlAl-oGrPh4mP8g';
-
 function isNativeApp() {
     if (window.RotaFlowCap && typeof window.RotaFlowCap.isNative === 'function' && window.RotaFlowCap.isNative()) {
         return true;
@@ -178,43 +177,7 @@ function isNativeApp() {
     }
 }
 
-function createNativeMapFacade(gmap) {
-    return {
-        panTo(pos) {
-            const c = pos && typeof pos.lat === 'function' ? { lat: pos.lat(), lng: pos.lng() } : pos;
-            if (!c) return;
-            gmap.setCamera({ coordinate: c, animate: true });
-        },
-        setCenter(pos) {
-            const c = pos && typeof pos.lat === 'function' ? { lat: pos.lat(), lng: pos.lng() } : pos;
-            if (!c) return;
-            gmap.setCamera({ coordinate: c });
-        },
-        setZoom(z) {
-            nativeMapZoom = z;
-            gmap.setCamera({ zoom: z });
-        },
-        getZoom() { return nativeMapZoom; },
-        fitBounds(bounds, padding) {
-            let sw, ne;
-            if (bounds && typeof bounds.getSouthWest === 'function') {
-                const a = bounds.getSouthWest();
-                const b = bounds.getNorthEast();
-                sw = { lat: a.lat(), lng: a.lng() };
-                ne = { lat: b.lat(), lng: b.lng() };
-            } else if (bounds && bounds.southwest && bounds.northeast) {
-                sw = bounds.southwest;
-                ne = bounds.northeast;
-            } else return;
-            const center = {
-                lat: (sw.lat + ne.lat) / 2,
-                lng: (sw.lng + ne.lng) / 2
-            };
-            const pad = typeof padding === 'number' ? padding : 64;
-            gmap.fitBounds({ southwest: sw, northeast: ne, center }, pad);
-        }
-    };
-}
+// Facade/shims nativos: src/js/map-layer.js (configureMapLayer).
 
 let pinSizePref = (() => {
     try {
@@ -272,103 +235,6 @@ function markerScaleForCount(muted) {
 
 // Pins canvas: src/js/map-pins.js (configureMapPins no boot).
 
-function createNativeMarkerShim(opts) {
-    const color = iconFillColor(opts.icon);
-    const opacity = iconFillOpacity(opts.icon);
-    const shim = {
-        sequentialId: opts.sequentialId,
-        _nativeId: null,
-        _pos: { lat: opts.position.lat, lng: opts.position.lng },
-        _title: opts.title || '',
-        _label: opts.label && opts.label.text ? String(opts.label.text) : '',
-        _color: color,
-        _opacity: opacity,
-        _muted: !!opts.muted,
-        _highlighted: false,
-        _onClick: null,
-        _syncing: false,
-        _removed: false,
-        async _sync() {
-            if (!nativeGoogleMap || this._syncing || this._removed) return;
-            this._syncing = true;
-            try {
-                if (this._nativeId) {
-                    nativeMarkerById.delete(this._nativeId);
-                    await nativeGoogleMap.removeMarkers([this._nativeId]);
-                    this._nativeId = null;
-                }
-                if (this._removed) return;
-                const label = this._label || String(this.sequentialId || '');
-                const markerOpts = {
-                    coordinate: this._pos,
-                    title: label,
-                    snippet: this._title,
-                    opacity: 1,
-                    zIndex: this._highlighted ? 30 : (this._muted ? 1 : 10)
-                };
-                if (label && this.sequentialId !== '__gps__') {
-                    const pin = buildMapPinIcon(
-                        {
-                            sequentialId: label,
-                            status: this._muted ? 'entregue' : 'pendente',
-                            pacotes: (this._color === '#EF4444' || this._color === '#ef4444') ? 2 : 1
-                        },
-                        { highlighted: this._highlighted }
-                    );
-                    markerOpts.iconUrl = pin.url;
-                    markerOpts.iconSize = { width: pin.width, height: pin.height };
-                    markerOpts.iconAnchor = { x: pin.anchorX, y: pin.anchorY };
-                } else {
-                    markerOpts.tintColor = hexToTint(this._color, Math.round((this._opacity == null ? 1 : this._opacity) * 255));
-                }
-                const id = await nativeGoogleMap.addMarker(markerOpts);
-                if (this._removed) {
-                    await nativeGoogleMap.removeMarkers([id]).catch(() => {});
-                    return;
-                }
-                this._nativeId = id;
-                nativeMarkerById.set(this._nativeId, this);
-            } catch (e) {
-                console.warn('native marker', e);
-            } finally {
-                this._syncing = false;
-            }
-        },
-        setPosition(p) {
-            if (this._removed) return;
-            this._pos = p && typeof p.lat === 'function' ? { lat: p.lat(), lng: p.lng() } : { lat: p.lat, lng: p.lng };
-            this._sync();
-        },
-        setIcon(icon) {
-            if (this._removed) return;
-            this._color = iconFillColor(icon);
-            this._opacity = iconFillOpacity(icon);
-            if (icon && typeof icon === 'object' && 'muted' in icon) this._muted = !!icon.muted;
-            if (icon && typeof icon === 'object' && 'highlighted' in icon) this._highlighted = !!icon.highlighted;
-            this._sync();
-        },
-        setLabel(label) {
-            if (this._removed) return;
-            this._label = label && typeof label === 'object' ? String(label.text || '') : String(label || '');
-            this._sync();
-        },
-        setTitle(t) { this._title = t || ''; },
-        setMap(m) {
-            if (m) return;
-            this._removed = true;
-            if (this._nativeId && nativeGoogleMap) {
-                nativeMarkerById.delete(this._nativeId);
-                nativeGoogleMap.removeMarkers([this._nativeId]).catch(() => {});
-                this._nativeId = null;
-            }
-        },
-        addListener(ev, cb) {
-            if (ev === 'click') this._onClick = cb;
-        }
-    };
-    shim._sync();
-    return shim;
-}
 let gpsEnabled = localStorage.getItem('rotaflow_gps') !== '0';
 let routeFilter = "", agendaFilter = "";
 let currentSelectedDelivery = null;
@@ -396,32 +262,7 @@ let userProfile = {
 
 const APP_ICON = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 512 512'%3E%3Crect width='512' height='512' rx='104' fill='%230f172a'/%3E%3Cpath d='M148 388C148 300 372 330 372 200' fill='none' stroke='%233b82f6' stroke-width='30' stroke-linecap='round' stroke-dasharray='4 46'/%3E%3Ccircle cx='148' cy='388' r='46' fill='%2322c55e'/%3E%3Ccircle cx='372' cy='176' r='46' fill='%23ef4444'/%3E%3C/svg%3E";
 
-const PORTO_VELHO_CENTER = { lat: -8.7619, lng: -63.9038 };
-const PORTO_VELHO_RADIUS = 50000;
-const mapStyle = [
-    { elementType: 'geometry', stylers: [{ color: '#f1f3f4' }] },
-    { elementType: 'labels.icon', stylers: [{ visibility: 'off' }] },
-    { elementType: 'labels.text.fill', stylers: [{ color: '#5f6368' }] },
-    { elementType: 'labels.text.stroke', stylers: [{ color: '#f1f3f4' }] },
-    { featureType: 'administrative', elementType: 'geometry', stylers: [{ visibility: 'off' }] },
-    { featureType: 'administrative.land_parcel', stylers: [{ visibility: 'off' }] },
-    { featureType: 'administrative.neighborhood', stylers: [{ visibility: 'off' }] },
-    { featureType: 'poi', stylers: [{ visibility: 'off' }] },
-    { featureType: 'poi.park', elementType: 'geometry', stylers: [{ color: '#e8f0e8' }] },
-    { featureType: 'poi.park', elementType: 'labels', stylers: [{ visibility: 'off' }] },
-    { featureType: 'road', elementType: 'geometry', stylers: [{ color: '#ffffff' }] },
-    { featureType: 'road', elementType: 'geometry.stroke', stylers: [{ color: '#dadce0' }] },
-    { featureType: 'road', elementType: 'labels.icon', stylers: [{ visibility: 'off' }] },
-    { featureType: 'road.arterial', elementType: 'geometry', stylers: [{ color: '#ffffff' }] },
-    { featureType: 'road.highway', elementType: 'geometry', stylers: [{ color: '#e8eaed' }] },
-    { featureType: 'road.highway', elementType: 'geometry.stroke', stylers: [{ color: '#dadce0' }] },
-    { featureType: 'road.local', elementType: 'geometry', stylers: [{ color: '#ffffff' }] },
-    { featureType: 'road.local', elementType: 'geometry.stroke', stylers: [{ color: '#cfd3d8' }] },
-    { featureType: 'transit', stylers: [{ visibility: 'off' }] },
-    { featureType: 'water', elementType: 'geometry', stylers: [{ color: '#dce7f2' }] },
-    { featureType: 'landscape', elementType: 'geometry', stylers: [{ color: '#f1f3f4' }] },
-    { featureType: 'landscape.man_made', elementType: 'geometry.stroke', stylers: [{ color: '#dadce0' }] }
-];
+// Centro/estilo do mapa: src/js/map-layer.js (PORTO_VELHO_CENTER, mapStyle).
 
 function debounce(fn, ms) {
     let t;
@@ -1769,6 +1610,29 @@ function configureExtractedModules() {
     configureMapPins({
         getPinSizePref: () => pinSizePref,
         countActivePins: () => deliveries.filter((d) => shouldShowOnMap(d) && !isMutedPin(d)).length
+    });
+    configureMapLayer({
+        isNativeApp,
+        getMap: () => map,
+        setMap: (m) => { map = m; },
+        getGeocoder: () => geocoder,
+        setGeocoder: (g) => { geocoder = g; },
+        getAutocomplete: () => autocomplete,
+        setAutocomplete: (a) => { autocomplete = a; },
+        getUseNativeMap: () => useNativeMap,
+        setUseNativeMap: (v) => { useNativeMap = !!v; },
+        getNativeGoogleMap: () => nativeGoogleMap,
+        setNativeGoogleMap: (m) => { nativeGoogleMap = m; },
+        getNativeMarkerById: () => nativeMarkerById,
+        setNativeMarkerById: (m) => { nativeMarkerById = m; },
+        getNativeMapZoom: () => nativeMapZoom,
+        setNativeMapZoom: (z) => { nativeMapZoom = z; },
+        getAuthReady: () => authReady,
+        getStorageLoadedUid: () => storageLoadedUid,
+        currentUid,
+        refreshMapAfterStorageLoad,
+        loadStorage,
+        showStartMarker
     });
     configureGps({
         isNativeApp,
@@ -5254,140 +5118,7 @@ let startPoint = null;
 // Directions/otimização: src/js/routing.js
 
 // ========== MAPA E INICIALIZAÇÃO ==========
-async function ensurePlacesAutocomplete() {
-    if (autocomplete || !document.getElementById('address')) return;
-    try {
-        if (google.maps.importLibrary) {
-            await google.maps.importLibrary('places');
-        }
-        const addressInput = document.getElementById('address');
-        autocomplete = new google.maps.places.Autocomplete(addressInput, {
-            componentRestrictions: { country: 'br' },
-            fields: ['formatted_address', 'geometry'],
-            types: ['address'],
-            location: PORTO_VELHO_CENTER,
-            radius: PORTO_VELHO_RADIUS,
-            strictBounds: false
-        });
-        autocomplete.addListener('place_changed', () => {
-            const place = autocomplete.getPlace();
-            if (place && place.formatted_address) addressInput.value = place.formatted_address;
-        });
-    } catch (e) {
-        console.warn('Places autocomplete', e);
-    }
-}
-
-async function initNativeGoogleMap() {
-    const cap = window.RotaFlowCap;
-    document.documentElement.classList.add('native-map');
-    try {
-        await cap.StatusBar.setStyle({ style: cap.Style.Dark });
-    } catch (_) {}
-
-    const old = document.getElementById('map');
-    const el = document.createElement('capacitor-google-map');
-    el.id = 'map';
-    el.setAttribute('role', 'application');
-    el.setAttribute('aria-label', 'Mapa das entregas');
-    el.style.display = 'block';
-    el.style.width = '100%';
-    el.style.height = '100%';
-    old.replaceWith(el);
-
-    await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
-
-    nativeGoogleMap = await cap.GoogleMap.create({
-        id: 'rotaflow',
-        element: el,
-        apiKey: cap.MAPS_API_KEY || MAPS_WEB_KEY,
-        config: {
-            center: PORTO_VELHO_CENTER,
-            zoom: 12,
-            disableDefaultUI: true,
-            // Maps SDK nativo: rotação/inclinação com dois dedos (360°) como no Google Maps
-            heading: 0,
-            styles: mapStyle
-        }
-    });
-    nativeMapZoom = 12;
-    map = createNativeMapFacade(nativeGoogleMap);
-    useNativeMap = true;
-
-    await nativeGoogleMap.setOnMarkerClickListener((ev) => {
-        const m = nativeMarkerById.get(ev.markerId);
-        if (m && typeof m._onClick === 'function') m._onClick();
-    });
-}
-
-/**
- * CameraPreview toBack foi removido do caminho multi-foto.
- * O mapa nativo já não precisa de suspend/destroy/recreate por causa da câmera.
- */
-
-async function initMap() {
-    useNativeMap = false;
-    nativeGoogleMap = null;
-    nativeMarkerById = new Map();
-
-    if (isNativeApp()) {
-        try {
-            await initNativeGoogleMap();
-        } catch (e) {
-            console.warn('Native map failed, falling back to JS Maps', e);
-            document.documentElement.classList.remove('native-map');
-            useNativeMap = false;
-            if (!document.getElementById('map')) {
-                const area = document.querySelector('.map-area');
-                const div = document.createElement('div');
-                div.id = 'map';
-                div.setAttribute('role', 'application');
-                area.prepend(div);
-            }
-        }
-    }
-
-    if (!useNativeMap) {
-        const mapOpts = {
-            center: PORTO_VELHO_CENTER,
-            zoom: 12,
-            mapTypeControl: false,
-            fullscreenControl: false,
-            streetViewControl: false,
-            gestureHandling: 'greedy',
-            // Rotação 360° (dois dedos) + bússola para voltar ao norte, como no Google Maps
-            rotateControl: true,
-            rotateControlOptions: { position: google.maps.ControlPosition.LEFT_BOTTOM },
-            clickableIcons: false,
-            keyboardShortcuts: false,
-            disableDoubleClickZoom: false,
-            styles: mapStyle
-        };
-        // Mapa vetorial (quando disponível) costuma ser mais fluido no celular
-        // e é o que permite girar/inclinar livremente.
-        try {
-            if (google.maps.RenderingType && google.maps.RenderingType.VECTOR) {
-                mapOpts.renderingType = google.maps.RenderingType.VECTOR;
-            }
-        } catch (e) {}
-
-        map = new google.maps.Map(document.getElementById('map'), mapOpts);
-    }
-
-    geocoder = new google.maps.Geocoder();
-    setDirectionsService(new google.maps.DirectionsService());
-    const addressInput = document.getElementById('address');
-    // Places só quando o usuário for digitar endereço (menos peso no boot).
-    addressInput.addEventListener('focus', () => { ensurePlacesAutocomplete(); }, { once: true });
-
-    // Login automático já rodou loadStorage no DOMContentLoaded: não reler/re-renderizar tudo.
-    if (authReady) {
-        if (storageLoadedUid === currentUid()) refreshMapAfterStorageLoad();
-        else loadStorage();
-    }
-    showStartMarker();
-    document.getElementById('mapLoading')?.classList.add('hidden');
-}
+// Init nativo/web + Places: src/js/map-layer.js (configureMapLayer, initMap).
 
 /** Interface do motorista. Roda no DOMContentLoaded, sem esperar o callback do Google Maps. */
 function initAppUi() {
