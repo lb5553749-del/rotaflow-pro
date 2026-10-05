@@ -6,7 +6,12 @@ const {
   cloneWithoutHeavyPhotos,
   hydrateRoutesFromData,
   buildPersistPayload,
-  normalizeRouteRecord
+  normalizeRouteRecord,
+  migrateLegacyLocalStorageKeys,
+  normalizeAgendaItemDefaults,
+  parseAgendaStorage,
+  migrateWhatsAppTemplate,
+  ensureProfileEmpresa
 } = require('../lib/persist-helpers.js');
 
 describe('cloneWithoutHeavyPhotos', () => {
@@ -169,5 +174,58 @@ describe('legacy data compatibility (read side)', () => {
       deliveries: [{ id: 99 }]
     });
     assert.deepEqual(state.deliveries.map((d) => d.id), [1, 2]);
+  });
+});
+
+describe('migrateLegacyLocalStorageKeys', () => {
+  it('copies unscoped keys into uid-scoped keys once', () => {
+    const store = new Map([
+      ['rotaflow_data', '{"routes":[]}'],
+      ['rotaflow_agenda', '{"agenda":[]}'],
+      ['rotaflow_profile', '{"motorista":"A"}']
+    ]);
+    const storage = {
+      getItem: (k) => (store.has(k) ? store.get(k) : null),
+      setItem: (k, v) => { store.set(k, v); }
+    };
+    const key = (base) => `rotaflow_${base}_local1`;
+    assert.equal(migrateLegacyLocalStorageKeys(storage, key), true);
+    assert.equal(store.get('rotaflow_data_local1'), '{"routes":[]}');
+    assert.equal(store.get('rotaflow_agenda_local1'), '{"agenda":[]}');
+    assert.equal(migrateLegacyLocalStorageKeys(storage, key), false);
+  });
+});
+
+describe('agenda / profile helpers', () => {
+  it('parseAgendaStorage and normalizeAgendaItemDefaults', () => {
+    const parsed = parseAgendaStorage({ agenda: [{ nome: 'A' }], nextAgendaId: 4 });
+    assert.equal(parsed.nextAgendaId, 4);
+    normalizeAgendaItemDefaults(parsed.agenda[0]);
+    assert.equal(parsed.agenda[0].pacotes, 1);
+    assert.deepEqual(parsed.agenda[0].photoIds, []);
+  });
+
+  it('migrateWhatsAppTemplate replaces short/legacy templates', () => {
+    const def = 'Olá {nome}\nEstamos chegando em breve!\n{endereco}\n{link}';
+    const short = migrateWhatsAppTemplate('Acompanhe sua entrega em tempo real', def);
+    assert.equal(short.changed, true);
+    assert.equal(short.message, def);
+
+    const eta = migrateWhatsAppTemplate('Sua encomenda (1)\n⏱ Faltam cerca de 5 min\n{km}', def);
+    assert.equal(eta.changed, true);
+    assert.equal(eta.message, def);
+
+    const correx = migrateWhatsAppTemplate(
+      'Estamos chegando em breve!\n{endereco}\n📦 Correx express\n{link}',
+      def
+    );
+    assert.equal(correx.changed, true);
+    assert.match(correx.message, /\{empresa\}/);
+  });
+
+  it('ensureProfileEmpresa fills blank empresa', () => {
+    const out = ensureProfileEmpresa({ motorista: 'X', empresa: '  ' }, 'Correx express');
+    assert.equal(out.changed, true);
+    assert.equal(out.profile.empresa, 'Correx express');
   });
 });

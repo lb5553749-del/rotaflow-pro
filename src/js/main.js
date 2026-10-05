@@ -6,9 +6,6 @@
 import '../../native/bridge.js';
 import '../../native/push-sender.js';
 import {
-    buildPersistPayload
-} from '../../lib/persist-helpers.js';
-import {
     photoFingerprint,
     itemPhotoScope,
     remainingPhotoSlots as remainingPhotoSlotsFor,
@@ -140,6 +137,12 @@ import {
     startNewRoute
 } from './routes.js';
 import {
+    configurePersist,
+    persistStorageNow,
+    saveStorage,
+    loadStorage
+} from './persist.js';
+import {
     configureBackupUi,
     maybeShowBackupReminder,
     setupBackupReminderUi,
@@ -250,6 +253,39 @@ function setFeedbackPrefs({ sound, vibrate } = {}) {
 
 // Marcadores: src/js/map-markers.js (configureMapMarkers).
 // shouldShowOnMap / getMarker / upsert / rebuild / highlight vêm do módulo.
+
+let gpsEnabled = localStorage.getItem('rotaflow_gps') !== '0';
+let routeFilter = "", agendaFilter = "";
+let currentSelectedDelivery = null;
+let tempPhones = [];
+let currentUser = null; // { uid, displayName, email, photoURL, provider }
+let authReady = false;
+
+const EMPRESA_PADRAO = "Correx express";
+const MENSAGEM_WHATSAPP_PADRAO =
+    "Olá {nome}! 🚚\n" +
+    "Sua encomenda ({id} - {pacotes} pacote(s)) está a caminho.\n" +
+    "📍 Endereço: {endereco}\n" +
+    "\n" +
+    "⚠️ Estamos chegando em breve! Por favor, esteja disponível para receber.⚠️\n" +
+    "📦 {empresa}\n" +
+    "🗺️ Acompanhe no mapa: {link}";
+
+let userProfile = {
+    motorista: "Motorista",
+    empresa: EMPRESA_PADRAO,
+    mensagemPadrao: MENSAGEM_WHATSAPP_PADRAO
+};
+
+const APP_ICON = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 512 512'%3E%3Crect width='512' height='512' rx='104' fill='%230f172a'/%3E%3Cpath d='M148 388C148 300 372 330 372 200' fill='none' stroke='%233b82f6' stroke-width='30' stroke-linecap='round' stroke-dasharray='4 46'/%3E%3Ccircle cx='148' cy='388' r='46' fill='%2322c55e'/%3E%3Ccircle cx='372' cy='176' r='46' fill='%23ef4444'/%3E%3C/svg%3E";
+
+function debounce(fn, ms) {
+    let t;
+    return function (...args) {
+        clearTimeout(t);
+        t = setTimeout(() => fn.apply(this, args), ms);
+    };
+}
 
 function switchSidebarTab(tab) {
     document.querySelectorAll('.sidebar-tabs button').forEach(btn => {
@@ -429,8 +465,6 @@ function migrateFavorito(obj) {
     if (obj.favorito === undefined) obj.favorito = false;
     return obj;
 }
-
-let storageFull = false;
 
 function currentUid() {
     return (currentUser && currentUser.uid) ? currentUser.uid : 'guest';
@@ -1360,33 +1394,8 @@ function scheduleListPhotoHydration() {
 // ========== ROTAS MÚLTIPLAS ==========
 // Implementação em src/js/routes.js (configureRoutes no boot).
 
-function persistStorageNow() {
-    if (!authReady || !currentUser) return false;
-    try {
-        syncActiveRouteIntoRoutes();
-        // Só `routes[]` — o espelho `deliveries` saiu; dados antigos migram em hydrateRoutesFromData.
-        const payload = buildPersistPayload({ routes, activeRouteId, nextSequenceNumber, agenda, nextAgendaId });
-        localStorage.setItem(storageKey('data'), JSON.stringify(payload.data));
-        localStorage.setItem(storageKey('agenda'), JSON.stringify(payload.agenda));
-        localStorage.setItem(storageKey('profile'), JSON.stringify(userProfile));
-        localStorage.setItem(storageKey('updatedAt'), String(Date.now()));
-        if (storageFull) {
-            storageFull = false;
-            showToast("Espaço liberado. Dados salvos com sucesso");
-        }
-        return true;
-    } catch (e) {
-        if (!storageFull) {
-            storageFull = true;
-            showToast("Armazenamento insuficiente. Remova dados antigos ou faça um backup", true);
-        }
-        return false;
-    }
-}
-function saveStorage() {
-    clearTimeout(saveTimer);
-    saveTimer = setTimeout(persistStorageNow, 80);
-}
+// ========== PERSISTÊNCIA ==========
+// Implementação em src/js/persist.js (configurePersist no boot).
 
 function configureExtractedModules() {
     configureMapPins({
@@ -1510,6 +1519,55 @@ function configureExtractedModules() {
         buildDeliveryWhatsAppMessage,
         syncBackgroundGpsTargets,
         isBgGpsStarted
+    });
+    configurePersist({
+        getAuthReady: () => authReady,
+        getCurrentUser: () => currentUser,
+        currentUid,
+        storageKey,
+        getRoutes: () => routes,
+        getActiveRouteId: () => activeRouteId,
+        getNextSequenceNumber: () => nextSequenceNumber,
+        getAgenda: () => agenda,
+        setAgenda: (a) => { agenda = Array.isArray(a) ? a : []; },
+        getNextAgendaId: () => nextAgendaId,
+        setNextAgendaId: (n) => { nextAgendaId = n; },
+        getUserProfile: () => userProfile,
+        setUserProfile: (p) => { if (p) userProfile = p; },
+        resetMemoryState: () => {
+            deliveries = [];
+            agenda = [];
+            routes = [];
+            activeRouteId = null;
+            nextSequenceNumber = 1;
+            nextAgendaId = 1;
+            routeActive = false;
+            routeMetrics = null;
+        },
+        syncActiveRouteIntoRoutes,
+        hydrateRoutesFromData,
+        migrateTelefones,
+        migrateFavorito,
+        normalizeDeliveryCoords,
+        empresaPadrao: () => EMPRESA_PADRAO,
+        mensagemWhatsappPadrao: () => MENSAGEM_WHATSAPP_PADRAO,
+        scheduleBackgroundPhotoMigrate,
+        loadHistory,
+        scheduleOrphanPhotoPrune,
+        seedIdCounter,
+        updateAgendaCountBadge: () => {
+            const el = document.getElementById('agendaCountBadge');
+            if (el) el.innerHTML = agenda.length;
+        },
+        updateDeliveryStats,
+        renderDeliveriesList,
+        renderRouteSwitcher,
+        renderAgendaList,
+        renderHistoryList,
+        scheduleListPhotoHydration,
+        setStorageLoadedUid: (uid) => { storageLoadedUid = uid; },
+        refreshMapAfterStorageLoad,
+        showToast
     });
     configureRoutes({
         getRoutes: () => routes,
@@ -1645,111 +1703,6 @@ function setupUndoSnackbar() {
 
 /** uid cujos dados já estão em memória (evita o 2º loadStorage no initMap). */
 let storageLoadedUid = null;
-
-async function loadStorage() {
-    deliveries = [];
-    agenda = [];
-    routes = [];
-    activeRouteId = null;
-    nextSequenceNumber = 1;
-    nextAgendaId = 1;
-    routeActive = false;
-    routeMetrics = null;
-
-    if (currentUid() === 'guest' || (currentUser && currentUser.provider === 'local')) {
-        if (!localStorage.getItem(storageKey('data')) && localStorage.getItem('rotaflow_data')) {
-            localStorage.setItem(storageKey('data'), localStorage.getItem('rotaflow_data'));
-            if (localStorage.getItem('rotaflow_agenda')) localStorage.setItem(storageKey('agenda'), localStorage.getItem('rotaflow_agenda'));
-            if (localStorage.getItem('rotaflow_profile')) localStorage.setItem(storageKey('profile'), localStorage.getItem('rotaflow_profile'));
-        }
-    }
-
-    const saved = localStorage.getItem(storageKey('data'));
-    if (saved) {
-        try {
-            const data = JSON.parse(saved);
-            hydrateRoutesFromData(data);
-        } catch (e) {
-            hydrateRoutesFromData({});
-        }
-    } else {
-        hydrateRoutesFromData({});
-    }
-    const savedAgenda = localStorage.getItem(storageKey('agenda'));
-    if (savedAgenda) {
-        try {
-            const data = JSON.parse(savedAgenda);
-            agenda = data.agenda || [];
-            agenda.forEach(a => {
-                migrateTelefones(a); migrateFavorito(a);
-                if (a.pacotes === undefined) a.pacotes = 1;
-                if (!a.photos) a.photos = [];
-                if (!a.photoIds) a.photoIds = [];
-                if (a.notes === undefined) a.notes = '';
-                normalizeDeliveryCoords(a);
-            });
-            nextAgendaId = data.nextAgendaId || 1;
-        } catch (e) {}
-    }
-    const savedProfile = localStorage.getItem(storageKey('profile'));
-    if (savedProfile) { try { userProfile = JSON.parse(savedProfile); } catch (e) {} }
-
-    if (!userProfile.empresa || !String(userProfile.empresa).trim()) {
-        userProfile.empresa = EMPRESA_PADRAO;
-    }
-
-    // Mensagem WhatsApp: template completo (sem km/ETA). Migra saudação curta e templates antigos.
-    if (userProfile.mensagemPadrao) {
-        const beforeMsg = userProfile.mensagemPadrao;
-        const alreadyNew = /Estamos chegando em breve/.test(beforeMsg) && /\{endereco\}/.test(beforeMsg) && /\{link\}/.test(beforeMsg);
-        const looksShort =
-            /Acompanhe sua entrega/.test(beforeMsg) || /em tempo real/.test(beforeMsg);
-        const looksLegacy =
-            /\{km\}|\{min\}|Faltam cerca de/.test(beforeMsg) ||
-            (/Sua encomenda \(/.test(beforeMsg) && !alreadyNew);
-        if (!alreadyNew && (looksShort || looksLegacy || !beforeMsg.trim())) {
-            userProfile.mensagemPadrao = MENSAGEM_WHATSAPP_PADRAO;
-        } else if (!alreadyNew) {
-            userProfile.mensagemPadrao = beforeMsg
-                .replace(/\n?⏱\s*Faltam cerca de[^\n]*/g, '')
-                .replace(/\n?[^\n]*\{km\}[^\n]*/g, '')
-                .replace(/\n?[^\n]*\{min\}[^\n]*/g, '')
-                .replace(/\n{3,}/g, '\n\n')
-                .trim();
-            if (!/\{link\}/.test(userProfile.mensagemPadrao)) {
-                userProfile.mensagemPadrao = userProfile.mensagemPadrao.replace(/\s*$/, '\n{link}');
-            }
-        }
-        // Migra "📦 Correx express" hardcoded → {empresa}
-        if (/📦\s*Correx express/i.test(userProfile.mensagemPadrao) && !/\{empresa\}/.test(userProfile.mensagemPadrao)) {
-            userProfile.mensagemPadrao = userProfile.mensagemPadrao.replace(/📦\s*Correx express/gi, '📦 {empresa}');
-        }
-        if (userProfile.mensagemPadrao !== beforeMsg) {
-            try { localStorage.setItem(storageKey('profile'), JSON.stringify(userProfile)); } catch (e) {}
-        }
-    } else {
-        userProfile.mensagemPadrao = MENSAGEM_WHATSAPP_PADRAO;
-        try { localStorage.setItem(storageKey('profile'), JSON.stringify(userProfile)); } catch (e) {}
-    }
-
-    // Fotos sob demanda (painel/lista), não no boot.
-    scheduleBackgroundPhotoMigrate();
-    loadHistory();
-    // Housekeeping IDB em idle: órfãs + fotos de rotas finalizadas > TTL (30d).
-    scheduleOrphanPhotoPrune();
-    persistStorageNow();
-
-    seedIdCounter();
-    document.getElementById("agendaCountBadge").innerHTML = agenda.length;
-    updateDeliveryStats();
-    renderDeliveriesList();
-    renderRouteSwitcher();
-    renderAgendaList();
-    renderHistoryList();
-    scheduleListPhotoHydration();
-    storageLoadedUid = currentUid();
-    refreshMapAfterStorageLoad();
-}
 
 /** Parte de loadStorage que depende do mapa — o initMap só precisa disto se os dados já carregaram. */
 function refreshMapAfterStorageLoad() {
