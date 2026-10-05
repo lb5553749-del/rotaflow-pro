@@ -15,7 +15,14 @@ const {
   collectPhotoIdsFromLists,
   isHistoryWithinPhotoTtl,
   collectKeepPhotoIds,
-  planIdbPhotoKeysToDelete
+  planIdbPhotoKeysToDelete,
+  PHOTO_SAVE_DEDUPE_MS,
+  photoSaveDedupeKey,
+  pruneRecentPhotoSaveMap,
+  isDuplicatePhotoSaveInMap,
+  markPhotoSavedInMap,
+  itemNeedsPhotoHydrate,
+  hasLegacyDataUrlPhotos
 } = require('../lib/photo-helpers.js');
 
 describe('remainingPhotoSlots / canAddPhoto', () => {
@@ -110,5 +117,56 @@ describe('photo housekeeping (TTL)', () => {
       keepPhotoIds: new Set(['keep'])
     });
     assert.deepEqual(keys, ['u1::drop']);
+  });
+});
+
+describe('photo save dedupe map', () => {
+  const dataUrl = 'data:image/jpeg;base64,' + 'ABCD'.repeat(40);
+  const now = 1_000_000;
+
+  it('builds stable dedupe keys', () => {
+    const key = photoSaveDedupeKey('d:1', dataUrl);
+    assert.ok(key.startsWith('d:1::'));
+    assert.equal(photoSaveDedupeKey('d:1', dataUrl), key);
+    assert.equal(photoSaveDedupeKey('d:1', null), '');
+  });
+
+  it('detects duplicates inside the window and accepts after expiry', () => {
+    const map = new Map();
+    assert.equal(isDuplicatePhotoSaveInMap(map, 'd:1', dataUrl, now), false);
+    markPhotoSavedInMap(map, 'd:1', dataUrl, now);
+    assert.equal(isDuplicatePhotoSaveInMap(map, 'd:1', dataUrl, now + 100), true);
+    assert.equal(
+      isDuplicatePhotoSaveInMap(map, 'd:1', dataUrl, now + PHOTO_SAVE_DEDUPE_MS + 1),
+      false
+    );
+  });
+
+  it('prunes expired entries only when map is large', () => {
+    const map = new Map();
+    for (let i = 0; i < 70; i++) map.set(`k${i}`, now - PHOTO_SAVE_DEDUPE_MS - 1);
+    assert.equal(pruneRecentPhotoSaveMap(map, now), 70);
+    assert.equal(map.size, 0);
+    map.set('fresh', now);
+    assert.equal(pruneRecentPhotoSaveMap(map, now), 0);
+  });
+});
+
+describe('itemNeedsPhotoHydrate / hasLegacyDataUrlPhotos', () => {
+  it('detects incomplete, legacy and missing display urls', () => {
+    assert.equal(itemNeedsPhotoHydrate(null), false);
+    assert.equal(itemNeedsPhotoHydrate({ photoIds: ['a'], photos: [] }), true);
+    assert.equal(itemNeedsPhotoHydrate({ photoIds: ['a', 'b'], photos: ['x'] }), true);
+    assert.equal(itemNeedsPhotoHydrate({
+      photoIds: [],
+      photos: ['data:image/jpeg;base64,abc']
+    }), true);
+    assert.equal(itemNeedsPhotoHydrate({ photoIds: ['a'], photos: ['blob:1'] }), false);
+  });
+
+  it('flags legacy data URL arrays', () => {
+    assert.equal(hasLegacyDataUrlPhotos({ photos: ['data:image/jpeg;base64,x'] }), true);
+    assert.equal(hasLegacyDataUrlPhotos({ photos: ['blob:1'] }), false);
+    assert.equal(hasLegacyDataUrlPhotos(null), false);
   });
 });

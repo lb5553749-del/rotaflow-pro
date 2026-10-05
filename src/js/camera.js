@@ -1,6 +1,6 @@
 /**
  * Orquestração de captura multi-foto (nativo CameraX vs getUserMedia web)
- * e fallback single-shot / file input. Persistência IDB fica em photo-store + main.
+ * e fallback single-shot / file input. Persistência IDB: photo-store + item-photos.
  */
 import {
     isPhotoPickCancelled,

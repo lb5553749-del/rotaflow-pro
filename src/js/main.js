@@ -6,14 +6,6 @@
 import '../../native/bridge.js';
 import '../../native/push-sender.js';
 import {
-    photoFingerprint,
-    itemPhotoScope,
-    remainingPhotoSlots as remainingPhotoSlotsFor,
-    slicePhotoIdsForHydrate,
-    collectKeepPhotoIds,
-    DEFAULT_FINISHED_PHOTO_TTL_DAYS
-} from '../../lib/photo-helpers.js';
-import {
     haversineDistance as haversineDistanceShared
 } from '../../lib/track-schema.js';
 import {
@@ -173,20 +165,28 @@ import {
 import {
     configurePhotoStore,
     PHOTO_MAX_PER_ITEM,
-    newPhotoId,
-    revokePhotoObjectUrl,
-    revokeDisplayUrl,
-    idbPutPhoto,
     idbGetPhoto,
     idbDeletePhoto,
     enqueuePhotoOp,
-    clearPendingPhotoTarget,
-    getPendingPhotoTarget,
-    yieldToUiFrame,
-    compressDataUrl,
-    purgeStalePhotos,
-    schedulePhotoHousekeeping
+    yieldToUiFrame
 } from './photo-store.js';
+import {
+    configureItemPhotos,
+    remainingPhotoSlots,
+    isDuplicatePhotoSave,
+    markPhotoSaved,
+    scheduleOrphanPhotoPrune,
+    persistPhotoDataUrl,
+    addPhotoDataUrlToItem,
+    hydrateAllPhotos,
+    ensureItemPhotos,
+    applyRestoredCameraPhoto,
+    scheduleBackgroundPhotoMigrate,
+    scheduleListPhotoHydration,
+    releaseInMemoryPhotosExcept,
+    itemPhotoScope,
+    photoFingerprint
+} from './item-photos.js';
 import {
     configureBackupStore,
     readBackupMeta
@@ -471,242 +471,10 @@ function updateSyncBadge() {
 }
 
 // Auth local/sessão/logout: src/js/auth.js (configureAuth no boot).
+// Captura multi-foto nativa/web: src/js/camera.js (configureCamera no boot).
+// Persistência de fotos no item: src/js/item-photos.js (configureItemPhotos no boot).
 
 let cameraRestoreHandlerReady = false;
-
-/**
- * Housekeeping IndexedDB: remove fotos órfãs e fotos só referenciadas por
- * histórico/rotas finalizadas além do TTL (default 30 dias; configurável).
- */
-async function pruneOrphanPhotos(ttlDays = DEFAULT_FINISHED_PHOTO_TTL_DAYS) {
-    const uid = currentUid();
-    if (!uid) return 0;
-    syncActiveRouteIntoRoutes();
-    const keepPhotoIds = collectKeepPhotoIds({
-        routes,
-        agenda,
-        history: getRouteHistory(),
-        ttlDays
-    });
-    return purgeStalePhotos({ uid, keepPhotoIds });
-}
-
-function scheduleOrphanPhotoPrune() {
-    schedulePhotoHousekeeping(() => {
-        pruneOrphanPhotos().catch(() => {});
-    });
-}
-
-function remainingPhotoSlots(item) {
-    return remainingPhotoSlotsFor(item, PHOTO_MAX_PER_ITEM);
-}
-
-// Captura multi-foto nativa/web: src/js/camera.js (configureCamera no boot).
-
-const recentPhotoSaveKeys = new Map();
-const inflightPhotoSaves = new Set();
-const PHOTO_SAVE_DEDUPE_MS = 15000;
-
-function pruneRecentPhotoSaves(now = Date.now()) {
-    if (recentPhotoSaveKeys.size < 64) return;
-    for (const [k, t] of recentPhotoSaveKeys) {
-        if (now - t > PHOTO_SAVE_DEDUPE_MS) recentPhotoSaveKeys.delete(k);
-    }
-}
-
-function isDuplicatePhotoSave(scopeKey, dataUrl) {
-    const fp = photoFingerprint(dataUrl);
-    if (!fp) return true;
-    const key = `${scopeKey}::${fp}`;
-    const now = Date.now();
-    pruneRecentPhotoSaves(now);
-    const prev = recentPhotoSaveKeys.get(key);
-    return !!(prev && now - prev < PHOTO_SAVE_DEDUPE_MS);
-}
-
-function markPhotoSaved(scopeKey, dataUrl) {
-    const fp = photoFingerprint(dataUrl);
-    if (!fp) return;
-    recentPhotoSaveKeys.set(`${scopeKey}::${fp}`, Date.now());
-}
-
-async function addPhotoDataUrlToItem(item, dataUrl) {
-    if (!item || !dataUrl) return null;
-    if (!Array.isArray(item.photos)) item.photos = [];
-    if (!Array.isArray(item.photoIds)) item.photoIds = [];
-    if (item.photoIds.length >= PHOTO_MAX_PER_ITEM) {
-        throw new Error('photo-limit');
-    }
-    const scope = itemPhotoScope(item);
-    const fp = photoFingerprint(dataUrl);
-    const lockKey = `${scope}::${fp}`;
-    if (inflightPhotoSaves.has(lockKey) || isDuplicatePhotoSave(scope, dataUrl)) return null;
-    if (item.photos.includes(dataUrl)) return null;
-    if (fp && item.photos.some((p) => photoFingerprint(p) === fp)) return null;
-
-    inflightPhotoSaves.add(lockKey);
-    try {
-        const photoId = await persistPhotoDataUrl(dataUrl);
-        // Se só havia thumb parcial, hidrata completo depois via ensureItemPhotos.
-        if (item.photos.length && item.photoIds.length > item.photos.length) {
-            for (const u of item.photos) revokeDisplayUrl(u);
-            item.photos = [];
-        }
-        // Exibe via blob: (revogável) em vez de manter data URL gigante na RAM.
-        let display = await idbGetPhoto(photoId);
-        if (!display) display = dataUrl;
-        item.photos.push(display);
-        item.photoIds.push(photoId);
-        markPhotoSaved(scope, dataUrl);
-        return photoId;
-    } finally {
-        inflightPhotoSaves.delete(lockKey);
-    }
-}
-
-async function persistPhotoDataUrl(dataUrl) {
-    const id = newPhotoId();
-    // Grava Blob no IDB (não data URL) — menos pressão de memória no WebView.
-    await idbPutPhoto(id, dataUrl);
-    return id;
-}
-
-/**
- * @param {object} item
- * @param {{ maxPhotos?: number }} [opts] maxPhotos=1 para thumbs da lista (economiza RAM)
- */
-async function hydrateItemPhotos(item, opts = {}) {
-    if (!item) return item;
-    if (!Array.isArray(item.photoIds)) item.photoIds = [];
-    if (!Array.isArray(item.photos)) item.photos = [];
-    const maxPhotos = Number.isFinite(opts.maxPhotos) ? Math.max(0, opts.maxPhotos) : null;
-
-    // Migração legado: data URLs sem photoIds → IndexedDB (só ids vão para localStorage).
-    if (!item.photoIds.length && item.photos.some(p => typeof p === 'string' && p.startsWith('data:'))) {
-        const ids = [];
-        const urls = [];
-        for (const p of item.photos) {
-            if (typeof p === 'string' && p.startsWith('data:')) {
-                ids.push(await persistPhotoDataUrl(p));
-                urls.push(p);
-            }
-        }
-        item.photoIds = ids;
-        item.photos = maxPhotos != null ? urls.slice(0, maxPhotos) : urls;
-        return item;
-    }
-
-    const idsAll = slicePhotoIdsForHydrate(item.photoIds, maxPhotos);
-    const want = idsAll.length;
-    if (want > 0 && item.photos.length < want) {
-        for (const u of item.photos) revokeDisplayUrl(u);
-        const urls = [];
-        for (const id of idsAll) {
-            const url = await idbGetPhoto(id);
-            if (url) urls.push(url);
-            await yieldToUiFrame();
-        }
-        item.photos = urls;
-    }
-    return item;
-}
-
-/** Não hidrata tudo de uma vez — só migração legado / uso pontual. */
-async function hydrateAllPhotos() {
-    // Preferir hydrate sob demanda (painel / thumbs). Migração idle cobre data URLs legadas.
-    scheduleBackgroundPhotoMigrate();
-    scheduleListPhotoHydration();
-}
-
-async function ensureItemPhotos(item) {
-    if (!item) return item;
-    try {
-        if (!Array.isArray(item.photoIds)) item.photoIds = [];
-        if (!Array.isArray(item.photos)) item.photos = [];
-        const incomplete = item.photoIds.length > 0 && item.photos.length < item.photoIds.length;
-        const legacyData = item.photos.some(p => typeof p === 'string' && p.startsWith('data:')) && !item.photoIds.length;
-        if (incomplete || legacyData || (!item.photos.length && item.photoIds.length)) {
-            await hydrateItemPhotos(item);
-        }
-        if (!item.photos) item.photos = [];
-    } catch (e) {
-        console.warn('ensureItemPhotos', e);
-        if (!item.photos) item.photos = [];
-        if (!item.photoIds) item.photoIds = [];
-    }
-    return item;
-}
-
-async function applyRestoredCameraPhoto(photoData) {
-    const pending = getPendingPhotoTarget();
-    clearPendingPhotoTarget();
-    if (!pending || !photoData) return false;
-    let dataUrl = null;
-    try {
-        if (window.RotaFlowCap && typeof window.RotaFlowCap.photoResultToDataUrl === 'function') {
-            dataUrl = await window.RotaFlowCap.photoResultToDataUrl(photoData);
-        } else if (photoData.dataUrl) {
-            dataUrl = await compressDataUrl(photoData.dataUrl);
-        } else if (photoData.webPath) {
-            dataUrl = await compressDataUrl(photoData.webPath);
-        }
-    } catch (e) {
-        console.warn('restored photo compress', e);
-        return false;
-    }
-    if (!dataUrl) return false;
-
-    try {
-        if (pending.kind === 'delivery' && pending.sequentialId != null) {
-            const delivery = deliveries.find(d => d.sequentialId === pending.sequentialId);
-            if (!delivery) return false;
-            await addPhotoDataUrlToItem(delivery, dataUrl);
-            persistStorageNow();
-            if (currentSelectedDelivery && currentSelectedDelivery.sequentialId === delivery.sequentialId) {
-                refreshPanelPhotos(delivery);
-            }
-            renderDeliveriesList();
-            showToast('Foto recuperada após reinício do app');
-            return true;
-        }
-        if (pending.kind === 'agenda' && pending.agendaId != null) {
-            const item = agenda.find(a => a.agendaId === pending.agendaId);
-            if (!item) return false;
-            await addPhotoDataUrlToItem(item, dataUrl);
-            persistStorageNow();
-            renderAgendaList();
-            showToast('Foto recuperada após reinício do app');
-            return true;
-        }
-        if (pending.kind === 'edit-delivery' || pending.kind === 'edit-agenda') {
-            // Modais de edição não sobrevivem ao kill — salva na entrega/agenda se possível.
-            if (pending.sequentialId != null) {
-                const delivery = deliveries.find(d => d.sequentialId === pending.sequentialId);
-                if (delivery) {
-                    await addPhotoDataUrlToItem(delivery, dataUrl);
-                    persistStorageNow();
-                    renderDeliveriesList();
-                    showToast('Foto salva na entrega após reinício');
-                    return true;
-                }
-            }
-            if (pending.agendaId != null) {
-                const item = agenda.find(a => a.agendaId === pending.agendaId);
-                if (item) {
-                    await addPhotoDataUrlToItem(item, dataUrl);
-                    persistStorageNow();
-                    renderAgendaList();
-                    showToast('Foto salva na agenda após reinício');
-                    return true;
-                }
-            }
-        }
-    } catch (e) {
-        console.warn('applyRestoredCameraPhoto', e);
-        showToast('Não foi possível recuperar a foto', true);
-    }
-    return false;
-}
 
 /** Evita tela preta ao voltar do 2º plano (WebView transparente + Maps nativo). */
 let recoverUiResumeTimer = null;
@@ -816,62 +584,6 @@ async function setupCameraRestoreHandler() {
     }
 }
 
-let photoMigrateQueued = false;
-function scheduleBackgroundPhotoMigrate() {
-    if (photoMigrateQueued) return;
-    photoMigrateQueued = true;
-    const run = async () => {
-        try {
-            // Só migra base64 legado → IndexedDB, sem forçar tudo na UI.
-            for (const d of deliveries) {
-                if (Array.isArray(d.photos) && d.photos.some(p => typeof p === 'string' && p.startsWith('data:'))) {
-                    await hydrateItemPhotos(d);
-                }
-            }
-            syncActiveRouteIntoRoutes();
-            for (const r of routes) {
-                if (!r || r.id === activeRouteId) continue;
-                for (const d of (r.deliveries || [])) {
-                    if (Array.isArray(d.photos) && d.photos.some(p => typeof p === 'string' && p.startsWith('data:'))) {
-                        await hydrateItemPhotos(d);
-                    }
-                }
-            }
-            for (const a of agenda) {
-                if (Array.isArray(a.photos) && a.photos.some(p => typeof p === 'string' && p.startsWith('data:'))) {
-                    await hydrateItemPhotos(a);
-                }
-            }
-            persistStorageNow();
-        } catch (e) {}
-        photoMigrateQueued = false;
-    };
-    if (typeof requestIdleCallback === 'function') requestIdleCallback(() => { run(); }, { timeout: 2500 });
-    else setTimeout(run, 600);
-}
-
-let listPhotoHydrateTimer = null;
-async function hydrateAgendaListPhotos() {
-    let needsRender = false;
-    for (const a of agenda) {
-        const hasIds = Array.isArray(a.photoIds) && a.photoIds.length;
-        const hasUrls = Array.isArray(a.photos) && a.photos.length;
-        // Só a 1ª foto para thumb da lista — evita carregar dezenas de data URLs na RAM.
-        if (hasIds && !hasUrls) {
-            await hydrateItemPhotos(a, { maxPhotos: 1 });
-            needsRender = true;
-        }
-    }
-    if (needsRender) renderAgendaList();
-}
-function scheduleListPhotoHydration() {
-    // Entregas: fotos sob demanda no painel. Agenda: hidrata thumbs (lista menor).
-    clearTimeout(listPhotoHydrateTimer);
-    listPhotoHydrateTimer = setTimeout(() => {
-        hydrateAgendaListPhotos().catch(() => {});
-    }, 350);
-}
-
 // ========== ROTAS MÚLTIPLAS ==========
 // Implementação em src/js/routes.js (configureRoutes no boot).
 
@@ -879,6 +591,21 @@ function scheduleListPhotoHydration() {
 // Implementação em src/js/persist.js (configurePersist no boot).
 
 function configureExtractedModules() {
+    configureItemPhotos({
+        currentUid,
+        getRoutes: () => routes,
+        getAgenda: () => agenda,
+        getDeliveries: () => deliveries,
+        getActiveRouteId: () => activeRouteId,
+        getRouteHistory,
+        syncActiveRouteIntoRoutes,
+        persistStorageNow,
+        getCurrentSelectedDelivery: () => currentSelectedDelivery,
+        refreshPanelPhotos,
+        renderDeliveriesList,
+        renderAgendaList,
+        showToast
+    });
     configureMapPins({
         getPinSizePref: () => pinSizePref,
         countActivePins: () => deliveries.filter((d) => shouldShowOnMap(d) && !isMutedPin(d)).length
@@ -3934,24 +3661,7 @@ async function markDelivered(id, { advance = false } = {}) {
     }
 }
 
-/** Descarta URLs em RAM (mantém photoIds no IndexedDB; revoga blob:). */
-function releaseInMemoryPhotosExcept(keepDeliveryId) {
-    const clear = (item) => {
-        if (!item || !Array.isArray(item.photos) || !item.photos.length) return;
-        for (const u of item.photos) revokeDisplayUrl(u);
-        const ids = Array.isArray(item.photoIds) ? item.photoIds : [];
-        for (const id of ids) revokePhotoObjectUrl(id);
-        item.photos = [];
-    };
-    for (const d of deliveries) {
-        if (keepDeliveryId != null && d.id === keepDeliveryId) continue;
-        clear(d);
-    }
-    // Agenda thumbs: limpa se lista grande.
-    if (agenda && agenda.length > 40) {
-        for (const a of agenda) clear(a);
-    }
-}
+// releaseInMemoryPhotosExcept: src/js/item-photos.js
 
 function undoDeliveryStatus(id, { keepPanel = false, keepMinimized = false } = {}) {
     let d = deliveries.find(d => d.id === id);
