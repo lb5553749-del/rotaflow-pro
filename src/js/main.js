@@ -22,8 +22,7 @@ import {
 } from '../../lib/track-schema.js';
 import {
     hasMapCoords,
-    normalizeDeliveryCoords,
-    gpsErrorMessage as gpsErrorMessageOf
+    normalizeDeliveryCoords
 } from '../../lib/routing-helpers.js';
 import {
     isMutedPin,
@@ -81,8 +80,18 @@ import {
     formatDuration
 } from './routing.js';
 import {
+    configureGps,
+    updateGpsButton,
+    startBackgroundGpsWatch,
+    syncBackgroundGpsTargets,
+    enableGpsTracking,
+    toggleGps,
+    requestStartPoint,
+    showStartMarker,
+    isBgGpsStarted
+} from './gps.js';
+import {
     configureTracking,
-    TRACK_NEAR_METERS,
     prepareTrackingUrl,
     publishTrackingSession,
     syncTrackingStatus,
@@ -152,8 +161,8 @@ let activeRouteId = null;
 let nextSequenceNumber = 1, nextAgendaId = 1;
 let routeMetrics = null;
 let routeActive = false;
-let markersList = [], markersBySeq = new Map(), watchId = null, gpsMarker = null;
-let gpsAccuracyCircle = null, gpsAccuracyMeters = 0;
+let markersList = [], markersBySeq = new Map();
+let gpsAccuracyMeters = 0;
 let useNativeMap = false, nativeGoogleMap = null, nativeMarkerById = new Map();
 let nativeMapZoom = 12;
 const MAPS_WEB_KEY = 'AIzaSyCRcCeryXHln-E84STTLlAl-oGrPh4mP8g';
@@ -1761,6 +1770,25 @@ function configureExtractedModules() {
         getPinSizePref: () => pinSizePref,
         countActivePins: () => deliveries.filter((d) => shouldShowOnMap(d) && !isMutedPin(d)).length
     });
+    configureGps({
+        isNativeApp,
+        getStartPoint: () => startPoint,
+        setStartPoint: (p) => { startPoint = p; },
+        getGpsEnabled: () => gpsEnabled,
+        setGpsEnabled: (v) => { gpsEnabled = !!v; },
+        getGpsAccuracyMeters: () => gpsAccuracyMeters,
+        setGpsAccuracyMeters: (n) => { gpsAccuracyMeters = n; },
+        getMap: () => map,
+        getUseNativeMap: () => useNativeMap,
+        getNativeGoogleMap: () => nativeGoogleMap,
+        getDeliveries: () => deliveries,
+        isActiveStop,
+        maybeMarkNearCustomer,
+        publishDriverGpsFromWatch,
+        updateMapNextChip,
+        updateOptimizeFabVisibility,
+        showToast
+    });
     configureRouting({
         getDeliveries: () => deliveries,
         getStartPoint: () => startPoint,
@@ -1801,7 +1829,7 @@ function configureExtractedModules() {
         openWhatsAppChat,
         buildDeliveryWhatsAppMessage,
         syncBackgroundGpsTargets,
-        isBgGpsStarted: () => bgGpsStarted
+        isBgGpsStarted
     });
     configureHistory({
         getDeliveries: () => deliveries,
@@ -5220,326 +5248,8 @@ function addDeliveryDirect(nome, endereco, telefones, pacotes, notes) {
 
 // ========== ROTA OTIMIZADA (Directions API) ==========
 // Geometria: lib/routing-helpers.js · orquestração: src/js/routing.js (configureRouting).
+// GPS / BackgroundGps: src/js/gps.js (configureGps) · helpers: lib/gps-helpers.js.
 let startPoint = null;
-let gpsDenied = false;
-
-// Sempre tenta a localização atual. Se GPS estiver desligado/negado,
-// a primeira entrega pendente vira o ponto de partida.
-function persistGpsPreference() {
-    localStorage.setItem('rotaflow_gps', gpsEnabled ? '1' : '0');
-}
-
-function updateGpsButton() {
-    const btn = document.getElementById('gpsBtn');
-    if (!btn) return;
-    const on = gpsEnabled && !!startPoint;
-    btn.classList.toggle('active', on);
-    btn.classList.toggle('off', !gpsEnabled);
-    btn.setAttribute('aria-pressed', gpsEnabled ? 'true' : 'false');
-    btn.title = gpsEnabled
-        ? (startPoint ? 'GPS ligado — clique para desligar' : 'GPS ligado — buscando…')
-        : 'GPS desligado — clique para ligar';
-    btn.innerHTML = gpsEnabled
-        ? '<i class="fas fa-location-crosshairs"></i>'
-        : '<i class="fas fa-location-slash"></i>';
-}
-
-function clearGpsTracking() {
-    stopBackgroundGpsWatch();
-    if (watchId != null) {
-        if (isNativeApp() && window.RotaFlowCap?.Geolocation) {
-            window.RotaFlowCap.Geolocation.clearWatch({ id: watchId }).catch(() => {});
-        } else if (navigator.geolocation) {
-            navigator.geolocation.clearWatch(watchId);
-        }
-        watchId = null;
-    }
-    startPoint = null;
-    gpsAccuracyMeters = 0;
-    updateOptimizeFabVisibility();
-    if (gpsMarker) {
-        gpsMarker.setMap(null);
-        gpsMarker = null;
-    }
-    if (gpsAccuracyCircle) {
-        gpsAccuracyCircle.setMap(null);
-        gpsAccuracyCircle = null;
-    }
-    if (useNativeMap && nativeGoogleMap) {
-        nativeGoogleMap.enableCurrentLocation(false).catch(() => {});
-    }
-}
-
-function clearGpsWatchOnly() {
-    if (watchId == null) return;
-    if (isNativeApp() && window.RotaFlowCap?.Geolocation) {
-        window.RotaFlowCap.Geolocation.clearWatch({ id: watchId }).catch(() => {});
-    } else if (navigator.geolocation) {
-        navigator.geolocation.clearWatch(watchId);
-    }
-    watchId = null;
-}
-
-function gpsErrorMessage(err) {
-    return gpsErrorMessageOf(err, {
-        isNative: isNativeApp(),
-        isSecureContext: !!window.isSecureContext,
-        hasGeolocation: !!navigator.geolocation
-    });
-}
-
-let bgGpsStarted = false;
-
-function activeTrackTargets() {
-    return deliveries.filter(d => d.trackToken && isActiveStop(d) && typeof d.lat === 'number' && typeof d.lng === 'number')
-        .map(d => ({
-            token: d.trackToken,
-            lat: d.lat,
-            lng: d.lng,
-            nearNotified: !!d.nearNotified
-        }));
-}
-
-function applyGpsWatchPosition(p) {
-    if (!gpsEnabled || !p?.coords) return;
-    startPoint = { lat: p.coords.latitude, lng: p.coords.longitude };
-    gpsAccuracyMeters = typeof p.coords.accuracy === 'number' ? p.coords.accuracy : gpsAccuracyMeters;
-    publishDriverGpsFromWatch(p);
-    // Atualiza ETA aproximado do chip sem sobrecarregar o mapa nativo.
-    if (!applyGpsWatchPosition._chipTimer) {
-        applyGpsWatchPosition._chipTimer = setTimeout(() => {
-            applyGpsWatchPosition._chipTimer = null;
-            updateMapNextChip();
-        }, 4000);
-    }
-    if (useNativeMap) return;
-    if (gpsMarker) gpsMarker.setPosition(startPoint);
-    else showStartMarker();
-    if (gpsAccuracyCircle) {
-        gpsAccuracyCircle.setCenter(startPoint);
-        if (gpsAccuracyMeters > 0) gpsAccuracyCircle.setRadius(gpsAccuracyMeters);
-    }
-}
-
-async function startBackgroundGpsWatch() {
-    const bg = window.RotaFlowCap && window.RotaFlowCap.BackgroundGps;
-    if (!isNativeApp() || !bg) return;
-    try {
-        if (typeof bg.removeAllListeners === 'function') await bg.removeAllListeners();
-        await bg.addListener('location', (loc) => {
-            if (!loc || typeof loc.latitude !== 'number') return;
-            applyGpsWatchPosition({
-                coords: {
-                    latitude: loc.latitude,
-                    longitude: loc.longitude,
-                    accuracy: loc.accuracy || 0
-                }
-            });
-        });
-        await bg.addListener('near', (data) => {
-            if (!data || !data.token) return;
-            const delivery = deliveries.find(d => d.trackToken === data.token);
-            if (!delivery) return;
-            maybeMarkNearCustomer(delivery, {
-                lat: Number(data.latitude),
-                lng: Number(data.longitude)
-            }, { skipPush: true });
-        });
-        if (!startBackgroundGpsWatch.extrasAsked && typeof bg.requestExtras === 'function') {
-            startBackgroundGpsWatch.extrasAsked = true;
-            await bg.requestExtras().catch(() => {});
-        }
-        const fb = window.ROTAFLOW_FIREBASE || {};
-        await bg.start({
-            notificationTitle: 'RotaFlow rastreando',
-            notificationText: 'GPS ativo — avisos ao cliente mesmo em segundo plano',
-            intervalMs: 4000,
-            minDistanceM: 12,
-            nearMeters: TRACK_NEAR_METERS,
-            projectId: fb.projectId || 'rotaflow-83610',
-            apiKey: fb.apiKey || '',
-            trackHost: window.ROTAFLOW_TRACK_HOST || 'https://rotaflow-83610.web.app',
-            // Push: Cloud Functions (onTrackNotify). Sem VAPID private no APK.
-            targets: activeTrackTargets()
-        });
-        bgGpsStarted = true;
-    } catch (err) {
-        console.warn('bg gps start', err);
-    }
-}
-
-function syncBackgroundGpsTargets() {
-    const bg = window.RotaFlowCap && window.RotaFlowCap.BackgroundGps;
-    if (!bgGpsStarted || !bg || typeof bg.updateTargets !== 'function') return;
-    bg.updateTargets({ targets: activeTrackTargets() }).catch(() => {});
-}
-
-async function stopBackgroundGpsWatch() {
-    const bg = window.RotaFlowCap && window.RotaFlowCap.BackgroundGps;
-    bgGpsStarted = false;
-    if (!bg) return;
-    try { if (typeof bg.removeAllListeners === 'function') await bg.removeAllListeners(); } catch (_) {}
-    try { await bg.stop(); } catch (_) {}
-}
-
-function readGpsPosition(options) {
-    if (isNativeApp() && window.RotaFlowCap?.Geolocation) {
-        return window.RotaFlowCap.Geolocation.getCurrentPosition(options);
-    }
-    return new Promise((resolve, reject) => {
-        if (!navigator.geolocation) return reject({ code: 0, message: 'unsupported' });
-        navigator.geolocation.getCurrentPosition(resolve, reject, options);
-    });
-}
-
-async function enableGpsTracking() {
-    const canWeb = window.isSecureContext && navigator.geolocation;
-    const canNative = isNativeApp() && window.RotaFlowCap?.Geolocation;
-    if (!canNative && !canWeb) {
-        gpsDenied = true;
-        return false;
-    }
-    try {
-        if (canNative) {
-            const perm = await window.RotaFlowCap.Geolocation.requestPermissions();
-            if (perm.location === 'denied') throw { code: 1 };
-        }
-        let pos;
-        try {
-            pos = await readGpsPosition({ enableHighAccuracy: true, timeout: 20000, maximumAge: 10000 });
-        } catch (firstErr) {
-            // Segunda tentativa mais tolerante (rede/Wi‑Fi), útil em ambiente fechado.
-            if (firstErr && firstErr.code === 3) {
-                pos = await readGpsPosition({ enableHighAccuracy: false, timeout: 20000, maximumAge: 60000 });
-            } else {
-                throw firstErr;
-            }
-        }
-        startPoint = { lat: pos.coords.latitude, lng: pos.coords.longitude };
-        gpsAccuracyMeters = typeof pos.coords.accuracy === 'number' ? pos.coords.accuracy : 0;
-        gpsDenied = false;
-        showStartMarker();
-        updateGpsButton();
-        updateOptimizeFabVisibility();
-        clearGpsWatchOnly();
-        applyGpsWatchPosition(pos);
-        const onWatch = applyGpsWatchPosition;
-        const watchOpts = { enableHighAccuracy: true, maximumAge: 10000, timeout: 20000 };
-        if (canNative) {
-            watchId = await window.RotaFlowCap.Geolocation.watchPosition(watchOpts, (p, err) => {
-                if (!err) onWatch(p);
-            });
-            await startBackgroundGpsWatch();
-        } else {
-            watchId = navigator.geolocation.watchPosition(onWatch, () => {}, watchOpts);
-        }
-        return true;
-    } catch (err) {
-        gpsDenied = true;
-        startPoint = null;
-        updateGpsButton();
-        updateOptimizeFabVisibility();
-        enableGpsTracking.lastError = err;
-        return false;
-    }
-}
-
-async function toggleGps() {
-    if (gpsEnabled) {
-        gpsEnabled = false;
-        gpsDenied = true;
-        clearGpsTracking();
-        persistGpsPreference();
-        updateGpsButton();
-        showToast('GPS desligado. A rota usará a primeira entrega como partida');
-        return;
-    }
-    if (!isNativeApp() && !window.isSecureContext) {
-        showToast(gpsErrorMessage(), true);
-        updateGpsButton();
-        return;
-    }
-    gpsEnabled = true;
-    gpsDenied = false;
-    persistGpsPreference();
-    updateGpsButton();
-    showToast('Obtendo localização…');
-    const ok = await enableGpsTracking();
-    if (!ok) {
-        gpsEnabled = false;
-        persistGpsPreference();
-        updateGpsButton();
-        showToast(gpsErrorMessage(enableGpsTracking.lastError), true);
-        return;
-    }
-    if (map && startPoint) {
-        map.panTo(startPoint);
-        if (map.getZoom() < 14) map.setZoom(15);
-    }
-    showToast('Localização ativada');
-}
-
-function requestStartPoint() {
-    if (!gpsEnabled) {
-        clearGpsTracking();
-        return Promise.resolve(null);
-    }
-    if (startPoint) return Promise.resolve(startPoint);
-    return enableGpsTracking().then(ok => (ok ? startPoint : null));
-}
-
-function showStartMarker() {
-    if (!startPoint || !map || !gpsEnabled) return;
-
-    // App nativo: usa a camada oficial "minha localização" (círculo azul do Google Maps)
-    if (useNativeMap && nativeGoogleMap) {
-        if (gpsMarker) {
-            gpsMarker.setMap(null);
-            gpsMarker = null;
-        }
-        nativeGoogleMap.enableCurrentLocation(true).catch(e => console.warn('my location', e));
-        return;
-    }
-
-    if (gpsMarker) {
-        gpsMarker.setMap(null);
-        gpsMarker = null;
-    }
-    if (gpsAccuracyCircle) {
-        gpsAccuracyCircle.setMap(null);
-        gpsAccuracyCircle = null;
-    }
-
-    // Web: mesmo visual do Google Maps — ponto azul #4285F4 + anel branco + área de precisão
-    const radius = Math.max(gpsAccuracyMeters || 0, 25);
-    gpsAccuracyCircle = new google.maps.Circle({
-        map,
-        center: startPoint,
-        radius,
-        clickable: false,
-        fillColor: '#4285F4',
-        fillOpacity: 0.16,
-        strokeColor: '#4285F4',
-        strokeOpacity: 0.4,
-        strokeWeight: 1,
-        zIndex: 998
-    });
-    gpsMarker = new google.maps.Marker({
-        position: startPoint,
-        map: map,
-        title: 'Sua localização',
-        zIndex: 999,
-        clickable: false,
-        icon: {
-            path: google.maps.SymbolPath.CIRCLE,
-            scale: 8,
-            fillColor: '#4285F4',
-            fillOpacity: 1,
-            strokeColor: '#ffffff',
-            strokeWeight: 2
-        }
-    });
-}
 
 // Directions/otimização: src/js/routing.js
 
