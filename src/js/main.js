@@ -6,8 +6,7 @@
 import '../../native/bridge.js';
 import '../../native/push-sender.js';
 import {
-    buildPersistPayload,
-    hydrateRoutesFromData as hydrateRoutesState
+    buildPersistPayload
 } from '../../lib/persist-helpers.js';
 import {
     photoFingerprint,
@@ -130,10 +129,16 @@ import {
     loadHistory,
     getRouteHistory,
     archiveCurrentRouteDay,
-    startNewRoute,
     renderHistoryList,
     setupHistoryListDelegation
 } from './history.js';
+import {
+    configureRoutes,
+    syncActiveRouteIntoRoutes,
+    hydrateRoutesFromData,
+    renderRouteSwitcher,
+    startNewRoute
+} from './routes.js';
 import {
     configureBackupUi,
     maybeShowBackupReminder,
@@ -1353,146 +1358,7 @@ function scheduleListPhotoHydration() {
 }
 
 // ========== ROTAS MÚLTIPLAS ==========
-function nextRouteName() {
-    let max = 0;
-    for (const r of routes) {
-        const m = /^Rota\s+(\d+)$/i.exec(String(r.name || '').trim());
-        if (m) max = Math.max(max, parseInt(m[1], 10));
-    }
-    return `Rota ${max + 1}`;
-}
-
-function createEmptyRoute(name) {
-    return {
-        id: `r_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
-        name: name || nextRouteName(),
-        deliveries: [],
-        nextSequenceNumber: 1,
-        routeActive: false,
-        routeMetrics: null,
-        createdAt: Date.now()
-    };
-}
-
-function migrateDeliveryFields(d) {
-    migrateTelefones(d); migrateFavorito(d);
-    if (d.pacotes === undefined) d.pacotes = 1;
-    if (d.savedToAgenda === undefined) d.savedToAgenda = false;
-    if (!d.photos) d.photos = [];
-    if (!d.photoIds) d.photoIds = [];
-    if (d.notes === undefined) d.notes = '';
-    normalizeDeliveryCoords(d);
-}
-
-function normalizeRouteRecord(raw) {
-    const r = raw && typeof raw === 'object' ? raw : {};
-    const deliveriesList = Array.isArray(r.deliveries) ? r.deliveries : [];
-    deliveriesList.forEach(migrateDeliveryFields);
-    return {
-        id: r.id || `r_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
-        name: r.name || 'Rota 1',
-        deliveries: deliveriesList,
-        nextSequenceNumber: r.nextSequenceNumber || (deliveriesList.length + 1),
-        routeActive: !!r.routeActive,
-        routeMetrics: r.routeMetrics || null,
-        createdAt: r.createdAt || Date.now()
-    };
-}
-
-/** Espelha a rota ativa (deliveries em memória) de volta no array `routes`. */
-function syncActiveRouteIntoRoutes() {
-    if (!routes.length) {
-        const boot = createEmptyRoute('Rota 1');
-        boot.deliveries = deliveries;
-        boot.nextSequenceNumber = nextSequenceNumber;
-        boot.routeActive = !!routeActive;
-        boot.routeMetrics = routeMetrics;
-        routes = [boot];
-        activeRouteId = boot.id;
-        return;
-    }
-    let active = routes.find(r => r.id === activeRouteId);
-    if (!active) {
-        active = routes[0];
-        activeRouteId = active.id;
-    }
-    active.deliveries = deliveries;
-    active.nextSequenceNumber = nextSequenceNumber;
-    active.routeActive = !!routeActive;
-    active.routeMetrics = routeMetrics;
-}
-
-function clearMapRouteLines() {
-    // Overlay Directions vive em routing.js; a linha azul não é desenhada no mapa.
-}
-
-function applyLoadedRouteState(route, { refreshMap = true } = {}) {
-    activeRouteId = route.id;
-    deliveries = route.deliveries || [];
-    nextSequenceNumber = route.nextSequenceNumber || (deliveries.length + 1);
-    routeActive = !!route.routeActive;
-    routeMetrics = route.routeMetrics || null;
-    seedIdCounter();
-    closeDeliveryPanel();
-    clearActiveStopNotification();
-    clearMapRouteLines();
-    if (refreshMap) {
-        rebuildMarkers(false);
-        if (routeActive) scheduleRouteRefresh();
-        else {
-            updateOptimizeFabVisibility();
-            updateProgressAndEstimates();
-        }
-    }
-    renderDeliveriesList();
-    renderRouteSwitcher();
-    updateLastIdDisplay(deliveries.length ? deliveries[deliveries.length - 1].sequentialId : null);
-    updateDaySummary();
-}
-
-/** Aceita o schema atual (`routes[]`) e o antigo (só `deliveries`) — ver lib/persist-helpers.js. */
-function hydrateRoutesFromData(data) {
-    const state = hydrateRoutesState(data, {
-        migrateDeliveryFields,
-        normalizeRouteRecord,
-        createEmptyRoute
-    });
-    routes = state.routes;
-    activeRouteId = state.activeRouteId;
-    deliveries = state.deliveries;
-    nextSequenceNumber = state.nextSequenceNumber;
-    routeActive = state.routeActive;
-    routeMetrics = state.routeMetrics;
-}
-
-function renderRouteSwitcher() {
-    const el = document.getElementById('routeSwitcher');
-    if (!el) return;
-    if (routes.length <= 1) {
-        el.hidden = true;
-        el.innerHTML = '';
-        return;
-    }
-    el.hidden = false;
-    el.innerHTML = routes.map(r => {
-        const count = (r.id === activeRouteId ? deliveries : (r.deliveries || [])).length;
-        const active = r.id === activeRouteId;
-        return `<button type="button" class="route-chip${active ? ' is-active' : ''}" role="tab" aria-selected="${active ? 'true' : 'false'}" data-route-id="${escapeHtml(r.id)}" title="${escapeHtml(r.name)}">${escapeHtml(r.name)}<span class="route-chip-count">${count}</span></button>`;
-    }).join('');
-    el.querySelectorAll('[data-route-id]').forEach(btn => {
-        btn.addEventListener('click', () => switchToRoute(btn.getAttribute('data-route-id')));
-    });
-}
-
-function switchToRoute(routeId) {
-    if (!routeId || routeId === activeRouteId) return;
-    const target = routes.find(r => r.id === routeId);
-    if (!target) return;
-    syncActiveRouteIntoRoutes();
-    applyLoadedRouteState(target);
-    persistStorageNow();
-    showToast(`Alternado para ${target.name}`);
-}
+// Implementação em src/js/routes.js (configureRoutes no boot).
 
 function persistStorageNow() {
     if (!authReady || !currentUser) return false;
@@ -1645,6 +1511,37 @@ function configureExtractedModules() {
         syncBackgroundGpsTargets,
         isBgGpsStarted
     });
+    configureRoutes({
+        getRoutes: () => routes,
+        setRoutes: (next) => { routes = Array.isArray(next) ? next : []; },
+        getActiveRouteId: () => activeRouteId,
+        setActiveRouteId: (id) => { activeRouteId = id; },
+        getDeliveries: () => deliveries,
+        setDeliveries: (next) => { deliveries = Array.isArray(next) ? next : []; },
+        getNextSequenceNumber: () => nextSequenceNumber,
+        setNextSequenceNumber: (n) => { nextSequenceNumber = n; },
+        getRouteActive: () => routeActive,
+        setRouteActive: (v) => { routeActive = !!v; },
+        getRouteMetrics: () => routeMetrics,
+        setRouteMetrics: (m) => { routeMetrics = m; },
+        migrateTelefones,
+        migrateFavorito,
+        normalizeDeliveryCoords,
+        seedIdCounter,
+        closeDeliveryPanel,
+        clearActiveStopNotification,
+        rebuildMarkers,
+        scheduleRouteRefresh,
+        updateOptimizeFabVisibility,
+        updateProgressAndEstimates,
+        renderDeliveriesList,
+        updateLastIdDisplay,
+        updateDaySummary,
+        persistStorageNow,
+        showToast,
+        showConfirmModal,
+        showPromptModal
+    });
     configureHistory({
         getDeliveries: () => deliveries,
         setDeliveries: (next) => { deliveries = Array.isArray(next) ? next : []; },
@@ -1672,12 +1569,7 @@ function configureExtractedModules() {
         closeDeliveryPanel,
         clearActiveStopNotification,
         renderAgendaList,
-        switchSidebarTab,
-        syncActiveRouteIntoRoutes,
-        createEmptyRoute,
-        applyLoadedRouteState,
-        getRoutes: () => routes,
-        getActiveRouteId: () => activeRouteId
+        switchSidebarTab
     });
     configureBackupUi({
         getDeliveries: () => deliveries,

@@ -43,12 +43,7 @@ let deps = {
     closeDeliveryPanel: () => {},
     clearActiveStopNotification: () => {},
     renderAgendaList: () => {},
-    switchSidebarTab: () => {},
-    syncActiveRouteIntoRoutes: () => {},
-    createEmptyRoute: () => ({}),
-    applyLoadedRouteState: () => {},
-    getRoutes: () => [],
-    getActiveRouteId: () => null
+    switchSidebarTab: () => {}
 };
 
 export function configureHistory(opts) {
@@ -125,27 +120,6 @@ export function archiveCurrentRouteDay({ silent = false, clearAfter = false } = 
         deps.renderAgendaList();
     }
     return true;
-}
-
-export async function startNewRoute() {
-    deps.syncActiveRouteIntoRoutes();
-    if (!deps.getDeliveries().length) {
-        deps.showToast('A rota atual já está vazia — adicione paradas ou troque de rota', true);
-        return;
-    }
-    const ok = await deps.showConfirmModal({
-        title: 'Nova rota',
-        message: 'Criar outra rota vazia? A rota atual permanece intacta (entregas, status, fotos e otimização). A agenda não muda.',
-        confirmText: 'Criar rota'
-    });
-    if (!ok) return;
-    deps.syncActiveRouteIntoRoutes();
-    const previousName = (deps.getRoutes().find((r) => r.id === deps.getActiveRouteId()) || {}).name || 'Rota atual';
-    const route = deps.createEmptyRoute();
-    deps.getRoutes().push(route);
-    deps.applyLoadedRouteState(route);
-    deps.persistStorageNow();
-    deps.showToast(`${route.name} criada — ${previousName} continua disponível`);
 }
 
 export async function duplicateHistoryDay(historyId) {
