@@ -192,7 +192,7 @@ export async function renderRoute(ordered, precomputed) {
     const startPoint = deps.getStartPoint();
     const points = buildRoutePoints(ordered, startPoint);
 
-    let results = precomputed ? [precomputed] : [];
+    const results = precomputed ? [precomputed] : [];
     if (!precomputed) {
         for (const chunk of chunkPoints(points)) {
             results.push(await routeDirections({
