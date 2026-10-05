@@ -143,6 +143,20 @@ import {
     loadStorage
 } from './persist.js';
 import {
+    configureAuth,
+    getCurrentUser,
+    getAuthReady,
+    getUserProfile,
+    setUserProfile,
+    currentUid,
+    storageKey,
+    accountLabel,
+    initAuthUi,
+    logoutUser,
+    EMPRESA_PADRAO,
+    MENSAGEM_WHATSAPP_PADRAO
+} from './auth.js';
+import {
     configureBackupUi,
     maybeShowBackupReminder,
     setupBackupReminderUi,
@@ -258,24 +272,7 @@ let gpsEnabled = localStorage.getItem('rotaflow_gps') !== '0';
 let routeFilter = "", agendaFilter = "";
 let currentSelectedDelivery = null;
 let tempPhones = [];
-let currentUser = null; // { uid, displayName, email, photoURL, provider }
-let authReady = false;
-
-const EMPRESA_PADRAO = "Correx express";
-const MENSAGEM_WHATSAPP_PADRAO =
-    "Olá {nome}! 🚚\n" +
-    "Sua encomenda ({id} - {pacotes} pacote(s)) está a caminho.\n" +
-    "📍 Endereço: {endereco}\n" +
-    "\n" +
-    "⚠️ Estamos chegando em breve! Por favor, esteja disponível para receber.⚠️\n" +
-    "📦 {empresa}\n" +
-    "🗺️ Acompanhe no mapa: {link}";
-
-let userProfile = {
-    motorista: "Motorista",
-    empresa: EMPRESA_PADRAO,
-    mensagemPadrao: MENSAGEM_WHATSAPP_PADRAO
-};
+// Auth: currentUser / authReady / userProfile em src/js/auth.js (getters).
 
 const APP_ICON = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 512 512'%3E%3Crect width='512' height='512' rx='104' fill='%230f172a'/%3E%3Cpath d='M148 388C148 300 372 330 372 200' fill='none' stroke='%233b82f6' stroke-width='30' stroke-linecap='round' stroke-dasharray='4 46'/%3E%3Ccircle cx='148' cy='388' r='46' fill='%2322c55e'/%3E%3Ccircle cx='372' cy='176' r='46' fill='%23ef4444'/%3E%3C/svg%3E";
 
@@ -466,12 +463,6 @@ function migrateFavorito(obj) {
     return obj;
 }
 
-function currentUid() {
-    return (currentUser && currentUser.uid) ? currentUser.uid : 'guest';
-}
-function storageKey(base) {
-    return `rotaflow_${base}_${currentUid()}`;
-}
 configurePhotoStore({ getUid: currentUid });
 configureBackupStore({ getUid: currentUid, storageKey, isNativeApp });
 function updateSyncBadge() {
@@ -479,124 +470,7 @@ function updateSyncBadge() {
     if (el) el.className = 'sync-badge';
 }
 
-function saveAuthSession(user) {
-    try { localStorage.setItem('rotaflow_auth_session', JSON.stringify(user)); } catch (e) {}
-}
-function clearAuthSession() {
-    localStorage.removeItem('rotaflow_auth_session');
-}
-function loadAuthSession() {
-    try {
-        const raw = localStorage.getItem('rotaflow_auth_session');
-        return raw ? JSON.parse(raw) : null;
-    } catch (e) { return null; }
-}
-
-function updateUserChip() {
-    const chip = document.getElementById('userChip');
-    const name = document.getElementById('userChipName');
-    const photo = document.getElementById('userChipPhoto');
-    if (!chip || !currentUser) return;
-    name.textContent = currentUser.displayName || currentUser.email || 'Conta local';
-    if (currentUser.photoURL) {
-        photo.src = currentUser.photoURL;
-        photo.style.display = 'block';
-    } else {
-        photo.removeAttribute('src');
-        photo.style.display = 'none';
-    }
-    chip.classList.add('show');
-    updateSyncBadge();
-}
-function hideLoginScreen() {
-    document.getElementById('loginScreen')?.classList.add('hidden');
-}
-function showLoginScreen() {
-    document.getElementById('loginScreen')?.classList.remove('hidden');
-}
-
-async function enterAsUser(user) {
-    currentUser = user;
-    authReady = true;
-    saveAuthSession(user);
-    try {
-        if (window.RotaFlowCap && typeof window.RotaFlowCap.setCrashlyticsUser === 'function') {
-            window.RotaFlowCap.setCrashlyticsUser(user && user.uid);
-        }
-    } catch (_) {}
-    updateUserChip();
-    hideLoginScreen();
-    await loadStorage();
-    showToast(`Bem-vindo, ${user.displayName || 'motorista'}`);
-    maybeAutoBackupOnDayChange();
-}
-
-async function continueLocally() {
-    let localId = localStorage.getItem('rotaflow_local_uid');
-    if (!localId) {
-        localId = 'local_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
-        localStorage.setItem('rotaflow_local_uid', localId);
-    }
-    await enterAsUser({
-        uid: localId,
-        displayName: 'Neste aparelho',
-        email: '',
-        photoURL: '',
-        provider: 'local'
-    });
-}
-
-async function logoutUser() {
-    const ok = await showConfirmModal({
-        title: 'Sair',
-        message: 'Deseja sair agora? Seus dados permanecem salvos neste aparelho e estarão disponíveis ao retornar.',
-        confirmText: 'Sair',
-        danger: true
-    });
-    if (!ok) return;
-    persistStorageNow();
-    clearAuthSession();
-    currentUser = null;
-    authReady = false;
-    storageLoadedUid = null;
-    deliveries = [];
-    agenda = [];
-    routes = [];
-    activeRouteId = null;
-    nextSequenceNumber = 1;
-    routeActive = false;
-    routeMetrics = null;
-    clearRouteOverlay();
-    rebuildMarkers(false);
-    renderDeliveriesList();
-    renderRouteSwitcher();
-    renderAgendaList();
-    document.getElementById('userChip')?.classList.remove('show');
-    updateSyncBadge();
-    showLoginScreen();
-}
-
-function initAuthUi() {
-    const localBtn = document.getElementById('loginLocalBtn');
-    const hint = document.getElementById('loginHint');
-    if (hint) hint.textContent = 'Os dados ficam neste aparelho.';
-
-    localBtn.addEventListener('click', continueLocally);
-
-    const session = loadAuthSession();
-    if (session && session.uid && (session.provider === 'local' || !session.provider)) {
-        enterAsUser({
-            uid: session.uid,
-            displayName: session.displayName || 'Neste aparelho',
-            email: '',
-            photoURL: '',
-            provider: 'local'
-        });
-    } else {
-        // Único modo: entra direto neste aparelho.
-        continueLocally();
-    }
-}
+// Auth local/sessão/logout: src/js/auth.js (configureAuth no boot).
 
 let cameraRestoreHandlerReady = false;
 
@@ -1452,7 +1326,7 @@ function configureExtractedModules() {
         setNativeMarkerById: (m) => { nativeMarkerById = m; },
         getNativeMapZoom: () => nativeMapZoom,
         setNativeMapZoom: (z) => { nativeMapZoom = z; },
-        getAuthReady: () => authReady,
+        getAuthReady,
         getStorageLoadedUid: () => storageLoadedUid,
         currentUid,
         refreshMapAfterStorageLoad,
@@ -1502,7 +1376,7 @@ function configureExtractedModules() {
     configureTracking({
         isNativeApp,
         getDeliveries: () => deliveries,
-        getUserProfile: () => userProfile,
+        getUserProfile,
         getStartPoint: () => startPoint,
         getGpsAccuracyMeters: () => gpsAccuracyMeters,
         getGpsEnabled: () => gpsEnabled,
@@ -1520,9 +1394,32 @@ function configureExtractedModules() {
         syncBackgroundGpsTargets,
         isBgGpsStarted
     });
+    configureAuth({
+        loadStorage,
+        persistStorageNow,
+        maybeAutoBackupOnDayChange,
+        resetAppAfterLogout: () => {
+            storageLoadedUid = null;
+            deliveries = [];
+            agenda = [];
+            routes = [];
+            activeRouteId = null;
+            nextSequenceNumber = 1;
+            routeActive = false;
+            routeMetrics = null;
+            clearRouteOverlay();
+            rebuildMarkers(false);
+            renderDeliveriesList();
+            renderRouteSwitcher();
+            renderAgendaList();
+        },
+        updateSyncBadge,
+        showToast,
+        showConfirmModal
+    });
     configurePersist({
-        getAuthReady: () => authReady,
-        getCurrentUser: () => currentUser,
+        getAuthReady,
+        getCurrentUser,
         currentUid,
         storageKey,
         getRoutes: () => routes,
@@ -1532,8 +1429,8 @@ function configureExtractedModules() {
         setAgenda: (a) => { agenda = Array.isArray(a) ? a : []; },
         getNextAgendaId: () => nextAgendaId,
         setNextAgendaId: (n) => { nextAgendaId = n; },
-        getUserProfile: () => userProfile,
-        setUserProfile: (p) => { if (p) userProfile = p; },
+        getUserProfile,
+        setUserProfile,
         resetMemoryState: () => {
             deliveries = [];
             agenda = [];
@@ -1607,8 +1504,8 @@ function configureExtractedModules() {
         setNextSequenceNumber: (n) => { nextSequenceNumber = n; },
         setRouteActive: (v) => { routeActive = !!v; },
         setRouteMetrics: (m) => { routeMetrics = m; },
-        getAuthReady: () => authReady,
-        getCurrentUser: () => currentUser,
+        getAuthReady,
+        getCurrentUser,
         storageKey,
         showToast,
         showConfirmModal,
@@ -1638,8 +1535,8 @@ function configureExtractedModules() {
         getNextSequenceNumber: () => nextSequenceNumber,
         setNextAgendaId: (n) => { nextAgendaId = n; },
         getNextAgendaId: () => nextAgendaId,
-        getUserProfile: () => userProfile,
-        setUserProfile: (p) => { if (p) userProfile = p; },
+        getUserProfile,
+        setUserProfile,
         persistStorageNow,
         syncActiveRouteIntoRoutes,
         isNativeApp,
@@ -1660,7 +1557,7 @@ function configureExtractedModules() {
         updateDeliveryStats,
         updateOptimizeFabVisibility,
         updateLastIdDisplay,
-        getAuthReady: () => authReady,
+        getAuthReady,
         recoverUiAfterResume
     });
 }
@@ -2427,7 +2324,8 @@ function editPhonesPanel() {
 // ========== WHATSAPP ==========
 
 function companyDisplayName() {
-    const name = userProfile && String(userProfile.empresa || '').trim();
+    const profile = getUserProfile();
+    const name = profile && String(profile.empresa || '').trim();
     return name || EMPRESA_PADRAO;
 }
 
@@ -2435,7 +2333,8 @@ function buildDeliveryWhatsAppMessage(delivery, opts = {}) {
     const trackUrl = opts.trackUrl || '';
     const nome = opts.nome != null ? opts.nome : (delivery.nome || 'cliente');
     const empresa = opts.empresa != null ? opts.empresa : companyDisplayName();
-    const template = (userProfile && userProfile.mensagemPadrao) || MENSAGEM_WHATSAPP_PADRAO;
+    const profile = getUserProfile();
+    const template = (profile && profile.mensagemPadrao) || MENSAGEM_WHATSAPP_PADRAO;
     let msg = template
         .replace(/{nome}/g, nome)
         .replace(/{id}/g, delivery.sequentialId)
@@ -3773,15 +3672,14 @@ function toggleSidebar() {
 function showProfileModal() {
     const overlay = document.createElement('div');
     overlay.className = 'modal-overlay';
-    const accountLabel = currentUser
-        ? (currentUser.provider === 'local' ? 'Conta neste aparelho' : (currentUser.email || currentUser.displayName || 'Conta'))
-        : 'Sem conta';
+    const userProfile = getUserProfile();
+    const accountLabelText = getCurrentUser() ? accountLabel() : 'Sem conta';
     overlay.innerHTML = `
         <div class="modal-container" style="max-width:450px;">
             <h3 class="modal-title">Perfil e preferências</h3>
             <div class="form-group">
                 <label>Conta</label>
-                <div class="profile-account-chip">${escapeHtml(accountLabel)}</div>
+                <div class="profile-account-chip">${escapeHtml(accountLabelText)}</div>
             </div>
             <div class="form-group">
                 <label for="profileMotorista">Nome do motorista</label>
