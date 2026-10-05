@@ -2,8 +2,14 @@
  * Fotos em IndexedDB (Blobs — não data URLs; não entram no localStorage),
  * object URLs vivos, fila de operações de foto e compressão JPEG no WebView.
  * Chaves por usuário: main.js chama configurePhotoStore({ getUid }) no boot.
+ * Housekeeping: purgeStalePhotos remove órfãs e fotos de rotas finalizadas fora do TTL.
  */
-import { DEFAULT_PHOTO_MAX_PER_ITEM, normalizeIdbPhotoValue } from '../../lib/photo-helpers.js';
+import {
+    DEFAULT_PHOTO_MAX_PER_ITEM,
+    DEFAULT_FINISHED_PHOTO_TTL_DAYS,
+    normalizeIdbPhotoValue,
+    planIdbPhotoKeysToDelete
+} from '../../lib/photo-helpers.js';
 
 let getUid = () => 'guest';
 
@@ -130,6 +136,51 @@ export async function idbGetAllPhotoKeys() {
         req.onsuccess = () => resolve(req.result || []);
         req.onerror = () => reject(req.error);
     });
+}
+
+export { DEFAULT_FINISHED_PHOTO_TTL_DAYS };
+
+/**
+ * Apaga do IndexedDB chaves do uid que não estão em keepPhotoIds
+ * (órfãs + fotos de histórico/rota finalizada além do TTL).
+ * @param {{ uid: string, keepPhotoIds: Set<string>|string[] }} opts
+ * @returns {Promise<number>} quantidade removida
+ */
+export async function purgeStalePhotos(opts) {
+    const uid = opts && opts.uid != null ? String(opts.uid) : '';
+    if (!uid) return 0;
+    let keys;
+    try {
+        keys = await idbGetAllPhotoKeys();
+    } catch (_) {
+        return 0;
+    }
+    const toDelete = planIdbPhotoKeysToDelete({
+        uid,
+        allKeys: keys,
+        keepPhotoIds: opts.keepPhotoIds || []
+    });
+    if (!toDelete.length) return 0;
+    for (const key of toDelete) {
+        const photoId = key.slice(String(uid).length + 2);
+        if (photoId) revokePhotoObjectUrl(photoId);
+    }
+    const db = await openPhotoDb();
+    await new Promise((resolve, reject) => {
+        const tx = db.transaction('photos', 'readwrite');
+        const store = tx.objectStore('photos');
+        for (const key of toDelete) store.delete(key);
+        tx.oncomplete = () => resolve();
+        tx.onerror = () => reject(tx.error);
+    }).catch(() => {});
+    return toDelete.length;
+}
+
+/** Agenda housekeeping em idle para não bloquear o boot. */
+export function schedulePhotoHousekeeping(run) {
+    const fn = typeof run === 'function' ? run : () => {};
+    if (typeof requestIdleCallback === 'function') requestIdleCallback(() => { fn(); }, { timeout: 8000 });
+    else setTimeout(() => { fn(); }, 2500);
 }
 
 /** Serializa captura/salvamento de fotos para evitar corrida e picos de memória. */

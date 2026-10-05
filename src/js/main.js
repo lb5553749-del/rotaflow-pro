@@ -13,7 +13,9 @@ import {
     photoFingerprint,
     itemPhotoScope,
     remainingPhotoSlots as remainingPhotoSlotsFor,
-    slicePhotoIdsForHydrate
+    slicePhotoIdsForHydrate,
+    collectKeepPhotoIds,
+    DEFAULT_FINISHED_PHOTO_TTL_DAYS
 } from '../../lib/photo-helpers.js';
 import {
     haversineDistance as haversineDistanceShared,
@@ -32,6 +34,13 @@ import {
     chunkPoints,
     applyStopOrder as applyStopOrderOn
 } from '../../lib/routing-helpers.js';
+import {
+    isMutedPin,
+    pinTextColorFor,
+    markerColorFor,
+    hexToTint,
+    markerScaleForActiveCount
+} from '../../lib/map-helpers.js';
 import { routeDayStats } from '../../lib/history-helpers.js';
 import { escapeHtml } from '../../lib/html.js';
 import { getSequentialId, nextGeneratedId, seedIdCounterFromLists } from '../../lib/ids.js';
@@ -69,6 +78,7 @@ import {
 import {
     configureHistory,
     loadHistory,
+    getRouteHistory,
     archiveCurrentRouteDay,
     startNewRoute,
     renderHistoryList,
@@ -104,7 +114,9 @@ import {
     getPendingPhotoTarget,
     yieldToUiFrame,
     compressImageFile,
-    compressDataUrl
+    compressDataUrl,
+    purgeStalePhotos,
+    schedulePhotoHousekeeping
 } from './photo-store.js';
 import {
     configureBackupStore,
@@ -138,17 +150,6 @@ function isNativeApp() {
     } catch (_) {
         return false;
     }
-}
-
-function hexToTint(hex, alpha = 255) {
-    const h = String(hex || '#3b82f6').replace('#', '');
-    const full = h.length === 3 ? h.split('').map(c => c + c).join('') : h;
-    return {
-        r: parseInt(full.slice(0, 2), 16) || 0,
-        g: parseInt(full.slice(2, 4), 16) || 0,
-        b: parseInt(full.slice(4, 6), 16) || 0,
-        a: alpha
-    };
 }
 
 function iconFillColor(icon) {
@@ -255,34 +256,13 @@ function setFeedbackPrefs({ sound, vibrate } = {}) {
     }
 }
 
-function isMutedPin(delivery) {
-    return !!(delivery && (delivery.status === 'entregue' || delivery.status === 'falhou'));
-}
-
-function pinTextColorFor(delivery, highlighted) {
-    if (highlighted) return '#ffffff';
-    if (isMutedPin(delivery)) return '#80868B';
-    return '#ffffff';
-}
-
-function markerColorFor(delivery) {
-    if (!delivery) return '#3b82f6';
-    if (delivery.status === 'entregue') return '#F1F3F4';
-    if (delivery.status === 'falhou') return '#EEF0F2';
-    return (delivery.pacotes || 1) >= 2 ? '#EF4444' : '#1A73E8';
-}
-
 function shouldShowOnMap(delivery) {
     return hasMapCoords(delivery);
 }
 
 function markerScaleForCount(muted) {
-    if (muted) return 5;
     const n = deliveries.filter(d => shouldShowOnMap(d) && !isMutedPin(d)).length;
-    if (n > 60) return 6;
-    if (n > 30) return 7;
-    if (n > 15) return 8;
-    return 10;
+    return markerScaleForActiveCount(muted, n);
 }
 
 /** Pins quadrados (estilo Spoke): ativos coloridos, entregues cinza claro */
@@ -981,54 +961,27 @@ function initAuthUi() {
 
 let cameraRestoreHandlerReady = false;
 
-/** Remove fotos órfãs no IDB (ids sem referência em entregas/agenda) — evita crescimento eterno. */
-async function pruneOrphanPhotos() {
+/**
+ * Housekeeping IndexedDB: remove fotos órfãs e fotos só referenciadas por
+ * histórico/rotas finalizadas além do TTL (default 30 dias; configurável).
+ */
+async function pruneOrphanPhotos(ttlDays = DEFAULT_FINISHED_PHOTO_TTL_DAYS) {
     const uid = currentUid();
     if (!uid) return 0;
-    const prefix = `${uid}::`;
-    const live = new Set();
-    const lists = [agenda];
     syncActiveRouteIntoRoutes();
-    for (const r of routes) {
-        if (r && Array.isArray(r.deliveries)) lists.push(r.deliveries);
-    }
-    for (const list of lists) {
-        for (const item of list || []) {
-            const ids = Array.isArray(item.photoIds) ? item.photoIds : [];
-            for (const id of ids) {
-                if (id && id !== 'pending') live.add(photoDbKey(id));
-            }
-        }
-    }
-    let keys;
-    try {
-        keys = await idbGetAllPhotoKeys();
-    } catch (_) {
-        return 0;
-    }
-    let removed = 0;
-    const db = await openPhotoDb();
-    await new Promise((resolve, reject) => {
-        const tx = db.transaction('photos', 'readwrite');
-        const store = tx.objectStore('photos');
-        for (const key of keys) {
-            if (typeof key !== 'string' || !key.startsWith(prefix)) continue;
-            if (live.has(key)) continue;
-            store.delete(key);
-            removed += 1;
-        }
-        tx.oncomplete = () => resolve();
-        tx.onerror = () => reject(tx.error);
-    }).catch(() => {});
-    return removed;
+    const keepPhotoIds = collectKeepPhotoIds({
+        routes,
+        agenda,
+        history: getRouteHistory(),
+        ttlDays
+    });
+    return purgeStalePhotos({ uid, keepPhotoIds });
 }
 
 function scheduleOrphanPhotoPrune() {
-    const run = () => {
+    schedulePhotoHousekeeping(() => {
         pruneOrphanPhotos().catch(() => {});
-    };
-    if (typeof requestIdleCallback === 'function') requestIdleCallback(run, { timeout: 8000 });
-    else setTimeout(run, 2500);
+    });
 }
 
 function isPhotoPickCancelled(err) {
@@ -2189,8 +2142,9 @@ async function loadStorage() {
 
     // Fotos sob demanda (painel/lista), não no boot.
     scheduleBackgroundPhotoMigrate();
-    scheduleOrphanPhotoPrune();
     loadHistory();
+    // Housekeeping IDB em idle: órfãs + fotos de rotas finalizadas > TTL (30d).
+    scheduleOrphanPhotoPrune();
     persistStorageNow();
 
     seedIdCounter();

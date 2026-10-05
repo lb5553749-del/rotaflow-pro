@@ -9,7 +9,13 @@ const {
   slicePhotoIdsForHydrate,
   itemPhotoScope,
   normalizeIdbPhotoValue,
-  DEFAULT_PHOTO_MAX_PER_ITEM
+  DEFAULT_PHOTO_MAX_PER_ITEM,
+  DEFAULT_FINISHED_PHOTO_TTL_DAYS,
+  MS_PER_DAY,
+  collectPhotoIdsFromLists,
+  isHistoryWithinPhotoTtl,
+  collectKeepPhotoIds,
+  planIdbPhotoKeysToDelete
 } = require('../lib/photo-helpers.js');
 
 describe('remainingPhotoSlots / canAddPhoto', () => {
@@ -65,5 +71,44 @@ describe('normalizeIdbPhotoValue', () => {
 
   it('returns null for empty', () => {
     assert.equal(normalizeIdbPhotoValue(null), null);
+  });
+});
+
+describe('photo housekeeping (TTL)', () => {
+  const now = Date.UTC(2026, 9, 4, 12); // 2026-10-04
+
+  it('collects photo ids and skips pending', () => {
+    const ids = collectPhotoIdsFromLists([
+      [{ photoIds: ['a', 'pending', 'b'] }, { photoIds: ['b', 'c'] }],
+      null
+    ]);
+    assert.deepEqual([...ids].sort(), ['a', 'b', 'c']);
+  });
+
+  it('keeps history inside TTL and drops expired finished days', () => {
+    assert.equal(DEFAULT_FINISHED_PHOTO_TTL_DAYS, 30);
+    const recent = { savedAt: now - 10 * MS_PER_DAY, deliveries: [{ photoIds: ['keep'] }] };
+    const expired = { savedAt: now - 45 * MS_PER_DAY, deliveries: [{ photoIds: ['gone'] }] };
+    assert.equal(isHistoryWithinPhotoTtl(recent, 30, now), true);
+    assert.equal(isHistoryWithinPhotoTtl(expired, 30, now), false);
+    assert.equal(isHistoryWithinPhotoTtl(expired, 60, now), true);
+
+    const keep = collectKeepPhotoIds({
+      routes: [{ deliveries: [{ photoIds: ['route1'] }] }],
+      agenda: [{ photoIds: ['agenda1'] }],
+      history: [recent, expired],
+      ttlDays: 30,
+      now
+    });
+    assert.deepEqual([...keep].sort(), ['agenda1', 'keep', 'route1']);
+  });
+
+  it('plans IDB keys to delete for one uid only', () => {
+    const keys = planIdbPhotoKeysToDelete({
+      uid: 'u1',
+      allKeys: ['u1::keep', 'u1::drop', 'u2::other', 'weird'],
+      keepPhotoIds: new Set(['keep'])
+    });
+    assert.deepEqual(keys, ['u1::drop']);
   });
 });
