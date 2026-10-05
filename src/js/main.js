@@ -188,6 +188,19 @@ import {
     photoFingerprint
 } from './item-photos.js';
 import {
+    configureDeliveriesList,
+    renderDeliveriesList
+} from './deliveries-list.js';
+import {
+    configureAgendaList,
+    renderAgendaList
+} from './agenda-list.js';
+import {
+    FAIL_REASON_LABELS,
+    FAIL_REASON_OPTIONS,
+    findActiveDeliveryByAddress
+} from '../../lib/list-helpers.js';
+import {
     configureBackupStore,
     readBackupMeta
 } from './backup-store.js';
@@ -605,6 +618,54 @@ function configureExtractedModules() {
         renderDeliveriesList,
         renderAgendaList,
         showToast
+    });
+    configureDeliveriesList({
+        getDeliveries: () => deliveries,
+        setDeliveries: (next) => { deliveries = Array.isArray(next) ? next : []; },
+        getRouteFilter: () => routeFilter,
+        updateDeliveryStats,
+        closeAllOverflowMenus,
+        openOverflowWrap,
+        getMarker,
+        highlightMarker,
+        openDeliveryPanel,
+        saveStorage,
+        persistStorageNow,
+        syncFavoritoToAgenda,
+        showToast,
+        sendWhatsApp,
+        shareTrackingLink,
+        showEditDeliveryModal,
+        editDeliveryInRoute,
+        clearRouteOverlay,
+        updateProgressAndEstimates,
+        showConfirmModal,
+        closeTrackingSession,
+        removeMarkerById,
+        saveToAgenda,
+        upsertMarker,
+        syncTrackingStatus,
+        notifyRouteCompositionChanged,
+        sendDeliveredPush,
+        playDeliveryFeedback,
+        noteDeliveryCompletedForBackup,
+        countNormalActiveStops,
+        maybeNotifyVoltarDepois
+    });
+    configureAgendaList({
+        getAgenda: () => agenda,
+        setAgenda: (a) => { agenda = Array.isArray(a) ? a : []; },
+        getAgendaFilter: () => agendaFilter,
+        getDeliveries: () => deliveries,
+        closeAllOverflowMenus,
+        openOverflowWrap,
+        addAgendaToRoute,
+        showConfirmModal,
+        saveStorage,
+        persistStorageNow,
+        showToast,
+        showEditAgendaModal,
+        editAgendaItem
     });
     configureMapPins({
         getPinSizePref: () => pinSizePref,
@@ -1749,314 +1810,7 @@ function renderTempPhones() {
     });
 }
 
-// ========== RENDERIZAÇÃO DA LISTA DE ENTREGAS ==========
-let renderDeliveriesQueued = false;
-function renderDeliveriesList() {
-    if (renderDeliveriesQueued) return;
-    renderDeliveriesQueued = true;
-    requestAnimationFrame(() => {
-        renderDeliveriesQueued = false;
-        renderDeliveriesListNow();
-    });
-}
-
-const DELIVERY_LIST_FULL_RENDER_MAX = 40;
-const DELIVERY_LIST_ROW_EST = 168;
-const DELIVERY_LIST_BUFFER = 6;
-let deliveryListVirtual = { filtered: [], start: -1, end: -1, scrollBound: false };
-
-function getDeliveryListScrollParent(container) {
-    return container?.closest('.sidebar-panel') || container;
-}
-
-function buildDeliveryListItemHtml(del) {
-    const statusLabel = { pendente: "Pendente", "em-rota": "Em rota", entregue: "Entregue", falhou: "Falhou" }[del.status] || del.status;
-    let statusClass = `status-${del.status}`;
-    let statusText = statusLabel;
-    if (del.voltarDepois && del.status !== 'entregue' && del.status !== 'falhou') {
-        statusText = 'Voltar depois';
-        statusClass = 'status-voltar-depois';
-    } else if (del.status === 'falhou' && del.failReason) {
-        statusText = FAIL_REASON_LABELS[del.failReason] || 'Falhou';
-    }
-
-    const phonesDisplay = (del.telefones && del.telefones.length)
-        ? `<div class="delivery-body-line"><i class="fas fa-phone-alt"></i>${escapeHtml(del.telefones.map(p => (p.label ? p.label + ': ' : '') + formatPhoneShort(p.numero)).join(', '))}</div>`
-        : '';
-    const hasPhone = !!(del.telefones && del.telefones.length);
-    const photoCount = (del.photoIds && del.photoIds.length) || (del.photos && del.photos.length) || 0;
-    const metaParts = [];
-    if (del.routeOrder && del.status !== 'entregue' && del.status !== 'falhou') {
-        metaParts.push(`<span class="route-order" title="Ordem na rota">${del.routeOrder}º</span>`);
-    }
-    if (photoCount) metaParts.push(`<span title="Fotos"><i class="fas fa-camera"></i>${photoCount}</span>`);
-    if (del.savedToAgenda) metaParts.push(`<span title="Na agenda"><i class="fas fa-book"></i></span>`);
-    const metaHtml = metaParts.length ? `<div class="delivery-meta">${metaParts.join('')}</div>` : '';
-    const legHtml = (del.legMeters === undefined || del.status === 'entregue' || del.status === 'falhou') ? '' :
-        `<div class="leg-info"><i class="fas fa-car"></i> ${formatKm(del.legMeters)} · ${formatDuration(del.legSeconds)}</div>`;
-
-    return `<div class="delivery-item" data-id="${escapeHtml(del.id)}">
-                    <div class="delivery-header">
-                        <div class="delivery-title-row">
-                            <span class="delivery-id">${escapeHtml(del.sequentialId)}</span>
-                            <button type="button" class="fav-btn ${del.favorito ? 'active' : ''}" data-action="fav" data-id="${escapeHtml(del.id)}" title="Favorito" aria-label="Favorito"><i class="fas fa-star"></i></button>
-                            <strong>${escapeHtml(del.nome)}</strong>
-                        </div>
-                        <span class="status-badge ${escapeHtml(statusClass)}">${escapeHtml(statusText)}</span>
-                    </div>
-                    ${metaHtml}
-                    <div class="delivery-body-line"><i class="fas fa-location-dot"></i>${escapeHtml(del.endereco)}</div>
-                    ${legHtml}
-                    ${phonesDisplay}
-                    <div class="delivery-links">${hasPhone ? '<a href="#" class="whatsapp-link" data-action="whatsapp"><i class="fab fa-whatsapp"></i> WhatsApp</a>' : ''}<a href="#" class="track-link" data-action="track"><i class="fas fa-map-location-dot"></i> Rastreio</a></div>
-                    ${del.notes ? `<div class="delivery-body-line"><i class="fas fa-pen"></i>${escapeHtml(del.notes)}</div>` : ''}
-                    <div class="delivery-actions">
-                        <select class="select-status" data-action="status" data-id="${escapeHtml(del.id)}" aria-label="Status da entrega">
-                            <option value="pendente" ${del.status === 'pendente' ? 'selected' : ''}>Pendente</option>
-                            <option value="em-rota" ${del.status === 'em-rota' ? 'selected' : ''}>Em rota</option>
-                            <option value="entregue" ${del.status === 'entregue' ? 'selected' : ''}>Entregue</option>
-                            <option value="falhou" ${del.status === 'falhou' ? 'selected' : ''}>Falhou</option>
-                        </select>
-                        <div class="overflow-wrap">
-                            <button type="button" class="icon-btn overflow-trigger" data-action="menu" aria-label="Mais ações" title="Mais ações">⋯</button>
-                            <div class="overflow-panel" role="menu">
-                                <button type="button" data-action="edit" data-id="${escapeHtml(del.id)}" role="menuitem"><i class="fas fa-edit"></i> Editar</button>
-                                <button type="button" data-action="up" data-id="${escapeHtml(del.id)}" role="menuitem"><i class="fas fa-arrow-up"></i> Subir</button>
-                                <button type="button" data-action="down" data-id="${escapeHtml(del.id)}" role="menuitem"><i class="fas fa-arrow-down"></i> Descer</button>
-                                <button type="button" data-action="agenda" data-id="${escapeHtml(del.id)}" role="menuitem"><i class="fas fa-bookmark"></i> Salvar na agenda</button>
-                                <button type="button" class="danger" data-action="remove" data-id="${escapeHtml(del.id)}" role="menuitem"><i class="fas fa-trash-can"></i> Remover</button>
-                            </div>
-                        </div>
-                    </div>
-                </div>`;
-}
-
-function ensureDeliveryListVirtualScroll(container) {
-    if (deliveryListVirtual.scrollBound || !container) return;
-    deliveryListVirtual.scrollBound = true;
-    const scrollEl = getDeliveryListScrollParent(container);
-    let ticking = false;
-    scrollEl.addEventListener('scroll', () => {
-        if (ticking) return;
-        ticking = true;
-        requestAnimationFrame(() => {
-            ticking = false;
-            if (deliveryListVirtual.filtered.length <= DELIVERY_LIST_FULL_RENDER_MAX) return;
-            closeAllOverflowMenus();
-            paintDeliveryListWindow(container, false);
-        });
-    }, { passive: true });
-}
-
-function paintDeliveryListWindow(container, force) {
-    const filtered = deliveryListVirtual.filtered;
-    const total = filtered.length;
-    if (!total) return;
-
-    if (total <= DELIVERY_LIST_FULL_RENDER_MAX) {
-        deliveryListVirtual.start = 0;
-        deliveryListVirtual.end = total;
-        const parts = new Array(total);
-        for (let i = 0; i < total; i++) parts[i] = buildDeliveryListItemHtml(filtered[i]);
-        container.innerHTML = parts.join('');
-        return;
-    }
-
-    const scrollEl = getDeliveryListScrollParent(container);
-    const scrollTop = scrollEl.scrollTop || 0;
-    const viewH = scrollEl.clientHeight || 600;
-    let start = Math.max(0, Math.floor(scrollTop / DELIVERY_LIST_ROW_EST) - DELIVERY_LIST_BUFFER);
-    let end = Math.min(total, Math.ceil((scrollTop + viewH) / DELIVERY_LIST_ROW_EST) + DELIVERY_LIST_BUFFER);
-    if (end <= start) end = Math.min(total, start + 1);
-    if (!force && start === deliveryListVirtual.start && end === deliveryListVirtual.end) return;
-
-    deliveryListVirtual.start = start;
-    deliveryListVirtual.end = end;
-    const topPad = start * DELIVERY_LIST_ROW_EST;
-    const bottomPad = Math.max(0, (total - end) * DELIVERY_LIST_ROW_EST);
-    const parts = new Array(end - start + 2);
-    parts[0] = `<div class="delivery-list-spacer" style="height:${topPad}px" aria-hidden="true"></div>`;
-    for (let i = start; i < end; i++) {
-        parts[i - start + 1] = buildDeliveryListItemHtml(filtered[i]);
-    }
-    parts[end - start + 1] = `<div class="delivery-list-spacer" style="height:${bottomPad}px" aria-hidden="true"></div>`;
-    container.innerHTML = parts.join('');
-}
-
-function renderDeliveriesListNow() {
-    const container = document.getElementById("deliveriesList");
-    if (!container) return;
-    ensureDeliveryListDelegation(container);
-    ensureDeliveryListVirtualScroll(container);
-    updateDeliveryStats();
-
-    const filtered = routeFilter ? deliveries.filter(d =>
-        (d.nome || '').toLowerCase().includes(routeFilter) ||
-        (d.endereco || '').toLowerCase().includes(routeFilter)
-    ) : deliveries;
-
-    if (filtered.length === 0) {
-        deliveryListVirtual.filtered = [];
-        deliveryListVirtual.start = -1;
-        deliveryListVirtual.end = -1;
-        const isFilter = !!routeFilter;
-        container.innerHTML = isFilter
-            ? `<div class="empty-state">
-                <span class="empty-state-mark" aria-hidden="true"></span>
-                <span class="empty-state-title">Nada encontrado</span>
-                <span class="empty-state-msg">Nenhuma entrega corresponde à busca.</span>
-            </div>`
-            : `<div class="empty-state">
-                <span class="empty-state-mark" aria-hidden="true"></span>
-                <span class="empty-state-title">Rota vazia</span>
-                <span class="empty-state-msg">Adicione a primeira entrega para montar o dia.</span>
-                <button type="button" class="empty-state-cta" data-empty-cta="nova"><i class="fas fa-plus"></i> Nova entrega</button>
-            </div>`;
-        return;
-    }
-
-    deliveryListVirtual.filtered = filtered;
-    deliveryListVirtual.start = -1;
-    deliveryListVirtual.end = -1;
-    paintDeliveryListWindow(container, true);
-}
-
-let deliveryListDelegationReady = false;
-function ensureDeliveryListDelegation(container) {
-    if (deliveryListDelegationReady || !container) return;
-    deliveryListDelegationReady = true;
-
-    container.addEventListener('click', async (e) => {
-        const actionEl = e.target.closest('[data-action]');
-        const item = e.target.closest('.delivery-item');
-        if (!item) return;
-        const id = parseInt(item.dataset.id, 10);
-        const delivery = deliveries.find(d => d.id === id);
-        if (!delivery) return;
-
-        const action = actionEl ? actionEl.dataset.action : 'open';
-        if (action === 'open' || !actionEl) {
-            if (e.target.closest('button, a, select, input')) return;
-            closeAllOverflowMenus();
-            const marker = getMarker(delivery.sequentialId);
-            if (marker) highlightMarker(marker, delivery);
-            openDeliveryPanel(delivery);
-            return;
-        }
-
-        e.preventDefault();
-        e.stopPropagation();
-
-        if (action === 'menu') {
-            const wrap = actionEl.closest('.overflow-wrap');
-            const wasOpen = wrap && wrap.classList.contains('open');
-            closeAllOverflowMenus();
-            if (wrap && !wasOpen) openOverflowWrap(wrap);
-            return;
-        }
-
-        closeAllOverflowMenus();
-
-        if (action === 'fav') {
-            delivery.favorito = !delivery.favorito;
-            saveStorage();
-            syncFavoritoToAgenda(delivery);
-            renderDeliveriesList();
-            showToast(delivery.favorito ? 'Adicionado aos favoritos' : 'Removido dos favoritos');
-            return;
-        }
-        if (action === 'whatsapp') {
-            sendWhatsApp(delivery);
-            return;
-        }
-        if (action === 'track') {
-            shareTrackingLink(delivery);
-            return;
-        }
-        if (action === 'edit') {
-            showEditDeliveryModal(delivery, (updated) => editDeliveryInRoute(delivery, updated));
-            return;
-        }
-        if (action === 'up') {
-            const idx = deliveries.findIndex(d => d.id === id);
-            if (idx > 0) {
-                [deliveries[idx - 1], deliveries[idx]] = [deliveries[idx], deliveries[idx - 1]];
-                saveStorage();
-                clearRouteOverlay();
-                renderDeliveriesList();
-                updateProgressAndEstimates();
-            }
-            return;
-        }
-        if (action === 'down') {
-            const idx = deliveries.findIndex(d => d.id === id);
-            if (idx >= 0 && idx < deliveries.length - 1) {
-                [deliveries[idx + 1], deliveries[idx]] = [deliveries[idx], deliveries[idx + 1]];
-                saveStorage();
-                clearRouteOverlay();
-                renderDeliveriesList();
-                updateProgressAndEstimates();
-            }
-            return;
-        }
-        if (action === 'remove') {
-            const ok = await showConfirmModal({
-                title: 'Remover entrega',
-                message: `Deseja remover a entrega ${delivery.sequentialId} (${delivery.nome}) da rota?`,
-                confirmText: 'Remover',
-                danger: true
-            });
-            if (!ok) return;
-            closeTrackingSession(delivery, 'encerrado');
-            deliveries = deliveries.filter(d => d.id !== id);
-            persistStorageNow();
-            clearRouteOverlay();
-            removeMarkerById(delivery.sequentialId);
-            renderDeliveriesList();
-            updateProgressAndEstimates();
-            showToast('Entrega removida da rota');
-            return;
-        }
-        if (action === 'agenda') {
-            await saveToAgenda(delivery, true);
-        }
-    });
-
-    container.addEventListener('change', (e) => {
-        const sel = e.target.closest('select[data-action="status"]');
-        if (!sel) return;
-        const id = parseInt(sel.dataset.id, 10);
-        const d = deliveries.find(x => x.id === id);
-        if (!d) return;
-        const oldStatus = d.status;
-        const normalsBefore = countNormalActiveStops();
-        d.status = sel.value;
-        if (d.status === 'entregue' || d.status === 'falhou') {
-            d.voltarDepois = false;
-            if (d.status === 'entregue') delete d.failReason;
-        }
-        if (d.status !== 'entregue') delete d.deliveredNotified;
-        if (d.status !== 'falhou' || d.failReason !== 'ausente') delete d.absentNotified;
-        saveStorage();
-        if (oldStatus !== d.status) {
-            upsertMarker(d);
-            syncTrackingStatus(d);
-        }
-        updateDeliveryStats();
-        renderDeliveriesList();
-        if (oldStatus !== d.status && (d.status === 'entregue' || oldStatus === 'entregue' || d.status === 'falhou' || oldStatus === 'falhou')) {
-            notifyRouteCompositionChanged({ keepRoute: true });
-        }
-        if (oldStatus !== d.status && (d.status === 'entregue' || d.status === 'falhou')) {
-            if (d.status === 'entregue') {
-                sendDeliveredPush(d);
-                playDeliveryFeedback();
-            }
-            noteDeliveryCompletedForBackup();
-            maybeNotifyVoltarDepois(normalsBefore);
-        }
-    });
-}
+// Lista de entregas: src/js/deliveries-list.js (configureDeliveriesList no boot).
 
 // ========== MODAL DE EDIÇÃO DE ENTREGA ==========
 function showEditDeliveryModal(delivery, onSave) {
@@ -2362,216 +2116,8 @@ function editDeliveryInRoute(delivery, updatedData) {
     }
 }
 
-// ========== AGENDA ==========
-function renderAgendaList() {
-    const container = document.getElementById("agendaList");
-    let filtered = agendaFilter ? agenda.filter(i => i.nome.toLowerCase().includes(agendaFilter) || i.endereco.toLowerCase().includes(agendaFilter)) : agenda;
-    if (filtered.length === 0) {
-        const isFilter = !!agendaFilter;
-        container.innerHTML = isFilter
-            ? `<div class="empty-state">
-                <span class="empty-state-mark" aria-hidden="true"></span>
-                <span class="empty-state-title">Nada encontrado</span>
-                <span class="empty-state-msg">Nenhuma parada corresponde à busca.</span>
-            </div>`
-            : `<div class="empty-state">
-                <span class="empty-state-mark" aria-hidden="true"></span>
-                <span class="empty-state-title">Agenda vazia</span>
-                <span class="empty-state-msg">Salve clientes frequentes para reutilizar depois.</span>
-                <button type="button" class="empty-state-cta" data-empty-cta="nova"><i class="fas fa-plus"></i> Nova entrega</button>
-            </div>`;
-        return;
-    }
-    let html = "";
-    filtered.forEach(item => {
-        const phonesDisplay = item.telefones && item.telefones.length
-            ? item.telefones.map(p => {
-                const label = p.label ? p.label + ': ' : '';
-                return label + formatPhoneShort(p.numero);
-            }).join(', ')
-            : '';
-        const photoCount = (item.photoIds && item.photoIds.length) || (item.photos && item.photos.length) || 0;
-        const thumbSrc = (item.photos && item.photos[0]) || '';
-        const onRoute = findActiveRouteByAddress(item.endereco);
-        const addBtn = onRoute
-            ? `<button type="button" class="action-btn ghost" disabled title="Já está na rota">Na rota · ${onRoute.sequentialId}</button>`
-            : `<button type="button" class="action-btn route add-agenda" data-id="${item.agendaId}"><i class="fas fa-plus"></i> Adicionar à rota</button>`;
-        const metaParts = [];
-        metaParts.push(`<span title="Pacotes"><i class="fas fa-box"></i>${item.pacotes || 1}</span>`);
-        if (photoCount) metaParts.push(`<span title="Fotos"><i class="fas fa-camera"></i>${photoCount}</span>`);
-        if (onRoute) metaParts.push(`<span class="agenda-badge" title="Já na rota de hoje"><i class="fas fa-route"></i>${onRoute.sequentialId}</span>`);
-        html += `<div class="agenda-item" data-id="${item.agendaId}">
-                    <div class="agenda-header">
-                        <div class="delivery-title-row">
-                            ${item.favorito ? '<span class="fav-btn active" aria-hidden="true"><i class="fas fa-star"></i></span>' : ''}
-                            <strong>${escapeHtml(item.nome)}</strong>
-                        </div>
-                        <div class="overflow-wrap">
-                            <button type="button" class="icon-btn overflow-trigger" aria-label="Mais ações" title="Mais ações">⋯</button>
-                            <div class="overflow-panel" role="menu">
-                                <button type="button" class="edit-agenda" data-id="${item.agendaId}" role="menuitem"><i class="fas fa-edit"></i> Editar</button>
-                                <button type="button" class="remove-agenda danger" data-id="${item.agendaId}" role="menuitem"><i class="fas fa-trash-can"></i> Remover</button>
-                            </div>
-                        </div>
-                    </div>
-                    <div class="delivery-meta">${metaParts.join('')}</div>
-                    <div class="delivery-body-line"><i class="fas fa-location-dot"></i>${escapeHtml(item.endereco)}</div>
-                    ${phonesDisplay ? `<div class="delivery-body-line"><i class="fas fa-phone-alt"></i>${escapeHtml(phonesDisplay)}</div>` : ''}
-                    ${item.notes ? `<div class="delivery-body-line"><i class="fas fa-pen"></i>${escapeHtml(item.notes)}</div>` : ''}
-                    <div class="agenda-photo-row">
-                        ${thumbSrc ? `<img src="${thumbSrc}" class="agenda-photo" data-agenda-id="${item.agendaId}" alt="Foto do cliente">` : ''}
-                        <button type="button" class="photo-btn agenda-take-photo" data-id="${item.agendaId}" title="Tirar foto"><i class="fas fa-camera"></i> Tirar foto</button>
-                        <button type="button" class="photo-btn agenda-pick-photo" data-id="${item.agendaId}" title="Escolher da galeria"><i class="fas fa-images"></i> Galeria</button>
-                    </div>
-                    <div class="agenda-actions">${addBtn}</div>
-                </div>`;
-    });
-    container.innerHTML = html;
-    attachAgendaEvents();
-    document.querySelectorAll('.agenda-photo').forEach(img => {
-        img.addEventListener('click', async (e) => {
-            e.stopPropagation();
-            const item = agenda.find(a => a.agendaId === parseInt(img.dataset.agendaId));
-            if (!item) return;
-            await ensureItemPhotos(item);
-            if (item.photos && item.photos.length) openGallery(item.photos, 0);
-        });
-    });
-}
-
-function attachAgendaEvents() {
-    document.querySelectorAll('#agendaList .overflow-trigger').forEach(btn => {
-        btn.onclick = (e) => {
-            e.preventDefault();
-            e.stopPropagation();
-            const wrap = btn.closest('.overflow-wrap');
-            const wasOpen = wrap && wrap.classList.contains('open');
-            closeAllOverflowMenus();
-            if (wrap && !wasOpen) openOverflowWrap(wrap);
-        };
-    });
-    document.querySelectorAll(".add-agenda").forEach(btn => {
-        btn.onclick = () => {
-            closeAllOverflowMenus();
-            let id = parseInt(btn.dataset.id);
-            let item = agenda.find(i => i.agendaId === id);
-            if (item) addAgendaToRoute(item);
-        };
-    });
-    document.querySelectorAll(".remove-agenda").forEach(btn => {
-        btn.onclick = async () => {
-            closeAllOverflowMenus();
-            const id = parseInt(btn.dataset.id);
-            const item = agenda.find(i => i.agendaId === id);
-            if (!item) return;
-            const ok = await showConfirmModal({
-                title: 'Remover da agenda',
-                message: `Deseja remover "${item.nome}" da agenda de paradas?`,
-                confirmText: 'Remover',
-                danger: true
-            });
-            if (!ok) return;
-            agenda = agenda.filter(i => i.agendaId !== id);
-            saveStorage();
-            renderAgendaList();
-            showToast("Parada removida da agenda");
-        };
-    });
-    document.querySelectorAll(".edit-agenda").forEach(btn => {
-        btn.onclick = async () => {
-            closeAllOverflowMenus();
-            let id = parseInt(btn.dataset.id);
-            let item = agenda.find(i => i.agendaId === id);
-            if (item) {
-                await ensureItemPhotos(item);
-                showEditAgendaModal(item, (updated) => editAgendaItem(id, updated));
-            }
-        };
-    });
-    document.querySelectorAll(".agenda-take-photo").forEach(btn => {
-        btn.onclick = async (e) => {
-            e.stopPropagation();
-            const id = parseInt(btn.dataset.id);
-            const item = agenda.find(i => i.agendaId === id);
-            if (!item) return;
-            const slots = remainingPhotoSlots(item);
-            if (slots <= 0) {
-                showToast(`Limite de ${PHOTO_MAX_PER_ITEM} fotos por item`, true);
-                return;
-            }
-            const cameraInput = document.getElementById('agendaCameraInput');
-            let savedIncremental = 0;
-            const urls = await pickPhotoDataUrls('camera', {
-                fileInput: cameraInput,
-                maxPhotos: slots,
-                pendingTarget: { kind: 'agenda', agendaId: item.agendaId },
-                onPhoto: async (dataUrl, n, total) => {
-                    const id = await addPhotoDataUrlToItem(item, dataUrl);
-                    if (!id) return;
-                    savedIncremental += 1;
-                    persistStorageNow();
-                    if (total && total > 1) showToast(`A guardar fotos… ${n}/${total}`);
-                }
-            });
-            let batchSaved = 0;
-            if (urls.length) {
-                for (const url of urls) {
-                    try {
-                        const id = await addPhotoDataUrlToItem(item, url);
-                        if (id) {
-                            batchSaved += 1;
-                            persistStorageNow();
-                        }
-                    } catch (err) {
-                        if (String(err?.message || err) === 'photo-limit') {
-                            showToast(`Limite de ${PHOTO_MAX_PER_ITEM} fotos por item`, true);
-                            break;
-                        }
-                    }
-                }
-            }
-            const totalSaved = savedIncremental + batchSaved;
-            if (totalSaved > 0) {
-                renderAgendaList();
-                showToast(totalSaved > 1 ? `${totalSaved} fotos salvas na agenda` : 'Foto salva na agenda');
-            }
-        };
-    });
-    document.querySelectorAll(".agenda-pick-photo").forEach(btn => {
-        btn.onclick = async (e) => {
-            e.stopPropagation();
-            const id = parseInt(btn.dataset.id);
-            const item = agenda.find(i => i.agendaId === id);
-            if (!item) return;
-            const slots = remainingPhotoSlots(item);
-            if (slots <= 0) {
-                showToast(`Limite de ${PHOTO_MAX_PER_ITEM} fotos por item`, true);
-                return;
-            }
-            const galleryInput = document.getElementById('agendaGalleryInput');
-            const urls = await pickPhotoDataUrls('gallery', {
-                fileInput: galleryInput,
-                multiple: true,
-                maxPhotos: slots,
-                pendingTarget: { kind: 'agenda', agendaId: item.agendaId }
-            });
-            if (!urls.length) return;
-            try {
-                for (const url of urls) await addPhotoDataUrlToItem(item, url);
-                persistStorageNow();
-                renderAgendaList();
-                showToast(urls.length > 1 ? `${urls.length} fotos salvas na agenda` : 'Foto salva na agenda');
-            } catch (err) {
-                if (String(err?.message || err) === 'photo-limit') {
-                    showToast(`Limite de ${PHOTO_MAX_PER_ITEM} fotos por item`, true);
-                } else {
-                    showToast('Não foi possível salvar a foto', true);
-                }
-            }
-        };
-    });
-}
-
+// Lista da agenda: src/js/agenda-list.js (configureAgendaList no boot).
+// ========== AGENDA (edit / add-to-route) ==========
 function editAgendaItem(agendaId, updatedData) {
     let idx = agenda.findIndex(i => i.agendaId === agendaId);
     if (idx === -1) return;
@@ -2819,16 +2365,8 @@ function showEditAgendaModal(item, onSave) {
 }
 
 // ========== ADICIONAR DA AGENDA PARA A ROTA (PERMITIDO) ==========
-function normalizeAddress(addr) {
-    return String(addr || '').trim().toLowerCase().replace(/\s+/g, ' ');
-}
 function findActiveRouteByAddress(endereco) {
-    const key = normalizeAddress(endereco);
-    return deliveries.find(d =>
-        normalizeAddress(d.endereco) === key &&
-        d.status !== 'entregue' &&
-        d.status !== 'falhou'
-    );
+    return findActiveDeliveryByAddress(deliveries, endereco);
 }
 
 function addAgendaToRoute(item) {
@@ -3685,18 +3223,7 @@ function undoDeliveryStatus(id, { keepPanel = false, keepMinimized = false } = {
 }
 
 // ========== NÃO ENTREGUE / VOLTAR DEPOIS ==========
-const FAIL_REASON_LABELS = {
-    ausente: 'Ausente',
-    'endereco-errado': 'Endereço errado',
-    recusou: 'Recusou',
-    'voltar-depois': 'Voltar depois'
-};
-const FAIL_REASON_OPTIONS = [
-    { id: 'ausente', label: 'Ausente', icon: 'fas fa-house-user', iconColor: '#ea580c' },
-    { id: 'endereco-errado', label: 'Endereço errado', icon: 'fas fa-map-location-dot', iconColor: '#ea580c' },
-    { id: 'recusou', label: 'Recusou', icon: 'fas fa-hand', iconColor: '#ea580c' },
-    { id: 'voltar-depois', label: 'Voltar depois', icon: 'fas fa-clock', iconColor: '#b45309' }
-];
+// FAIL_REASON_*: lib/list-helpers.js
 
 let voltarDepoisAlertShown = false;
 
