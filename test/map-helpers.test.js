@@ -17,7 +17,9 @@ const {
   shortStreetAddress,
   plainLatLng,
   boundsCorners,
-  pacotesFromPinColor
+  pacotesFromPinColor,
+  markerIdsToKeep,
+  markerZIndexFor
 } = require('../lib/map-helpers.js');
 
 describe('isMutedPin / markerColorFor', () => {
@@ -103,5 +105,26 @@ describe('nativePinDisplaySize / iconFill / bounds / street', () => {
     assert.deepEqual(corners.center, { lat: 1, lng: 2 });
     assert.equal(pacotesFromPinColor('#EF4444'), 2);
     assert.equal(pacotesFromPinColor('#1A73E8'), 1);
+  });
+});
+
+describe('markerIdsToKeep / markerZIndexFor', () => {
+  it('collects sequential ids that should stay on the map', () => {
+    const keep = markerIdsToKeep(
+      [
+        { sequentialId: 1, status: 'pendente' },
+        { sequentialId: 2, status: 'entregue' },
+        { sequentialId: 3, status: 'pendente' }
+      ],
+      (d) => d.status === 'pendente'
+    );
+    assert.deepEqual([...keep], [1, 3]);
+    assert.equal(markerIdsToKeep(null, () => true).size, 0);
+  });
+
+  it('picks z-index for highlight and muted pins', () => {
+    assert.equal(markerZIndexFor(true, false), 30);
+    assert.equal(markerZIndexFor(false, true), 1);
+    assert.equal(markerZIndexFor(false, false), 10);
   });
 });

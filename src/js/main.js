@@ -26,10 +26,6 @@ import {
 } from '../../lib/routing-helpers.js';
 import {
     isMutedPin,
-    markerColorFor,
-    markerScaleForActiveCount,
-    boundsFromPoints,
-    pointsForMapFit,
     shortStreetAddress
 } from '../../lib/map-helpers.js';
 import { routeDayStats } from '../../lib/history-helpers.js';
@@ -58,15 +54,25 @@ import {
     showChoiceModal
 } from './modals.js';
 import {
-    configureMapPins,
-    buildMapPinIcon
+    configureMapPins
 } from './map-pins.js';
 import {
     configureMapLayer,
-    createNativeMarkerShim,
     initMap,
     PORTO_VELHO_CENTER
 } from './map-layer.js';
+import {
+    configureMapMarkers,
+    shouldShowOnMap,
+    getMarker,
+    upsertMarker,
+    removeMarkerById,
+    highlightMarker,
+    updateMarkerIcon,
+    rebuildMarkers,
+    centerMapOnMarkers,
+    clearHighlightedMarker
+} from './map-markers.js';
 import {
     configureDeliveryPanel,
     isActiveStop,
@@ -176,7 +182,6 @@ let activeRouteId = null;
 let nextSequenceNumber = 1, nextAgendaId = 1;
 let routeMetrics = null;
 let routeActive = false;
-let markersList = [], markersBySeq = new Map();
 let gpsAccuracyMeters = 0;
 let useNativeMap = false, nativeGoogleMap = null, nativeMarkerById = new Map();
 let nativeMapZoom = 12;
@@ -238,111 +243,8 @@ function setFeedbackPrefs({ sound, vibrate } = {}) {
     }
 }
 
-function shouldShowOnMap(delivery) {
-    return hasMapCoords(delivery);
-}
-
-function markerScaleForCount(muted) {
-    const n = deliveries.filter(d => shouldShowOnMap(d) && !isMutedPin(d)).length;
-    return markerScaleForActiveCount(muted, n);
-}
-
-// Pins canvas: src/js/map-pins.js (configureMapPins no boot).
-
-let gpsEnabled = localStorage.getItem('rotaflow_gps') !== '0';
-let routeFilter = "", agendaFilter = "";
-let currentSelectedDelivery = null;
-let highlightedMarker = null;
-let tempPhones = [];
-let currentUser = null; // { uid, displayName, email, photoURL, provider }
-let authReady = false;
-let saveTimer = null;
-
-const EMPRESA_PADRAO = "Correx express";
-const MENSAGEM_WHATSAPP_PADRAO =
-    "Olá {nome}! 🚚\n" +
-    "Sua encomenda ({id} - {pacotes} pacote(s)) está a caminho.\n" +
-    "📍 Endereço: {endereco}\n" +
-    "\n" +
-    "⚠️ Estamos chegando em breve! Por favor, esteja disponível para receber.⚠️\n" +
-    "📦 {empresa}\n" +
-    "🗺️ Acompanhe no mapa: {link}";
-
-let userProfile = {
-    motorista: "Motorista",
-    empresa: EMPRESA_PADRAO,
-    mensagemPadrao: MENSAGEM_WHATSAPP_PADRAO
-};
-
-const APP_ICON = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 512 512'%3E%3Crect width='512' height='512' rx='104' fill='%230f172a'/%3E%3Cpath d='M148 388C148 300 372 330 372 200' fill='none' stroke='%233b82f6' stroke-width='30' stroke-linecap='round' stroke-dasharray='4 46'/%3E%3Ccircle cx='148' cy='388' r='46' fill='%2322c55e'/%3E%3Ccircle cx='372' cy='176' r='46' fill='%23ef4444'/%3E%3C/svg%3E";
-
-// Centro/estilo do mapa: src/js/map-layer.js (PORTO_VELHO_CENTER, mapStyle).
-
-function debounce(fn, ms) {
-    let t;
-    return function (...args) {
-        clearTimeout(t);
-        t = setTimeout(() => fn.apply(this, args), ms);
-    };
-}
-
-function markerIcon(color, opacity, muted) {
-    // Mantido para compat; ícones reais usam buildMapPinIcon (canvas).
-    return {
-        path: google.maps.SymbolPath.CIRCLE,
-        scale: markerScaleForCount(muted),
-        fillColor: color,
-        fillOpacity: opacity == null ? 1 : opacity,
-        strokeWeight: muted ? 1 : 1.25,
-        strokeColor: muted ? '#CFD8DC' : 'white',
-        muted: !!muted
-    };
-}
-
-function webMarkerIconFromPin(pin) {
-    return {
-        url: pin.url,
-        scaledSize: new google.maps.Size(pin.width, pin.height),
-        anchor: new google.maps.Point(pin.anchorX, pin.anchorY),
-        muted: !!pin.muted
-    };
-}
-
-function getMarker(sequentialId) {
-    return markersBySeq.get(sequentialId) || null;
-}
-
-function upsertMarker(delivery) {
-    if (!map || !delivery) return;
-    try {
-        if (!shouldShowOnMap(delivery)) {
-            removeMarkerById(delivery.sequentialId);
-            return;
-        }
-        let marker = getMarker(delivery.sequentialId);
-        if (!marker) {
-            marker = createPinMarker(delivery);
-            if (!marker) return;
-            markersList.push(marker);
-            markersBySeq.set(delivery.sequentialId, marker);
-            return;
-        }
-        marker.setPosition({ lat: Number(delivery.lat), lng: Number(delivery.lng) });
-        updateMarkerIcon(marker, delivery);
-    } catch (e) {
-        console.warn('upsertMarker', e);
-    }
-}
-
-function removeMarkerById(sequentialId) {
-    const marker = getMarker(sequentialId);
-    if (!marker) return;
-    marker.setMap(null);
-    markersBySeq.delete(sequentialId);
-    const idx = markersList.indexOf(marker);
-    if (idx >= 0) markersList.splice(idx, 1);
-    if (highlightedMarker && highlightedMarker.sequentialId === sequentialId) highlightedMarker = null;
-}
+// Marcadores: src/js/map-markers.js (configureMapMarkers).
+// shouldShowOnMap / getMarker / upsert / rebuild / highlight vêm do módulo.
 
 function switchSidebarTab(tab) {
     document.querySelectorAll('.sidebar-tabs button').forEach(btn => {
@@ -1625,17 +1527,19 @@ function configureExtractedModules() {
         getPinSizePref: () => pinSizePref,
         countActivePins: () => deliveries.filter((d) => shouldShowOnMap(d) && !isMutedPin(d)).length
     });
+    configureMapMarkers({
+        getMap: () => map,
+        getUseNativeMap: () => useNativeMap,
+        getDeliveries: () => deliveries,
+        openDeliveryPanel,
+        updateDeliveryStats
+    });
     configureDeliveryPanel({
         getDeliveries: () => deliveries,
         getCurrentSelected: () => currentSelectedDelivery,
         setCurrentSelected: (d) => { currentSelectedDelivery = d; },
         ensureItemPhotos,
-        resetHighlightedMarker: () => {
-            if (highlightedMarker) {
-                resetMarkerStyle(highlightedMarker);
-                highlightedMarker = null;
-            }
-        },
+        resetHighlightedMarker: clearHighlightedMarker,
         hideMapSelectedChip,
         isNativeApp,
         openExternalUrl,
@@ -2034,111 +1938,7 @@ function checkAddressDuplicate() {
     }
 }
 
-// ========== MARCADORES ==========
-function applyPinVisual(marker, delivery, { highlighted = false } = {}) {
-    if (!marker || !delivery) return;
-    const pin = buildMapPinIcon(delivery, { highlighted });
-    if (useNativeMap) {
-        marker._muted = isMutedPin(delivery);
-        marker._highlighted = highlighted;
-        marker._color = highlighted ? '#1E3A8A' : markerColorFor(delivery);
-        marker._label = String(delivery.sequentialId);
-        marker.setTitle(`${delivery.sequentialId} - ${delivery.nome}`);
-        marker._sync();
-        return;
-    }
-    marker.setIcon(webMarkerIconFromPin(pin));
-    marker.setLabel(null);
-    marker.setTitle(`${delivery.sequentialId} - ${delivery.nome}`);
-    marker.setZIndex(highlighted ? 30 : (isMutedPin(delivery) ? 1 : 10));
-}
-
-function createPinMarker(delivery) {
-    const opts = {
-        sequentialId: delivery.sequentialId,
-        position: { lat: delivery.lat, lng: delivery.lng },
-        label: { text: String(delivery.sequentialId) },
-        icon: markerIcon(markerColorFor(delivery), 1, isMutedPin(delivery)),
-        title: `${delivery.sequentialId} - ${delivery.nome}`,
-        muted: isMutedPin(delivery)
-    };
-    let marker;
-    if (useNativeMap) {
-        marker = createNativeMarkerShim(opts);
-        applyPinVisual(marker, delivery);
-    } else {
-        const pin = buildMapPinIcon(delivery);
-        marker = new google.maps.Marker({
-            position: opts.position,
-            map: map,
-            icon: webMarkerIconFromPin(pin),
-            title: opts.title,
-            optimized: true,
-            zIndex: isMutedPin(delivery) ? 1 : 10
-        });
-        marker.sequentialId = delivery.sequentialId;
-    }
-    marker.addListener("click", () => {
-        const d = deliveries.find(x => x.sequentialId === marker.sequentialId);
-        if (!d) return;
-        highlightMarker(marker, d);
-        openDeliveryPanel(d, { keepMinimized: true });
-    });
-    return marker;
-}
-
-function highlightMarker(marker, delivery) {
-    if (highlightedMarker && highlightedMarker !== marker) {
-        resetMarkerStyle(highlightedMarker);
-    }
-    highlightedMarker = marker;
-    applyPinVisual(marker, delivery, { highlighted: true });
-}
-
-function resetMarkerStyle(marker) {
-    const delivery = deliveries.find(d => d.sequentialId === marker.sequentialId);
-    if (!delivery) return;
-    applyPinVisual(marker, delivery, { highlighted: false });
-}
-
-function updateMarkerIcon(marker, delivery) {
-    if (!marker || !delivery) return;
-    applyPinVisual(marker, delivery, { highlighted: highlightedMarker === marker });
-}
-
-function rebuildMarkers(centerMap = true) {
-    // Sync incremental: evita destruir/recriar dezenas de Markers a cada ação.
-    if (!map) return;
-    const keep = new Set();
-    for (const del of deliveries) {
-        if (!shouldShowOnMap(del)) continue;
-        keep.add(del.sequentialId);
-        upsertMarker(del);
-    }
-    for (const seq of [...markersBySeq.keys()]) {
-        if (!keep.has(seq)) removeMarkerById(seq);
-    }
-    if (highlightedMarker && !markersBySeq.has(highlightedMarker.sequentialId)) highlightedMarker = null;
-    if (centerMap) centerMapOnMarkers();
-    updateDeliveryStats();
-}
-
-function centerMapOnMarkers() {
-    if (!map) return;
-    const pts = pointsForMapFit(deliveries, shouldShowOnMap);
-    if (!pts.length) {
-        map.setCenter(PORTO_VELHO_CENTER);
-        return;
-    }
-    if (useNativeMap) {
-        const b = boundsFromPoints(pts);
-        if (b) map.fitBounds(b);
-        return;
-    }
-    let bounds = new google.maps.LatLngBounds();
-    pts.forEach(p => bounds.extend(p));
-    map.fitBounds(bounds);
-}
+// Marcadores (CRUD/rebuild/highlight/fit): src/js/map-markers.js
 
 function updateDeliveryStats() {
     const total = deliveries.length;
