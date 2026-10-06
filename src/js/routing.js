@@ -7,6 +7,8 @@ import {
     pendingStops as pendingStopsOf,
     routeSignature as routeSignatureOf,
     orderByProximity as orderByProximityOf,
+    orderByProximityWithWindows,
+    anyStopHasTimeWindow,
     chunkPoints,
     applyStopOrder as applyStopOrderOn,
     planDirectionsLegs,
@@ -239,7 +241,15 @@ export async function optimizeRoute() {
 
         let ordered;
         let precomputed = null;
-        if (stops.length <= MAX_WAYPOINTS + 1) {
+        let usedWindows = false;
+        const hasWindows = anyStopHasTimeWindow(stops);
+        // Directions optimizeWaypoints ignores delivery time windows — when any
+        // stop has janelaInicio/janelaFim we order locally (urgent + clustering)
+        // and only use Directions for street-distance metrics.
+        if (hasWindows) {
+            ordered = orderByProximityWithWindows(stops, deps.getStartPoint());
+            usedWindows = true;
+        } else if (stops.length <= MAX_WAYPOINTS + 1) {
             const planned = await orderByDirections(stops);
             ordered = planned.ordered;
             precomputed = planned.result;
@@ -261,8 +271,9 @@ export async function optimizeRoute() {
         else setTimeout(kickTracks, 400);
         const metrics = deps.getRouteMetrics();
         const origem = deps.getStartPoint() ? 'sua localização' : 'a 1ª entrega';
+        const windowNote = usedWindows ? ' · janelas de horário' : '';
         deps.showToast(
-            `Rota otimizada (partida: ${origem}): ${formatKm(metrics.meters)} · ${formatDuration(metrics.seconds)}`
+            `Rota otimizada (partida: ${origem}${windowNote}): ${formatKm(metrics.meters)} · ${formatDuration(metrics.seconds)}`
         );
     } catch (e) {
         clearRouteOverlay();

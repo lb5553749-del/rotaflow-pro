@@ -14,6 +14,7 @@ import {
     deliveryStatusOptionsHtml,
     parsePacotesInput
 } from '../../lib/edit-helpers.js';
+import { normalizeTimeInputValue } from '../../lib/routing-helpers.js';
 import { PHOTO_MAX_PER_ITEM, idbDeletePhoto } from './photo-store.js';
 import {
     itemPhotoScope,
@@ -91,6 +92,20 @@ export function showEditDeliveryModal(delivery, onSave) {
         <div class="modal-form-group">
             <label class="modal-field-label" for="editNotes">Observações</label>
             <input id="editNotes" class="edit-input" value="${escapeHtml(delivery.notes || '')}" placeholder="Ex.: deixar com o porteiro">
+        </div>
+        <div class="modal-form-group">
+            <label class="modal-field-label" for="editValor">Valor / receita (R$)</label>
+            <input id="editValor" class="edit-input" type="number" min="0" step="0.01" inputmode="decimal" value="${delivery.valor != null ? escapeHtml(String(delivery.valor)) : ''}" placeholder="Opcional">
+        </div>
+        <div class="modal-form-row-2">
+            <div class="modal-form-group">
+                <label class="modal-field-label" for="editJanelaInicio">Janela início</label>
+                <input id="editJanelaInicio" class="edit-input" type="time" value="${escapeHtml(normalizeTimeInputValue(delivery.janelaInicio))}">
+            </div>
+            <div class="modal-form-group">
+                <label class="modal-field-label" for="editJanelaFim">Entregar até</label>
+                <input id="editJanelaFim" class="edit-input" type="time" value="${escapeHtml(normalizeTimeInputValue(delivery.janelaFim))}">
+            </div>
         </div>
         <div class="modal-form-group">
             <label class="modal-field-label">Fotos</label>
@@ -288,6 +303,13 @@ export function showEditDeliveryModal(delivery, onSave) {
         const newEndereco = overlay.querySelector('#editEndereco').value.trim();
         const newStatus = overlay.querySelector('#editStatus').value;
         const newNotes = overlay.querySelector('#editNotes').value.trim();
+        const valorRaw = overlay.querySelector('#editValor')?.value;
+        const valorNum = valorRaw !== undefined && String(valorRaw).trim() !== ''
+            ? Number(String(valorRaw).replace(',', '.'))
+            : NaN;
+        const newValor = Number.isFinite(valorNum) && valorNum >= 0 ? valorNum : undefined;
+        const newJanelaInicio = (overlay.querySelector('#editJanelaInicio')?.value || '').trim();
+        const newJanelaFim = (overlay.querySelector('#editJanelaFim')?.value || '').trim();
         if (!isValidEditNameAddress(newNome, newEndereco)) return deps.showToast("Preencha nome e endereço para continuar", true);
         // Garante ids para qualquer foto dataURL restante.
         for (let i = 0; i < newPhotosArray.length; i++) {
@@ -303,7 +325,10 @@ export function showEditDeliveryModal(delivery, onSave) {
             status: newStatus,
             photos: newPhotosArray,
             photoIds: newPhotoIdsArray.filter(Boolean),
-            notes: newNotes
+            notes: newNotes,
+            valor: newValor,
+            janelaInicio: newJanelaInicio,
+            janelaFim: newJanelaFim
         });
         overlay.remove();
     };

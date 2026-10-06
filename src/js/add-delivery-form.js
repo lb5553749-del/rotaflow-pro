@@ -50,6 +50,12 @@ export function clearForm() {
     renderTempPhones();
     document.getElementById("pacotes").value = "1";
     document.getElementById("saveToAgendaCheckbox").checked = false;
+    const valorEl = document.getElementById("deliveryValor");
+    if (valorEl) valorEl.value = "";
+    const ji = document.getElementById("janelaInicio");
+    if (ji) ji.value = "";
+    const jf = document.getElementById("janelaFim");
+    if (jf) jf.value = "";
     document.getElementById("nameSuggestions").style.display = 'none';
     document.getElementById('addressWarning').classList.remove('show');
     document.getElementById('address').classList.remove('duplicate');
@@ -97,7 +103,7 @@ export function setupAddressDuplicateCheck() {
     }
 }
 
-export function addDeliveryDirect(nome, endereco, telefones, pacotes, notes) {
+export function addDeliveryDirect(nome, endereco, telefones, pacotes, notes, extras) {
     if (!nome || !endereco) { deps.showToast("Preencha nome e endereço para continuar", true); return; }
 
     // Verifica se já está na rota (pendente / em rota)
@@ -111,6 +117,7 @@ export function addDeliveryDirect(nome, endereco, telefones, pacotes, notes) {
 
     const agenda = deps.getAgenda();
     const known = agenda.find(a => a.endereco.toLowerCase() === endereco.toLowerCase());
+    const extra = extras || {};
     const finish = (lat, lng) => {
         const seqId = getSequentialId(deps.getNextSequenceNumber());
         const newDelivery = { 
@@ -128,6 +135,9 @@ export function addDeliveryDirect(nome, endereco, telefones, pacotes, notes) {
             notes: notes || '',
             favorito: known ? !!known.favorito : false
         };
+        if (extra.valor != null) newDelivery.valor = extra.valor;
+        if (extra.janelaInicio) newDelivery.janelaInicio = extra.janelaInicio;
+        if (extra.janelaFim) newDelivery.janelaFim = extra.janelaFim;
         deps.pushDelivery(newDelivery);
         deps.setNextSequenceNumber(deps.getNextSequenceNumber() + 1);
         deps.persistStorageNow(); deps.renderDeliveriesList(); deps.upsertMarker(newDelivery);
@@ -163,6 +173,13 @@ export function setupAddDeliveryForm() {
         const saveAgenda = document.getElementById("saveToAgendaCheckbox").checked;
         const telefones = [...getTempPhones()];
         const notes = "";
+        const valorRaw = document.getElementById("deliveryValor")?.value;
+        const valorNum = valorRaw !== undefined && String(valorRaw).trim() !== ''
+            ? Number(String(valorRaw).replace(',', '.'))
+            : NaN;
+        const valor = Number.isFinite(valorNum) && valorNum >= 0 ? valorNum : undefined;
+        const janelaInicio = (document.getElementById("janelaInicio")?.value || '').trim() || undefined;
+        const janelaFim = (document.getElementById("janelaFim")?.value || '').trim() || undefined;
         if (!nome || !end) { deps.showToast("Preencha nome e endereço para continuar", true); return; }
         const geocoder = deps.getGeocoder();
         if (!geocoder) { deps.showToast("Aguarde o mapa carregar completamente", true); return; }
@@ -207,6 +224,9 @@ export function setupAddDeliveryForm() {
                 notes: notes,
                 favorito: false
             };
+            if (valor != null) newDelivery.valor = valor;
+            if (janelaInicio) newDelivery.janelaInicio = janelaInicio;
+            if (janelaFim) newDelivery.janelaFim = janelaFim;
             deps.pushDelivery(newDelivery);
             deps.setNextSequenceNumber(deps.getNextSequenceNumber() + 1);
             deps.persistStorageNow(); deps.renderDeliveriesList(); deps.upsertMarker(newDelivery);

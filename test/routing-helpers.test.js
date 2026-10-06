@@ -186,3 +186,58 @@ describe('directionsErrorMessage / gpsErrorMessage', () => {
     assert.match(gpsErrorMessage({ code: 3 }, { isNative: false, isSecureContext: true, hasGeolocation: true }), /Tempo esgotado/);
   });
 });
+
+describe('time windows / address clustering', () => {
+  const {
+    parseHhMmToMinutes,
+    normalizeTimeInputValue,
+    groupStopsByAddress,
+    orderByProximityWithWindows,
+    anyStopHasTimeWindow
+  } = require('../lib/routing-helpers.js');
+
+  it('parses HH:MM and normalizes for time inputs', () => {
+    assert.equal(parseHhMmToMinutes('17:00'), 17 * 60);
+    assert.equal(parseHhMmToMinutes('9:30'), 9 * 60 + 30);
+    assert.equal(parseHhMmToMinutes('25:00'), null);
+    assert.equal(normalizeTimeInputValue('9:05'), '09:05');
+  });
+
+  it('groups same condo/address packages together', () => {
+    const groups = groupStopsByAddress([
+      { id: 1, endereco: 'Rua A, 10 apto 101' },
+      { id: 2, endereco: 'Rua A, 10 Ap. 202' },
+      { id: 3, endereco: 'Rua B, 5' }
+    ]);
+    assert.equal(groups.length, 2);
+    assert.deepEqual(groups[0].map((s) => s.id), [1, 2]);
+  });
+
+  it('prioritizes urgent deadlines over farther nearest-neighbor', () => {
+    const origin = { lat: 0, lng: 0 };
+    const stops = [
+      { id: 'far-urgent', lat: 1, lng: 0, janelaFim: '12:30', endereco: 'Longe' },
+      { id: 'near', lat: 0.01, lng: 0, endereco: 'Perto' },
+      { id: 'mid', lat: 0.2, lng: 0, janelaFim: '18:00', endereco: 'Meio' }
+    ];
+    assert.equal(anyStopHasTimeWindow(stops), true);
+    // now = 12:00 → far-urgent is within 90 min urgency window
+    const ordered = orderByProximityWithWindows(stops, origin, { nowMinutes: 12 * 60, urgentWithinMinutes: 90 });
+    assert.equal(ordered[0].id, 'far-urgent');
+    assert.ok(ordered.map((s) => s.id).includes('near'));
+  });
+
+  it('keeps same-address stops consecutive after window ordering', () => {
+    const origin = { lat: 0, lng: 0 };
+    const stops = [
+      { id: 'a1', lat: 0.5, lng: 0, endereco: 'Cond X apto 1', janelaFim: '13:00' },
+      { id: 'b', lat: 0.01, lng: 0, endereco: 'Outro' },
+      { id: 'a2', lat: 0.501, lng: 0, endereco: 'Cond X apto 2', janelaFim: '13:00' }
+    ];
+    const ordered = orderByProximityWithWindows(stops, origin, { nowMinutes: 12 * 60 });
+    const ids = ordered.map((s) => s.id);
+    const i1 = ids.indexOf('a1');
+    const i2 = ids.indexOf('a2');
+    assert.equal(Math.abs(i1 - i2), 1);
+  });
+});

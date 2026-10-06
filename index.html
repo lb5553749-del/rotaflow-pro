@@ -87,6 +87,20 @@
                             <input type="number" id="pacotes" min="1" value="1">
                         </div>
                     </div>
+                    <div class="form-row-2cols">
+                        <div class="form-group">
+                            <label for="deliveryValor">Valor / receita (R$)</label>
+                            <input type="number" id="deliveryValor" min="0" step="0.01" inputmode="decimal" placeholder="Opcional">
+                        </div>
+                        <div class="form-group">
+                            <label for="janelaInicio">Janela início</label>
+                            <input type="time" id="janelaInicio" title="Horário inicial de recebimento">
+                        </div>
+                        <div class="form-group">
+                            <label for="janelaFim">Entregar até</label>
+                            <input type="time" id="janelaFim" title="Prazo / fim da janela">
+                        </div>
+                    </div>
                     <div class="checkbox-group">
                         <input type="checkbox" id="saveToAgendaCheckbox">
                         <label for="saveToAgendaCheckbox">Salvar também na agenda</label>
