@@ -21,6 +21,14 @@ import {
     suggestionItemRank
 } from '../../lib/suggestion-helpers.js';
 import { escapeHtml } from '../../lib/html.js';
+import {
+    configureFormPhones,
+    getTempPhones,
+    setTempPhones,
+    clearTempPhones,
+    renderTempPhones,
+    setupNewDeliveryPhoneUI
+} from './form-phones.js';
 import { getSequentialId, nextGeneratedId, seedIdCounterFromLists } from '../../lib/ids.js';
 import {
     formatPhoneNumber,
@@ -321,7 +329,7 @@ function setFeedbackPrefs({ sound, vibrate } = {}) {
 let gpsEnabled = localStorage.getItem('rotaflow_gps') !== '0';
 let routeFilter = "", agendaFilter = "";
 let currentSelectedDelivery = null;
-let tempPhones = [];
+// tempPhones: src/js/form-phones.js (getTempPhones / setTempPhones).
 // Auth: currentUser / authReady / userProfile em src/js/auth.js (getters).
 
 const APP_ICON = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 512 512'%3E%3Crect width='512' height='512' rx='104' fill='%230f172a'/%3E%3Cpath d='M148 388C148 300 372 330 372 200' fill='none' stroke='%233b82f6' stroke-width='30' stroke-linecap='round' stroke-dasharray='4 46'/%3E%3Ccircle cx='148' cy='388' r='46' fill='%2322c55e'/%3E%3Ccircle cx='372' cy='176' r='46' fill='%23ef4444'/%3E%3C/svg%3E";
@@ -477,6 +485,9 @@ function configureExtractedModules() {
     configureLockScreen({
         isNativeApp,
         getCurrentSelectedDelivery: () => currentSelectedDelivery
+    });
+    configureFormPhones({
+        showToast
     });
     configureItemPhotos({
         currentUid,
@@ -962,7 +973,7 @@ function checkAddressDuplicate() {
         warningDiv.onclick = () => {
             document.getElementById('customerName').value = found.nome;
             document.getElementById('address').value = found.endereco;
-            tempPhones = found.telefones || [];
+            setTempPhones(found.telefones || []);
             renderTempPhones();
             document.getElementById('pacotes').value = found.pacotes || 1;
             warningDiv.classList.remove('show');
@@ -1124,7 +1135,7 @@ function clearForm() {
     document.getElementById("address").value = "";
     document.getElementById("newPhoneInput").value = "";
     document.getElementById("newPhoneLabel").value = "";
-    tempPhones = [];
+    clearTempPhones();
     renderTempPhones();
     document.getElementById("pacotes").value = "1";
     document.getElementById("saveToAgendaCheckbox").checked = false;
@@ -1544,20 +1555,7 @@ function editPhonesPanel() {
 // Helpers puros: lib/whatsapp-helpers.js.
 
 // ========== NOVA ENTREGA - TELEFONES ==========
-function renderTempPhones() {
-    const container = document.getElementById('phoneTagsContainer');
-    container.innerHTML = tempPhones.map(p => {
-        const label = p.label ? p.label + ': ' : '';
-        return `<span class="phone-tag"><span class="phone-label">${escapeHtml(label)}</span>${escapeHtml(formatPhoneShort(p.numero))} <span class="remove-phone" data-phone="${escapeHtml(p.numero)}">&times;</span></span>`;
-    }).join('');
-    container.querySelectorAll('.remove-phone').forEach(el => {
-        el.addEventListener('click', () => {
-            const phone = el.dataset.phone;
-            tempPhones = tempPhones.filter(p => p.numero !== phone);
-            renderTempPhones();
-        });
-    });
-}
+// Implementação em src/js/form-phones.js (configureFormPhones no boot).
 
 // Lista de entregas: src/js/deliveries-list.js (configureDeliveriesList no boot).
 
@@ -1885,7 +1883,7 @@ function initNameSuggestions() {
 
                 document.getElementById('customerName').value = name;
                 document.getElementById('address').value = address;
-                tempPhones = phones;
+                setTempPhones(phones);
                 renderTempPhones();
                 document.getElementById('pacotes').value = pacotes;
                 suggestionsDiv.style.display = 'none';
@@ -1930,7 +1928,7 @@ function initNameSuggestions() {
                     return;
                 }
                 // Permite adicionar mesmo que esteja na agenda
-                tempPhones = phones;
+                setTempPhones(phones);
                 renderTempPhones();
                 addDeliveryDirect(name, address, phones, pacotes, notes);
                 suggestionsDiv.style.display = 'none';
@@ -2089,30 +2087,6 @@ function initAppUi() {
         const loading = document.getElementById('mapLoading');
         if (loading) loading.textContent = 'Mapa indisponível. Lista, agenda e backup continuam funcionando.';
     }, 8000);
-}
-
-function setupNewDeliveryPhoneUI() {
-    const addBtn = document.getElementById('addPhoneBtn');
-    const numInput = document.getElementById('newPhoneInput');
-    const labelInput = document.getElementById('newPhoneLabel');
-    addBtn.addEventListener('click', () => {
-        const numero = numInput.value.trim();
-        const label = labelInput.value.trim();
-        if (!numero) return showToast("Informe um número de telefone", true);
-        const formatted = formatPhoneNumber(numero);
-        if (!formatted) return showToast("Número de telefone inválido", true);
-        tempPhones.push({ numero: formatted, label: label || '' });
-        renderTempPhones();
-        numInput.value = '';
-        labelInput.value = '';
-    });
-    numInput.addEventListener('keydown', (e) => {
-        if (e.key === 'Enter') addBtn.click();
-    });
-    labelInput.addEventListener('keydown', (e) => {
-        if (e.key === 'Enter') addBtn.click();
-    });
-    renderTempPhones();
 }
 
 function geocodeAddressAndUpdate(delivery, newAddress, callback) {
@@ -2396,7 +2370,7 @@ document.addEventListener('DOMContentLoaded', function() {
         let end = document.getElementById("address").value.trim();
         let pacotes = parseInt(document.getElementById("pacotes").value) || 1;
         let saveAgenda = document.getElementById("saveToAgendaCheckbox").checked;
-        let telefones = [...tempPhones];
+        let telefones = [...getTempPhones()];
         let notes = "";
         if (!nome || !end) { showToast("Preencha nome e endereço para continuar", true); return; }
         if (!geocoder) { showToast("Aguarde o mapa carregar completamente", true); return; }
