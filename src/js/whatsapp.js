@@ -10,7 +10,8 @@ import {
 } from '../../lib/phone-helpers.js';
 import {
     companyDisplayName as companyDisplayNamePure,
-    buildDeliveryWhatsAppMessage as buildDeliveryWhatsAppMessagePure
+    buildDeliveryWhatsAppMessage as buildDeliveryWhatsAppMessagePure,
+    buildTrackingQuickWhatsAppMessage as buildTrackingQuickWhatsAppMessagePure
 } from '../../lib/whatsapp-helpers.js';
 import { EMPRESA_PADRAO, MENSAGEM_WHATSAPP_PADRAO } from './auth.js';
 
@@ -71,14 +72,26 @@ export function companyDisplayName() {
     return companyDisplayNamePure(deps.getUserProfile(), EMPRESA_PADRAO);
 }
 
-export function buildDeliveryWhatsAppMessage(delivery, opts = {}) {
-    return buildDeliveryWhatsAppMessagePure(delivery, opts, {
+function whatsappContext() {
+    return {
         profile: deps.getUserProfile(),
         empresaPadrao: EMPRESA_PADRAO,
         mensagemPadrao: MENSAGEM_WHATSAPP_PADRAO
-    });
+    };
 }
 
+export function buildDeliveryWhatsAppMessage(delivery, opts = {}) {
+    return buildDeliveryWhatsAppMessagePure(delivery, opts, whatsappContext());
+}
+
+export function buildTrackingQuickWhatsAppMessage(delivery, opts = {}) {
+    return buildTrackingQuickWhatsAppMessagePure(delivery, opts, whatsappContext());
+}
+
+/**
+ * One-tap WhatsApp with pre-filled message including /r/{token} tracking link.
+ * Uses the driver's editable template ({link}) when present.
+ */
 export async function sendWhatsApp(delivery) {
     if (!delivery.telefones || delivery.telefones.length === 0) {
         return deps.showToast("Nenhum telefone cadastrado para esta entrega", true);
@@ -87,7 +100,7 @@ export async function sendWhatsApp(delivery) {
     if (delivery.telefones.length > 1) {
         const choice = await deps.showChoiceModal({
             title: 'WhatsApp',
-            message: 'Selecione o número para enviar a mensagem:',
+            message: 'Selecione o número para enviar a mensagem com o link de rastreio:',
             options: delivery.telefones.map(p => ({
                 label: (p.label ? p.label + ' · ' : '') + formatPhoneShort(p.numero),
                 value: p,
@@ -100,12 +113,14 @@ export async function sendWhatsApp(delivery) {
     }
     const trackUrl = deps.prepareTrackingUrl(delivery) || '';
     if (trackUrl) deps.publishTrackingSession(delivery);
-    const msg = buildDeliveryWhatsAppMessage(delivery, {
+    const msg = buildTrackingQuickWhatsAppMessage(delivery, {
         nome: phoneToUse.label || delivery.nome,
         trackUrl
     });
-    if (trackUrl && (!deps.getGpsEnabled() || !deps.getStartPoint())) {
-        deps.showToast('Link no WhatsApp. Ligue o GPS para o cliente ver você no mapa');
+    if (!trackUrl) {
+        deps.showToast('Mensagem pronta. Não foi possível gerar o link de rastreio', true);
+    } else if (!deps.getGpsEnabled() || !deps.getStartPoint()) {
+        deps.showToast('Link de rastreio no WhatsApp. Ligue o GPS para o cliente ver você no mapa');
     }
     if (!getWhatsAppPhoneDigits(phoneToUse.numero)) {
         deps.showToast("Número de telefone inválido", true);

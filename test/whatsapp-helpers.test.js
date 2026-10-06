@@ -4,7 +4,9 @@ const { describe, it } = require('node:test');
 const assert = require('node:assert/strict');
 const {
   companyDisplayName,
-  buildDeliveryWhatsAppMessage
+  buildDeliveryWhatsAppMessage,
+  buildTrackingQuickWhatsAppMessage,
+  ensureTrackingLinkInMessage
 } = require('../lib/whatsapp-helpers.js');
 
 const PADRAO =
@@ -64,5 +66,18 @@ describe('buildDeliveryWhatsAppMessage', () => {
     );
     assert.equal(msg, 'Oi Maria\nFim');
     assert.doesNotMatch(msg, /Faltam cerca de/);
+  });
+});
+
+describe('tracking quick-action message', () => {
+  it('always includes /r/{token} link', () => {
+    const url = 'https://app.example/r/abc123token';
+    const msg = buildTrackingQuickWhatsAppMessage(
+      { nome: 'João', sequentialId: 'A1' },
+      { trackUrl: url },
+      { mensagemPadrao: 'Oi {nome} sem link no template', empresaPadrao: 'X' }
+    );
+    assert.match(msg, /\/r\/abc123token/);
+    assert.equal(ensureTrackingLinkInMessage('Oi', url), `Oi\n${url}`);
   });
 });

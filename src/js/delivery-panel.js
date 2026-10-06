@@ -368,6 +368,7 @@ export function renderDeliveryPanelActions(delivery) {
         const waBtn = document.createElement('button');
         waBtn.type = 'button';
         waBtn.className = 'panel-action-btn whatsapp-primary';
+        waBtn.title = 'Enviar WhatsApp com link de rastreio';
         waBtn.innerHTML = '<i class="fab fa-whatsapp"></i><span>WhatsApp</span>';
         waBtn.onclick = () => deps.sendWhatsApp(delivery);
         actionsDiv.appendChild(waBtn);
@@ -423,6 +424,7 @@ export function renderDeliveryPanelActions(delivery) {
         const miniWa = document.createElement('button');
         miniWa.type = 'button';
         miniWa.className = 'mini-action-btn whatsapp';
+        miniWa.title = 'Enviar WhatsApp com link de rastreio';
         miniWa.innerHTML = '<i class="fab fa-whatsapp"></i><span>WhatsApp</span>';
         miniWa.onclick = withMiniActionGuard(() => deps.sendWhatsApp(delivery));
         miniActions.appendChild(miniWa);
