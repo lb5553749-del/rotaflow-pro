@@ -2,7 +2,7 @@
  * Rastreio público do cliente (Firestore tracks/{token}).
  * main.js injeta estado, persistência e UI via configureTracking().
  */
-import { loadFirebaseSdk } from './firebase-loader.js';
+import { loadFirebaseSdk, ensureAnonUser } from './firebase-loader.js';
 import {
     TRACK_NEAR_METERS,
     TRACK_NEAR_KM,
@@ -51,6 +51,7 @@ export {
 
 let trackDb = null;
 let trackDbPromise = null;
+let trackUid = '';
 let lastTrackPublishAt = 0;
 let lastTrackPublishPos = null;
 let lastPublishedTrackRouteSig = '';
@@ -91,12 +92,17 @@ export function trackingUrl(token) {
     return `${trackingPublicBase()}/r/${token}`;
 }
 
+/** Rules exigem request.auth.uid == ownerUid; sem login anônimo nenhum rastreio é publicado. */
 export async function ensureFirebaseTrack() {
-    if (trackDb) return trackDb;
+    if (trackDb && trackUid) return trackDb;
     if (!trackDbPromise) {
-        trackDbPromise = loadFirebaseSdk(['firestore'])
-            .then((fb) => {
+        trackDbPromise = loadFirebaseSdk(['auth', 'firestore'])
+            .then(async (fb) => {
+                const user = await ensureAnonUser();
+                if (!user || !user.uid) throw new Error('track-auth');
+                trackUid = user.uid;
                 trackDb = fb.firestore();
+                trackDbPromise = null;
                 return trackDb;
             })
             .catch((err) => {
@@ -135,22 +141,8 @@ export async function refreshActiveTrackSessions(opts) {
             token: delivery.trackToken,
             payload: buildTrackPayload(delivery, pos ? { pos } : null)
         }));
-        const commitBatch = (stripEta) => {
-            const batch = db.batch();
-            payloads.forEach(({ token, payload }) => {
-                batch.set(
-                    db.collection('tracks').doc(token),
-                    stripEta ? stripTrackEtaFields(payload) : payload,
-                    { merge: true }
-                );
-            });
-            return batch.commit();
-        };
-        try {
-            await commitBatch(false);
-        } catch (err) {
-            await commitBatch(true);
-        }
+        const results = await Promise.allSettled(payloads.map(({ token, payload }) => setTrackDoc(db, token, payload)));
+        if (!results.some((r) => r.status === 'fulfilled')) throw results[0].reason;
         lastPublishedTrackRouteSig = sig;
         lastTrackPublishAt = Date.now();
         if (pos && typeof pos.lat === 'number') lastTrackPublishPos = pos;
@@ -161,17 +153,24 @@ export async function refreshActiveTrackSessions(opts) {
     }
 }
 
-export async function writeTrackDoc(token, payload) {
-    const db = await ensureFirebaseTrack();
+/** Cada token é escrito à parte: um track legado (sem ownerUid, imutável nas rules) não derruba os demais. */
+async function setTrackDoc(db, token, payload) {
+    const ref = db.collection('tracks').doc(token);
+    const data = { ...payload, ownerUid: trackUid };
     try {
-        await db.collection('tracks').doc(token).set(payload, { merge: true });
+        await ref.set(data, { merge: true });
     } catch (err) {
-        if (payload && ('etaSeconds' in payload || 'stopsAhead' in payload)) {
-            await db.collection('tracks').doc(token).set(stripTrackEtaFields(payload), { merge: true });
+        if ('etaSeconds' in data || 'stopsAhead' in data) {
+            await ref.set(stripTrackEtaFields(data), { merge: true });
             return;
         }
         throw err;
     }
+}
+
+export async function writeTrackDoc(token, payload) {
+    const db = await ensureFirebaseTrack();
+    await setTrackDoc(db, token, payload);
 }
 
 export function prepareTrackingUrl(delivery) {
@@ -297,24 +296,13 @@ export function publishDriverGpsFromWatch(position) {
     if (!shouldPublishTrack(pos) && !becomingNear) return;
     lastTrackPublishAt = Date.now();
     lastTrackPublishPos = pos;
-    ensureFirebaseTrack().then((db) => {
-        const batch = db.batch();
-        const entries = [];
-        targets.forEach((delivery) => {
-            const becameNear = maybeMarkNearCustomer(delivery, pos, { skipPush: deps.isBgGpsStarted() });
-            const payload = buildTrackPayload(delivery, { pos });
-            if (becameNear) payload.nearNotified = true;
-            entries.push({ token: delivery.trackToken, payload });
-            batch.set(db.collection('tracks').doc(delivery.trackToken), payload, { merge: true });
-        });
-        return batch.commit().catch(() => {
-            const retry = db.batch();
-            entries.forEach(({ token, payload }) => {
-                retry.set(db.collection('tracks').doc(token), stripTrackEtaFields(payload), { merge: true });
-            });
-            return retry.commit();
-        });
-    }).catch((err) => {
+    ensureFirebaseTrack().then((db) => Promise.all(targets.map((delivery) => {
+        const becameNear = maybeMarkNearCustomer(delivery, pos, { skipPush: deps.isBgGpsStarted() });
+        const payload = buildTrackPayload(delivery, { pos });
+        if (becameNear) payload.nearNotified = true;
+        return setTrackDoc(db, delivery.trackToken, payload)
+            .catch((err) => console.warn('track publish', delivery.trackToken.slice(0, 6), err));
+    }))).catch((err) => {
         console.warn('track publish', err);
     });
 }

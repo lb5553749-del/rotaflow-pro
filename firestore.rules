@@ -7,15 +7,22 @@ service cloud.firestore {
       allow read, write: if request.auth != null && request.auth.uid == userId;
     }
 
-    // Rastreio v1: o token (32 hex) é a senha do documento.
-    // Leitura pública para a página do cliente; escrita só com o token.
+    // Rastreio: o token (32 hex) vai no link do cliente, então só serve para LER.
+    // Escrita exige o motorista autenticado (anônimo) que criou o doc (ownerUid).
+    // Tracks antigos sem ownerUid ficam imutáveis.
     match /tracks/{token} {
       allow read: if token.matches('^[a-f0-9]{32}$');
 
       allow create: if token.matches('^[a-f0-9]{32}$')
+        && request.auth != null
+        && request.resource.data.ownerUid == request.auth.uid
         && isValidTrack(request.resource.data);
 
       allow update: if token.matches('^[a-f0-9]{32}$')
+        && request.auth != null
+        && 'ownerUid' in resource.data
+        && resource.data.ownerUid == request.auth.uid
+        && request.resource.data.ownerUid == resource.data.ownerUid
         && isValidTrack(request.resource.data)
         && request.resource.data.diff(resource.data).affectedKeys()
              .hasOnly([
@@ -50,8 +57,9 @@ service cloud.firestore {
         'destLat', 'destLng', 'destName', 'sequentialId', 'status',
         'motorista', 'driverLat', 'driverLng', 'accuracy',
         'updatedAt', 'nearNotified', 'deliveredNotified', 'absentNotified', 'failReason',
-        'etaSeconds', 'stopsAhead'
+        'etaSeconds', 'stopsAhead', 'ownerUid'
       ])
+      && data.ownerUid is string
       && data.destLat is number
       && data.destLng is number
       && data.destLat >= -90 && data.destLat <= 90

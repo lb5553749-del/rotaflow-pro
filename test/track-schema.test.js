@@ -207,16 +207,21 @@ describe('buildTrackPayload / isValidTrack', () => {
     assert.equal(payload.stopsAhead, 0);
     assert.equal(payload.driverLat, -8.75);
     assert.equal(payload.accuracy, 12);
-    assert.equal(isValidTrack(payload), true);
+    const doc = { ...payload, ownerUid: 'uid-motorista' };
+    assert.equal(isValidTrack(doc), true);
     TRACK_FIELD_KEYS.forEach((k) => {
       if (k === 'driverLat' || k === 'driverLng' || k === 'accuracy') return;
-      assert.ok(k in payload, k);
+      assert.ok(k in doc, k);
     });
   });
 
-  it('rejects extra keys and out-of-range coords', () => {
-    const payload = buildTrackPayload(sampleDelivery(), null, { now: 1 });
+  it('rejects extra keys, out-of-range coords and missing ownerUid', () => {
+    const payload = { ...buildTrackPayload(sampleDelivery(), null, { now: 1 }), ownerUid: 'u1' };
+    assert.equal(isValidTrack(payload), true);
     assert.equal(isValidTrack({ ...payload, hack: true }), false);
     assert.equal(isValidTrack({ ...payload, destLat: 200 }), false);
+    const { ownerUid, ...noOwner } = payload;
+    assert.equal(ownerUid, 'u1');
+    assert.equal(isValidTrack(noOwner), false);
   });
 });

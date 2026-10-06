@@ -50,3 +50,26 @@ export async function loadFirebaseSdk(modules = []) {
     if (!firebase.apps.length) firebase.initializeApp(window.ROTAFLOW_FIREBASE);
     return firebase;
 }
+
+let anonUserPromise = null;
+
+/**
+ * Usuário anônimo do aparelho. Espera a sessão persistida ser restaurada antes de criar outra:
+ * se o uid mudar no meio da rota, as rules deixam de aceitar escrita nos tracks já criados (ownerUid).
+ */
+export async function ensureAnonUser() {
+    const fb = await loadFirebaseSdk(['auth']);
+    const auth = fb.auth();
+    if (auth.currentUser) return auth.currentUser;
+    if (!anonUserPromise) {
+        anonUserPromise = new Promise((resolve) => {
+            const off = auth.onAuthStateChanged((user) => {
+                off();
+                resolve(user);
+            });
+        })
+            .then((user) => user || auth.signInAnonymously().then((cred) => cred.user))
+            .finally(() => { anonUserPromise = null; });
+    }
+    return anonUserPromise;
+}
