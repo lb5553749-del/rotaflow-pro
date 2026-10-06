@@ -116,19 +116,29 @@ function strField(fields, name) {
   return node && node.stringValue != null ? String(node.stringValue) : '';
 }
 
-async function fetchTrack(token) {
-  if (!token) return null;
+async function fetchDocFields(path) {
   const url = 'https://firestore.googleapis.com/v1/projects/' + PROJECT_ID
-    + '/databases/(default)/documents/tracks/' + token + '?key=' + API_KEY;
+    + '/databases/(default)/documents/' + path + '?key=' + API_KEY;
   const res = await fetch(url, { cache: 'no-store' });
   if (!res.ok) return null;
   const json = await res.json();
-  const fields = json.fields || {};
+  return json.fields || {};
+}
+
+/** Posição vem de live/pos; tracks antigos (sem live/pos) ainda a trazem no doc pai. */
+async function fetchTrack(token) {
+  if (!token) return null;
+  const [fields, live] = await Promise.all([
+    fetchDocFields('tracks/' + token),
+    fetchDocFields('tracks/' + token + '/live/pos').catch(() => null)
+  ]);
+  if (!fields) return null;
+  const pos = live && numField(live, 'driverLat') != null ? live : fields;
   return {
     destLat: numField(fields, 'destLat'),
     destLng: numField(fields, 'destLng'),
-    driverLat: numField(fields, 'driverLat'),
-    driverLng: numField(fields, 'driverLng'),
+    driverLat: numField(pos, 'driverLat'),
+    driverLng: numField(pos, 'driverLng'),
     status: strField(fields, 'status'),
     failReason: strField(fields, 'failReason'),
     sequentialId: strField(fields, 'sequentialId')

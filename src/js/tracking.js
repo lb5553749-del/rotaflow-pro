@@ -1,5 +1,5 @@
 /**
- * Rastreio público do cliente (Firestore tracks/{token}).
+ * Rastreio público do cliente (Firestore tracks/{token} + tracks/{token}/live/pos).
  * main.js injeta estado, persistência e UI via configureTracking().
  */
 import { loadFirebaseSdk, ensureAnonUser } from './firebase-loader.js';
@@ -12,6 +12,9 @@ import {
     buildTrackPayload as buildTrackPayloadFromSchema,
     isWithinNearKm,
     trackExpiresAtMs,
+    splitTrackPayload,
+    trackEventSignature,
+    TRACK_LIVE_DOC_ID,
     shouldPublishTrack as shouldPublishTrackPure
 } from '../../lib/track-schema.js';
 
@@ -53,6 +56,10 @@ export {
 let trackDb = null;
 let trackDbPromise = null;
 let trackUid = '';
+/** token → { sig, at } do último doc de evento gravado nesta sessão. */
+const lastTrackEventWrite = new Map();
+/** Renova expiresAt do doc pai em rota longa sem mudança de evento (retenção ativa = 48h). */
+const TRACK_EVENT_REFRESH_MS = 6 * 60 * 60 * 1000;
 let lastTrackPublishAt = 0;
 let lastTrackPublishPos = null;
 let lastPublishedTrackRouteSig = '';
@@ -158,19 +165,24 @@ function expiresAtFor(status) {
     return firebase.firestore.Timestamp.fromMillis(trackExpiresAtMs(status, Date.now()));
 }
 
-/** Cada token é escrito à parte: um track legado (sem ownerUid, imutável nas rules) não derruba os demais. */
+/**
+ * Cada token é escrito à parte: um track legado (sem ownerUid, imutável nas rules) não derruba os demais.
+ * O doc pai só é reescrito quando um campo de evento muda (cada update dispara onTrackNotify) ou para
+ * renovar expiresAt; posição/ETA vão sempre para live/pos. O pai vai antes: a rule de create do live
+ * confere o ownerUid dele.
+ */
 async function setTrackDoc(db, token, payload) {
+    const { event, live } = splitTrackPayload(payload);
     const ref = db.collection('tracks').doc(token);
-    const data = { ...payload, ownerUid: trackUid, expiresAt: expiresAtFor(payload.status) };
-    try {
-        await ref.set(data, { merge: true });
-    } catch (err) {
-        if ('etaSeconds' in data || 'stopsAhead' in data) {
-            await ref.set(stripTrackEtaFields(data), { merge: true });
-            return;
-        }
-        throw err;
+    const expiresAt = expiresAtFor(event.status);
+    const sig = trackEventSignature(event);
+    const now = Date.now();
+    const prev = lastTrackEventWrite.get(token);
+    if (!prev || prev.sig !== sig || now - prev.at >= TRACK_EVENT_REFRESH_MS) {
+        await ref.set({ ...event, ownerUid: trackUid, expiresAt }, { merge: true });
+        lastTrackEventWrite.set(token, { sig, at: now });
     }
+    await ref.collection('live').doc(TRACK_LIVE_DOC_ID).set({ ...live, ownerUid: trackUid, expiresAt }, { merge: true });
 }
 
 export async function writeTrackDoc(token, payload) {

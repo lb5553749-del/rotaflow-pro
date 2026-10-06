@@ -18,6 +18,7 @@ webpush.setVapidDetails(vapid.subject, vapid.publicKey, vapid.privateKey);
 
 const HOST = 'https://rotaflow-83610.web.app';
 
+// Só o doc pai (eventos) dispara; a posição ao vivo vai em tracks/{token}/live/pos.
 exports.onTrackNotify = onDocumentUpdated('tracks/{token}', async (event) => {
   const before = event.data.before.data() || {};
   const after = event.data.after.data() || {};

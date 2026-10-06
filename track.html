@@ -889,15 +889,13 @@
             }
             if (!firebase.apps.length) firebase.initializeApp(window.ROTAFLOW_FIREBASE);
             let missingTries = 0;
-            firebase.firestore().collection('tracks').doc(token).onSnapshot((snap) => {
-                if (!snap.exists) {
-                    if (missingTries++ < 10) return;
-                    showError();
-                    return;
-                }
-                missingTries = 0;
-                const data = snap.data();
-                if (!data || typeof data.destLat !== 'number') {
+            // Doc pai = destino/status (eventos); live/pos = posição/ETA do motorista.
+            // Tracks antigos não têm live/pos e trazem a posição no próprio doc pai.
+            let eventData = null;
+            let liveData = null;
+            const render = () => {
+                const data = Object.assign({}, eventData, liveData || {});
+                if (typeof data.destLat !== 'number') {
                     showError();
                     return;
                 }
@@ -907,7 +905,22 @@
                 } else {
                     showGate();
                 }
+            };
+            const trackRef = firebase.firestore().collection('tracks').doc(token);
+            trackRef.onSnapshot((snap) => {
+                if (!snap.exists) {
+                    if (missingTries++ < 10) return;
+                    showError();
+                    return;
+                }
+                missingTries = 0;
+                eventData = snap.data() || {};
+                render();
             }, () => showError());
+            trackRef.collection('live').doc('pos').onSnapshot((snap) => {
+                liveData = snap.exists ? snap.data() : null;
+                if (eventData) render();
+            }, () => {});
         };
 
         function urlBase64ToUint8Array(base64String) {
