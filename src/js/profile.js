@@ -59,6 +59,22 @@ export function showProfileModal() {
                 <span class="profile-hint">Placeholders: {nome}, {id}, {pacotes}, {endereco}, {empresa}, {obs}, {link}</span>
             </div>
             <div class="form-group">
+                <label>Custos e lucro da rota</label>
+                <div class="form-row-2cols" style="margin-bottom:8px;">
+                    <div style="flex:1;">
+                        <label for="profileConsumo" class="profile-field-sublabel">Consumo (km/l)</label>
+                        <input type="number" id="profileConsumo" class="edit-input" min="0" step="0.1" inputmode="decimal" placeholder="Ex.: 12" value="${userProfile.consumoKmL != null ? escapeHtml(String(userProfile.consumoKmL)) : ''}">
+                    </div>
+                    <div style="flex:1;">
+                        <label for="profilePrecoCombustivel" class="profile-field-sublabel">Combustível (R$/l)</label>
+                        <input type="number" id="profilePrecoCombustivel" class="edit-input" min="0" step="0.01" inputmode="decimal" placeholder="Ex.: 6,49" value="${userProfile.precoCombustivel != null ? escapeHtml(String(userProfile.precoCombustivel)) : ''}">
+                    </div>
+                </div>
+                <label for="profileValorPadrao" class="profile-field-sublabel">Receita padrão por entrega (R$)</label>
+                <input type="number" id="profileValorPadrao" class="edit-input" min="0" step="0.01" inputmode="decimal" placeholder="Ex.: 12,00" value="${userProfile.valorPadraoEntrega != null ? escapeHtml(String(userProfile.valorPadraoEntrega)) : ''}">
+                <span class="profile-hint">Usado no resumo ao arquivar o dia (pode sobrescrever por entrega)</span>
+            </div>
+            <div class="form-group">
                 <label>Tamanho dos pins no mapa</label>
                 <div class="pin-size-options" id="pinSizeOptions">
                     <button type="button" class="pin-size-option${pinSizePref === 'p' ? ' active' : ''}" data-size="p">Pequeno</button>
@@ -123,7 +139,10 @@ export function showProfileModal() {
         applyProfileFormValues(userProfile, {
             motorista: document.getElementById('profileMotorista').value,
             empresa: document.getElementById('profileEmpresa').value,
-            mensagemPadrao: document.getElementById('profileMensagem').value
+            mensagemPadrao: document.getElementById('profileMensagem').value,
+            consumoKmL: document.getElementById('profileConsumo')?.value,
+            precoCombustivel: document.getElementById('profilePrecoCombustivel')?.value,
+            valorPadraoEntrega: document.getElementById('profileValorPadrao')?.value
         }, EMPRESA_PADRAO);
         deps.setPinSizePref(pendingPinSize);
         deps.setFeedbackPrefs({

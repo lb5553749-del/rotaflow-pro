@@ -9,8 +9,14 @@ import {
     formatHistoryDate,
     routeDayStats,
     snapshotDeliveriesForHistory,
-    prependHistoryDay
+    prependHistoryDay,
+    attachHistoryEconomics
 } from '../../lib/history-helpers.js';
+import {
+    calcRouteEconomics,
+    formatRouteEconomicsMessage,
+    formatBrl
+} from '../../lib/cost-helpers.js';
 
 let routeHistory = [];
 
@@ -23,6 +29,8 @@ let deps = {
     setNextSequenceNumber: () => {},
     setRouteActive: () => {},
     setRouteMetrics: () => {},
+    getRouteMetrics: () => null,
+    getUserProfile: () => ({}),
     getAuthReady: () => false,
     getCurrentUser: () => null,
     storageKey: (base) => `rotaflow_${base}_guest`,
@@ -88,6 +96,13 @@ export function archiveCurrentRouteDay({ silent = false, clearAfter = false } = 
         return false;
     }
     const dateKey = localDateKey();
+    const economics = calcRouteEconomics({
+        deliveries,
+        profile: deps.getUserProfile(),
+        routeMetrics: deps.getRouteMetrics(),
+        onlyDelivered: true
+    });
+    const economicsMessage = formatRouteEconomicsMessage(economics);
     const entry = {
         id: `h_${dateKey}_${Date.now()}`,
         date: dateKey,
@@ -96,10 +111,19 @@ export function archiveCurrentRouteDay({ silent = false, clearAfter = false } = 
         nextSequenceNumber: deps.getNextSequenceNumber(),
         stats: routeDayStats(deliveries)
     };
+    attachHistoryEconomics(entry, { ...economics, message: economicsMessage });
     deps.setRouteHistory(prependHistoryDay(deps.getRouteHistory(), entry));
     persistHistory();
     renderHistoryList();
-    if (!silent) deps.showToast(`Dia ${formatHistoryDate(dateKey)} salvo no histórico`);
+    if (!silent) {
+        const hasFuelPrefs = !!(deps.getUserProfile()?.consumoKmL && deps.getUserProfile()?.precoCombustivel != null);
+        const hasRevenue = economics.revenue > 0 || economics.fuelCost > 0 || economics.km > 0;
+        if (hasFuelPrefs || hasRevenue) {
+            deps.showToast(economicsMessage);
+        } else {
+            deps.showToast(`Dia ${formatHistoryDate(dateKey)} salvo no histórico`);
+        }
+    }
     if (clearAfter) {
         deliveries.forEach((d) => deps.closeTrackingSession(
             d,
@@ -153,7 +177,10 @@ export async function duplicateHistoryDay(historyId) {
             savedToAgenda: !!src.savedToAgenda,
             photos: [],
             photoIds: [],
-            voltarDepois: false
+            voltarDepois: false,
+            valor: src.valor,
+            janelaInicio: src.janelaInicio,
+            janelaFim: src.janelaFim
         });
         added++;
     }
@@ -198,11 +225,15 @@ export function renderHistoryList() {
     }
     container.innerHTML = routeHistory.map((h) => {
         const s = h.stats || routeDayStats(h.deliveries || []);
+        const eco = h.economics;
+        const ecoLine = eco && (eco.km > 0 || eco.revenue > 0 || eco.fuelCost > 0)
+            ? `<div class="history-economics">${escapeHtml(eco.message || formatRouteEconomicsMessage(eco))}</div>`
+            : '';
         return `<div class="history-item" data-history-id="${escapeHtml(h.id)}">
             <div class="history-item-header">
                 <div>
                     <div class="history-item-title">${escapeHtml(formatHistoryDate(h.date))}</div>
-                    <div class="history-item-meta">${s.total} parada(s)</div>
+                    <div class="history-item-meta">${s.total} parada(s)${eco && eco.netProfit != null ? ` · ${escapeHtml(formatBrl(eco.netProfit))}` : ''}</div>
                 </div>
             </div>
             <div class="history-stats">
@@ -210,6 +241,7 @@ export function renderHistoryList() {
                 <span class="history-stat warn">${s.falhou} falhas</span>
                 <span class="history-stat">${s.pendente} pendentes</span>
             </div>
+            ${ecoLine}
             <div class="history-actions">
                 <button type="button" class="action-btn" data-history-action="duplicate"><i class="fas fa-copy"></i> Duplicar p/ hoje</button>
                 <button type="button" class="action-btn danger-ghost" data-history-action="delete"><i class="fas fa-trash"></i> Excluir</button>

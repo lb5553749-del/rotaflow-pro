@@ -537,6 +537,14 @@ html.native-map .map-next-chip {
 .modal-add-phone-btn:hover { background: #1e293b; }
 .modal-edit-dense { max-width: 520px; }
 .modal-edit-dense .edit-input { margin-bottom: 8px; padding: 10px 12px; }
+.modal-form-row-2 {
+    display: flex;
+    gap: 10px;
+}
+.modal-form-row-2 .modal-form-group {
+    flex: 1;
+    min-width: 0;
+}
 .modal-edit-dense .modal-form-group { margin-bottom: 10px; }
 .modal-photo-block {
     margin: 8px 0 4px;
@@ -1051,6 +1059,23 @@ html.native-map .map-next-chip {
 }
 .history-stat.ok { background: #ecfdf5; color: #047857; }
 .history-stat.warn { background: #fff7ed; color: #c2410c; }
+.history-economics {
+    font-size: 0.72rem;
+    line-height: 1.4;
+    color: #475569;
+    margin: 0 0 10px;
+    padding: 8px 10px;
+    border-radius: var(--radius-sm);
+    background: #f8fafc;
+    border: 1px solid #e2e8f0;
+}
+.profile-field-sublabel {
+    display: block;
+    font-size: 0.72rem;
+    font-weight: 600;
+    color: var(--muted);
+    margin-bottom: 4px;
+}
 .day-summary {
     display: flex;
     flex-wrap: wrap;

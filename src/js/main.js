@@ -996,6 +996,8 @@ function configureExtractedModules() {
         setNextSequenceNumber: (n) => { nextSequenceNumber = n; },
         setRouteActive: (v) => { routeActive = !!v; },
         setRouteMetrics: (m) => { routeMetrics = m; },
+        getRouteMetrics: () => routeMetrics,
+        getUserProfile,
         getAuthReady,
         getCurrentUser,
         storageKey,

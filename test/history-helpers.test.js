@@ -8,7 +8,8 @@ const {
   formatHistoryDate,
   routeDayStats,
   snapshotDeliveriesForHistory,
-  prependHistoryDay
+  prependHistoryDay,
+  attachHistoryEconomics
 } = require('../lib/history-helpers.js');
 
 describe('localDateKey / formatHistoryDate', () => {
@@ -53,5 +54,21 @@ describe('prependHistoryDay', () => {
     assert.equal(HISTORY_MAX_DAYS, 30);
     const many = Array.from({ length: 40 }, (_, i) => ({ id: 'h' + i, date: '2026-01-' + String(i + 1).padStart(2, '0') }));
     assert.equal(prependHistoryDay(many, { id: 'x', date: '2026-10-01' }).length, 30);
+  });
+});
+
+describe('attachHistoryEconomics', () => {
+  it('stores economics snapshot on the history entry', () => {
+    const entry = { id: 'h1', date: '2026-10-05' };
+    attachHistoryEconomics(entry, {
+      km: 52,
+      fuelCost: 19.8,
+      revenue: 220,
+      netProfit: 200.2,
+      meters: 52000,
+      message: 'ok'
+    });
+    assert.equal(entry.economics.km, 52);
+    assert.equal(entry.economics.message, 'ok');
   });
 });

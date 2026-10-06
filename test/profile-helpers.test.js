@@ -46,4 +46,19 @@ describe('applyProfileFormValues', () => {
     assert.equal(profile.empresa, 'Acme');
     assert.equal(profile.mensagemPadrao, 'Keep me');
   });
+
+  it('stores fuel cost prefs from the profile form', () => {
+    const profile = { motorista: 'A', empresa: 'B', mensagemPadrao: 'Oi' };
+    applyProfileFormValues(profile, {
+      motorista: 'A',
+      empresa: 'B',
+      mensagemPadrao: 'Oi',
+      consumoKmL: '11,5',
+      precoCombustivel: '6.20',
+      valorPadraoEntrega: '18'
+    }, 'Padrao');
+    assert.equal(profile.consumoKmL, 11.5);
+    assert.equal(profile.precoCombustivel, 6.2);
+    assert.equal(profile.valorPadraoEntrega, 18);
+  });
 });
