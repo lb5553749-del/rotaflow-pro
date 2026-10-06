@@ -261,6 +261,14 @@ import {
     showUndoSnackbar,
     setupUndoSnackbar
 } from './undo-snackbar.js';
+import {
+    configureAddDeliveryForm,
+    clearForm,
+    checkAddressDuplicate,
+    setupAddressDuplicateCheck,
+    addDeliveryDirect,
+    setupAddDeliveryForm
+} from './add-delivery-form.js';
 
 // --- App local ---
 if (location.hostname === '127.0.0.1') {
@@ -542,6 +550,29 @@ function configureExtractedModules() {
     });
     configureUndoSnackbar({
         undoDeliveryStatus
+    });
+    configureAddDeliveryForm({
+        getAgenda: () => agenda,
+        getDeliveries: () => deliveries,
+        getNextSequenceNumber: () => nextSequenceNumber,
+        setNextSequenceNumber: (n) => { nextSequenceNumber = n; },
+        getNextAgendaId: () => nextAgendaId,
+        setNextAgendaId: (n) => { nextAgendaId = n; },
+        pushDelivery: (d) => { deliveries.push(d); },
+        pushAgendaItem: (item) => { agenda.push(item); },
+        findActiveRouteByAddress,
+        getGeocoder: () => geocoder,
+        newId,
+        showToast,
+        persistStorageNow,
+        saveStorage,
+        renderDeliveriesList,
+        renderAgendaList,
+        upsertMarker,
+        updateLastIdDisplay,
+        clearRouteOverlay,
+        updateProgressAndEstimates,
+        centerMapOnMarkers
     });
     configureItemPhotos({
         currentUid,
@@ -979,38 +1010,7 @@ function syncAgendaByDelivery(delivery) {
 }
 
 // ========== VALIDAÇÃO DE ENDEREÇO DUPLICADO NA ROTA ==========
-let duplicateCheckTimer = null;
-function checkAddressDuplicate() {
-    const addressInput = document.getElementById('address');
-    const warningDiv = document.getElementById('addressWarning');
-    const warningText = document.getElementById('addressWarningText');
-    const address = addressInput.value.trim().toLowerCase();
-    if (!address) {
-        warningDiv.classList.remove('show');
-        addressInput.classList.remove('duplicate');
-        return;
-    }
-    const found = findActiveRouteByAddress(address);
-    if (found) {
-        warningText.textContent = `Este endereço já está na rota (ID ${found.sequentialId})`;
-        warningDiv.classList.add('show');
-        addressInput.classList.add('duplicate');
-        warningDiv.onclick = () => {
-            document.getElementById('customerName').value = found.nome;
-            document.getElementById('address').value = found.endereco;
-            setTempPhones(found.telefones || []);
-            renderTempPhones();
-            document.getElementById('pacotes').value = found.pacotes || 1;
-            warningDiv.classList.remove('show');
-            addressInput.classList.remove('duplicate');
-            showToast(`Dados da entrega ${found.sequentialId} preenchidos`);
-        };
-    } else {
-        warningDiv.classList.remove('show');
-        addressInput.classList.remove('duplicate');
-        warningDiv.onclick = null;
-    }
-}
+// checkAddressDuplicate / clearForm / addDeliveryDirect: src/js/add-delivery-form.js
 
 // Marcadores (CRUD/rebuild/highlight/fit): src/js/map-markers.js
 
@@ -1155,19 +1155,7 @@ function updateLastIdDisplay(deliveryId) {
 }
 
 // ========== LIMPEZA DO FORMULÁRIO ==========
-function clearForm() {
-    document.getElementById("customerName").value = "";
-    document.getElementById("address").value = "";
-    document.getElementById("newPhoneInput").value = "";
-    document.getElementById("newPhoneLabel").value = "";
-    clearTempPhones();
-    renderTempPhones();
-    document.getElementById("pacotes").value = "1";
-    document.getElementById("saveToAgendaCheckbox").checked = false;
-    document.getElementById("nameSuggestions").style.display = 'none';
-    document.getElementById('addressWarning').classList.remove('show');
-    document.getElementById('address').classList.remove('duplicate');
-}
+// clearForm: src/js/add-delivery-form.js (configureAddDeliveryForm).
 
 // ========== PAINEL INFERIOR ==========
 /** Centra o mapa na entrega (JS Maps ou facade nativa Capacitor). */
@@ -1729,62 +1717,7 @@ async function copyFromOtherRoute() {
 // Ranking puro: lib/suggestion-helpers.js · UI: src/js/name-suggestions.js (configureNameSuggestions).
 
 // ========== ADICIONAR ENTREGA DIRETO (PERMITE AGENDA) ==========
-function addDeliveryDirect(nome, endereco, telefones, pacotes, notes) {
-    if (!nome || !endereco) { showToast("Preencha nome e endereço para continuar", true); return; }
-
-    // Verifica se já está na rota (pendente / em rota)
-    const already = findActiveRouteByAddress(endereco);
-    if (already) {
-        showToast(`Este endereço já está na rota (ID ${already.sequentialId})`, true);
-        return;
-    }
-
-    // Permite adicionar mesmo que esteja na agenda (não verifica agenda)
-
-    const known = agenda.find(a => a.endereco.toLowerCase() === endereco.toLowerCase());
-    const finish = (lat, lng) => {
-        let seqId = getSequentialId(nextSequenceNumber);
-        let newDelivery = { 
-            id: newId(), 
-            sequentialId: seqId, 
-            nome, 
-            endereco, 
-            telefones: telefones || [], 
-            pacotes, 
-            status: "pendente", 
-            lat, 
-            lng, 
-            savedToAgenda: !!known, 
-            photos: known ? [...(known.photos || [])] : [], 
-            notes: notes || '',
-            favorito: known ? !!known.favorito : false
-        };
-        deliveries.push(newDelivery);
-        nextSequenceNumber++;
-        persistStorageNow(); renderDeliveriesList(); upsertMarker(newDelivery);
-        updateLastIdDisplay(seqId);
-        clearRouteOverlay();
-        updateProgressAndEstimates();
-        showToast(`Entrega ${seqId} incluída na rota`);
-        if (deliveries.length === 1) centerMapOnMarkers();
-        clearForm();
-    };
-    if (known && known.lat && known.lng) {
-        finish(known.lat, known.lng);
-        return;
-    }
-    showToast("Localizando endereço…");
-    geocoder.geocode({ address: endereco }, (res, stat) => {
-        let lat = PORTO_VELHO_CENTER.lat, lng = PORTO_VELHO_CENTER.lng;
-        if (stat === "OK" && res[0]) {
-            lat = res[0].geometry.location.lat();
-            lng = res[0].geometry.location.lng();
-        } else {
-            showToast("Endereço não encontrado. Usando o centro do mapa", true);
-        }
-        finish(lat, lng);
-    });
-}
+// addDeliveryDirect / setupAddDeliveryForm: src/js/add-delivery-form.js
 
 // ========== ROTA OTIMIZADA (Directions API) ==========
 // Geometria: lib/routing-helpers.js · orquestração: src/js/routing.js (configureRouting).
@@ -1802,14 +1735,7 @@ function initAppUi() {
     initAppUi.done = true;
     initNameSuggestions();
     setupNewDeliveryPhoneUI();
-
-    const addressInput = document.getElementById('address');
-    if (addressInput) {
-        addressInput.addEventListener('input', function() {
-            clearTimeout(duplicateCheckTimer);
-            duplicateCheckTimer = setTimeout(checkAddressDuplicate, 300);
-        });
-    }
+    setupAddressDuplicateCheck();
 
     bindGalleryChrome();
     document.getElementById('closePanelBtn').addEventListener('click', closeDeliveryPanel);
@@ -1979,80 +1905,7 @@ document.addEventListener('DOMContentLoaded', function() {
     resetVoltarDepoisAlert();
     document.getElementById("routeSearchInput").addEventListener("input", debounce((e) => { routeFilter = e.target.value.toLowerCase(); renderDeliveriesList(); }, 150));
     document.getElementById("agendaSearchInput").addEventListener("input", debounce((e) => { agendaFilter = e.target.value.toLowerCase(); renderAgendaList(); }, 150));
-
-    document.getElementById("addDeliveryBtn").addEventListener('click', function() {
-        let nome = document.getElementById("customerName").value.trim();
-        let end = document.getElementById("address").value.trim();
-        let pacotes = parseInt(document.getElementById("pacotes").value) || 1;
-        let saveAgenda = document.getElementById("saveToAgendaCheckbox").checked;
-        let telefones = [...getTempPhones()];
-        let notes = "";
-        if (!nome || !end) { showToast("Preencha nome e endereço para continuar", true); return; }
-        if (!geocoder) { showToast("Aguarde o mapa carregar completamente", true); return; }
-
-        // Verifica se o endereço já está na rota (pendente / em rota)
-        const already = findActiveRouteByAddress(end);
-        if (already) {
-            showToast(`Este endereço já está na rota (ID ${already.sequentialId})`, true);
-            return;
-        }
-
-        // *** BLOQUEIA SE O ENDEREÇO JÁ ESTIVER NA AGENDA ***
-        if (agenda.some(item => item.endereco.toLowerCase() === end.toLowerCase())) {
-            showToast("Este endereço já está na agenda. Use '+ Rota' na agenda para incluí-lo.", true);
-            return;
-        }
-
-        showToast("Localizando endereço…");
-        geocoder.geocode({ address: end }, (res, stat) => {
-            let lat = PORTO_VELHO_CENTER.lat, lng = PORTO_VELHO_CENTER.lng;
-            if (stat === "OK" && res[0]) {
-                lat = res[0].geometry.location.lat();
-                lng = res[0].geometry.location.lng();
-            } else {
-                showToast("Endereço não encontrado. Usando o centro do mapa", true);
-            }
-            let seqId = getSequentialId(nextSequenceNumber);
-            let newDelivery = { 
-                id: newId(), 
-                sequentialId: seqId, 
-                nome, 
-                endereco: end, 
-                telefones, 
-                pacotes, 
-                status: "pendente", 
-                lat, 
-                lng, 
-                savedToAgenda: false, 
-                photos: [],
-                photoIds: [],
-                notes: notes,
-                favorito: false
-            };
-            deliveries.push(newDelivery); nextSequenceNumber++;
-            persistStorageNow(); renderDeliveriesList(); upsertMarker(newDelivery);
-            updateLastIdDisplay(seqId);
-            clearRouteOverlay();
-            updateProgressAndEstimates();
-            if (saveAgenda) {
-                const agendaDup = agenda.some(item => item.endereco.toLowerCase() === end.toLowerCase());
-                if (agendaDup) {
-                    showToast(`Entrega ${seqId} incluída na rota. Endereço já constava na agenda`);
-                } else {
-                    agenda.push({ agendaId: nextAgendaId++, nome, endereco: end, telefones, pacotes, lat, lng, photos: [], photoIds: [], notes: notes });
-                    newDelivery.savedToAgenda = true;
-                    saveStorage();
-                    renderAgendaList();
-                    renderDeliveriesList();
-                    showToast(`Entrega ${seqId} incluída na rota e salva na agenda`);
-                }
-            } else {
-                showToast(`Entrega ${seqId} incluída na rota`);
-            }
-            if (deliveries.length === 1) centerMapOnMarkers();
-            clearForm();
-        });
-    });
+    setupAddDeliveryForm();
 });
 
 

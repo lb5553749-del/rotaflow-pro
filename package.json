@@ -5,7 +5,7 @@
   "main": "index.js",
   "scripts": {
     "test": "node --test test/*.test.js",
-    "lint": "eslint lib test src/js/gallery.js src/js/track-shared.js src/js/tracking.js src/js/history.js src/js/backup-ui.js src/js/photo-store.js src/js/item-photos.js src/js/deliveries-list.js src/js/agenda-list.js src/js/edit-modals.js src/js/routing.js src/js/modals.js src/js/map-pins.js src/js/gps.js src/js/map-layer.js src/js/delivery-panel.js src/js/map-markers.js src/js/routes.js src/js/persist.js src/js/auth.js src/js/camera.js src/js/whatsapp.js src/js/sidebar.js src/js/profile.js src/js/resume-ui.js src/js/lock-screen.js src/js/form-phones.js src/js/name-suggestions.js src/js/not-delivered.js src/js/undo-snackbar.js",
+    "lint": "eslint lib test src/js/gallery.js src/js/track-shared.js src/js/tracking.js src/js/history.js src/js/backup-ui.js src/js/photo-store.js src/js/item-photos.js src/js/deliveries-list.js src/js/agenda-list.js src/js/edit-modals.js src/js/routing.js src/js/modals.js src/js/map-pins.js src/js/gps.js src/js/map-layer.js src/js/delivery-panel.js src/js/map-markers.js src/js/routes.js src/js/persist.js src/js/auth.js src/js/camera.js src/js/whatsapp.js src/js/sidebar.js src/js/profile.js src/js/resume-ui.js src/js/lock-screen.js src/js/form-phones.js src/js/name-suggestions.js src/js/not-delivered.js src/js/undo-snackbar.js src/js/add-delivery-form.js",
     "build": "node scripts/build-web.js",
     "build:dev": "node scripts/build-web.js --dev",
     "icons": "node scripts/build-icons.js",
