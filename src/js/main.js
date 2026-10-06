@@ -20,9 +20,7 @@ import { routeDayStats } from '../../lib/history-helpers.js';
 import { escapeHtml } from '../../lib/html.js';
 import {
     configureFormPhones,
-    getTempPhones,
     setTempPhones,
-    clearTempPhones,
     renderTempPhones,
     setupNewDeliveryPhoneUI
 } from './form-phones.js';
@@ -85,8 +83,7 @@ import {
 } from './map-pins.js';
 import {
     configureMapLayer,
-    initMap,
-    PORTO_VELHO_CENTER
+    initMap
 } from './map-layer.js';
 import {
     configureMapMarkers,
@@ -243,9 +240,6 @@ import {
     editAgendaItem
 } from './edit-modals.js';
 import {
-    findActiveDeliveryByAddress
-} from '../../lib/list-helpers.js';
-import {
     configureBackupStore
 } from './backup-store.js';
 import {
@@ -263,12 +257,20 @@ import {
 } from './undo-snackbar.js';
 import {
     configureAddDeliveryForm,
-    clearForm,
-    checkAddressDuplicate,
     setupAddressDuplicateCheck,
     addDeliveryDirect,
     setupAddDeliveryForm
 } from './add-delivery-form.js';
+import {
+    configureAgendaRoute,
+    findActiveRouteByAddress,
+    syncFavoritoToAgenda,
+    syncAgendaByDelivery,
+    addAgendaToRoute,
+    saveToAgenda,
+    copyFromOtherRoute,
+    saveDeliveryPhotoToAgenda
+} from './agenda-route.js';
 
 // --- App local ---
 if (location.hostname === '127.0.0.1') {
@@ -573,6 +575,31 @@ function configureExtractedModules() {
         clearRouteOverlay,
         updateProgressAndEstimates,
         centerMapOnMarkers
+    });
+    configureAgendaRoute({
+        getAgenda: () => agenda,
+        pushAgendaItem: (item) => { agenda.push(item); },
+        getNextAgendaId: () => nextAgendaId,
+        setNextAgendaId: (n) => { nextAgendaId = n; },
+        getDeliveries: () => deliveries,
+        pushDelivery: (d) => { deliveries.push(d); },
+        getNextSequenceNumber: () => nextSequenceNumber,
+        setNextSequenceNumber: (n) => { nextSequenceNumber = n; },
+        getGeocoder: () => geocoder,
+        newId,
+        showToast,
+        persistStorageNow,
+        saveStorage,
+        renderDeliveriesList,
+        renderAgendaList,
+        upsertMarker,
+        updateLastIdDisplay,
+        clearRouteOverlay,
+        updateProgressAndEstimates,
+        ensureItemPhotos,
+        idbGetPhoto,
+        persistPhotoDataUrl,
+        deliveryPhotoCount
     });
     configureItemPhotos({
         currentUid,
@@ -971,43 +998,7 @@ function refreshMapAfterStorageLoad() {
     updateOptimizeFabVisibility();
 }
 
-function findAgendaItemForDelivery(delivery) {
-    if (!delivery || !delivery.endereco) return null;
-    const key = String(delivery.endereco).toLowerCase();
-    return agenda.find(item => String(item.endereco || '').toLowerCase() === key) || null;
-}
-
-function syncFavoritoToAgenda(delivery) {
-    const agendaItem = findAgendaItemForDelivery(delivery);
-    if (agendaItem && agendaItem.favorito !== delivery.favorito) {
-        agendaItem.favorito = delivery.favorito;
-        saveStorage();
-        renderAgendaList();
-        return true;
-    }
-    return false;
-}
-function syncAgendaByDelivery(delivery) {
-    const agendaItem = findAgendaItemForDelivery(delivery);
-    if (agendaItem) {
-        let changed = false;
-        const str1 = JSON.stringify(delivery.telefones || []);
-        const str2 = JSON.stringify(agendaItem.telefones || []);
-        if (str1 !== str2) {
-            agendaItem.telefones = delivery.telefones || [];
-            changed = true;
-        }
-        if (agendaItem.favorito !== delivery.favorito) {
-            agendaItem.favorito = delivery.favorito;
-            changed = true;
-        }
-        if (changed) {
-            saveStorage();
-            renderAgendaList();
-            showToast("Agenda atualizada");
-        }
-    }
-}
+// Sync agenda / findAgendaItem: src/js/agenda-route.js (configureAgendaRoute).
 
 // ========== VALIDAÇÃO DE ENDEREÇO DUPLICADO NA ROTA ==========
 // checkAddressDuplicate / clearForm / addDeliveryDirect: src/js/add-delivery-form.js
@@ -1193,70 +1184,7 @@ function focusMapOnDelivery(delivery, opts = {}) {
 // Painel inferior (open/actions/fotos/swipe/nav):
 // lib/panel-helpers.js · src/js/delivery-panel.js (configureDeliveryPanel).
 
-async function copyDeliveryPhotoIndexToAgenda(agendaItem, delivery, idx) {
-    await ensureItemPhotos(delivery);
-    await ensureItemPhotos(agendaItem);
-    if (!Array.isArray(delivery.photos) || !delivery.photos[idx]) {
-        return { added: false, reason: 'missing' };
-    }
-    if (!Array.isArray(agendaItem.photos)) agendaItem.photos = [];
-    if (!Array.isArray(agendaItem.photoIds)) agendaItem.photoIds = [];
-
-    const srcId = Array.isArray(delivery.photoIds) ? delivery.photoIds[idx] : null;
-    if (srcId && agendaItem.photoIds.includes(srcId)) {
-        return { added: false, reason: 'dup' };
-    }
-
-    const dataUrl = delivery.photos[idx];
-    // Nova cópia no IndexedDB para a agenda não depender da foto da entrega.
-    const newId = await persistPhotoDataUrl(dataUrl);
-    agendaItem.photos.push(dataUrl);
-    agendaItem.photoIds.push(newId);
-    return { added: true, photoId: newId };
-}
-
-/**
- * Salva foto da entrega no cliente correspondente da agenda (match por endereço).
- * @param {object} delivery
- * @param {number|null} photoIndex índice específico; null = última foto
- */
-async function saveDeliveryPhotoToAgenda(delivery, photoIndex = null) {
-    if (!delivery) {
-        showToast('Selecione uma entrega no mapa', true);
-        return false;
-    }
-    await ensureItemPhotos(delivery);
-    const count = deliveryPhotoCount(delivery);
-    if (!count) {
-        showToast('Nenhuma foto nesta entrega', true);
-        return false;
-    }
-
-    let agendaItem = findAgendaItemForDelivery(delivery);
-    if (!agendaItem) {
-        // Fluxo existente: cria o cliente na agenda com as fotos da entrega.
-        return !!(await saveToAgenda(delivery, true));
-    }
-
-    const idx = photoIndex == null ? (delivery.photos.length - 1) : photoIndex;
-    if (idx < 0 || idx >= delivery.photos.length) {
-        showToast('Foto não encontrada', true);
-        return false;
-    }
-
-    const result = await copyDeliveryPhotoIndexToAgenda(agendaItem, delivery, idx);
-    if (!result.added) {
-        showToast(result.reason === 'dup' ? 'Esta foto já está na agenda' : 'Não foi possível salvar a foto', true);
-        return false;
-    }
-
-    if (!delivery.savedToAgenda) delivery.savedToAgenda = true;
-    saveStorage();
-    renderAgendaList();
-    renderDeliveriesList();
-    showToast('Foto salva na agenda');
-    return true;
-}
+// copyDeliveryPhotoIndexToAgenda / saveDeliveryPhotoToAgenda: src/js/agenda-route.js
 
 /** Atualiza só a lista de entregas depois (badge de fotos) sem travar o thumb. */
 function scheduleDeliveriesListPhotoRefresh() {
@@ -1575,131 +1503,9 @@ function editPhonesPanel() {
 // Modais de edição (entrega/agenda): src/js/edit-modals.js (configureEditModals no boot).
 // Helpers puros: lib/edit-helpers.js.
 
-// ========== ADICIONAR DA AGENDA PARA A ROTA (PERMITIDO) ==========
-function findActiveRouteByAddress(endereco) {
-    return findActiveDeliveryByAddress(deliveries, endereco);
-}
-
-function addAgendaToRoute(item) {
-    const already = findActiveRouteByAddress(item.endereco);
-    if (already) {
-        showToast(`Este endereço já está na rota (ID ${already.sequentialId})`, true);
-        return;
-    }
-
-    const finish = async (lat, lng) => {
-        // Cópia própria das fotos — apagar na rota não apaga na agenda.
-        const cloned = await cloneItemPhotosForCopy(item);
-        const seqId = getSequentialId(nextSequenceNumber);
-        deliveries.push({
-            id: newId(),
-            sequentialId: seqId,
-            nome: item.nome,
-            endereco: item.endereco,
-            telefones: item.telefones || [],
-            pacotes: item.pacotes || 1,
-            status: "pendente",
-            lat,
-            lng,
-            savedToAgenda: true,
-            photos: cloned.photos,
-            photoIds: cloned.photoIds,
-            notes: item.notes || '',
-            favorito: item.favorito || false
-        });
-        nextSequenceNumber++;
-        persistStorageNow();
-        renderDeliveriesList();
-        renderAgendaList();
-        upsertMarker(deliveries[deliveries.length - 1]);
-        updateLastIdDisplay(seqId);
-        clearRouteOverlay();
-        updateProgressAndEstimates();
-        showToast(`${item.nome} adicionado à rota (ID ${seqId})`);
-    };
-
-    if (hasMapCoords(item)) {
-        finish(Number(item.lat), Number(item.lng));
-        return;
-    }
-    if (!geocoder) {
-        showToast("Aguarde o mapa carregar completamente", true);
-        return;
-    }
-    showToast("Localizando endereço…");
-    geocoder.geocode({ address: item.endereco }, (res, stat) => {
-        let lat = PORTO_VELHO_CENTER.lat, lng = PORTO_VELHO_CENTER.lng;
-        if (stat === "OK" && res[0]) {
-            lat = res[0].geometry.location.lat();
-            lng = res[0].geometry.location.lng();
-            item.lat = lat;
-            item.lng = lng;
-            saveStorage();
-        } else {
-            showToast("Endereço sem coordenadas precisas. Usando o centro do mapa", true);
-        }
-        finish(lat, lng);
-    });
-}
-
-// ========== SALVAR NA AGENDA ==========
-async function cloneItemPhotosForCopy(src) {
-    await ensureItemPhotos(src);
-    const photos = [];
-    const photoIds = [];
-    const urls = Array.isArray(src.photos) ? src.photos : [];
-    const ids = Array.isArray(src.photoIds) ? src.photoIds : [];
-    const n = Math.max(urls.length, ids.length);
-    for (let i = 0; i < n; i++) {
-        let dataUrl = urls[i];
-        if (!dataUrl && ids[i]) {
-            try { dataUrl = await idbGetPhoto(ids[i]); } catch (_) { dataUrl = null; }
-        }
-        if (!dataUrl || typeof dataUrl !== 'string') continue;
-        try {
-            const newId = await persistPhotoDataUrl(dataUrl);
-            photos.push(dataUrl);
-            photoIds.push(newId);
-        } catch (_) {}
-    }
-    return { photos, photoIds };
-}
-
-async function saveToAgenda(del, fromCard = false) {
-    const duplicate = findAgendaItemForDelivery(del);
-    if (duplicate) {
-        showToast(`O endereço "${del.endereco}" já existe na agenda`, true);
-        return false;
-    }
-    // Cópia própria no IndexedDB — agenda e entrega não partilham o mesmo photoId.
-    const cloned = await cloneItemPhotosForCopy(del);
-    agenda.push({ 
-        agendaId: nextAgendaId++, 
-        nome: del.nome, 
-        endereco: del.endereco, 
-        telefones: del.telefones || [], 
-        pacotes: del.pacotes, 
-        lat: del.lat, 
-        lng: del.lng, 
-        photos: cloned.photos,
-        photoIds: cloned.photoIds,
-        notes: del.notes || '',
-        favorito: del.favorito || false
-    });
-    if (!del.savedToAgenda) { del.savedToAgenda = true; saveStorage(); renderDeliveriesList(); }
-    saveStorage(); renderAgendaList();
-    showToast(`"${del.nome}" salvo na agenda`);
-    return true;
-}
-
-async function copyFromOtherRoute() {
-    if (deliveries.length === 0) return showToast("Não há entregas na rota para copiar", true);
-    let count = 0;
-    for (const del of deliveries) {
-        if (await saveToAgenda(del, false)) count++;
-    }
-    showToast(`${count} parada${count === 1 ? "" : "s"} adicionada${count === 1 ? "" : "s"} à agenda`);
-}
+// ========== ADICIONAR DA AGENDA PARA A ROTA / SALVAR NA AGENDA ==========
+// findActiveRouteByAddress, addAgendaToRoute, saveToAgenda, copyFromOtherRoute:
+// src/js/agenda-route.js (configureAgendaRoute).
 
 // ========== BACKUP E RESTORE ==========
 // Implementação em src/js/backup-ui.js (configureBackupUi no boot).
