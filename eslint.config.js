@@ -101,5 +101,10 @@ module.exports = [
     languageOptions: {
       globals: { ...globals.node }
     }
+  },
+  {
+    // Esses scripts carregam código Kotlin em strings JS; `${...}` ali é template do Kotlin.
+    files: ['scripts/patch-*.js'],
+    rules: { 'no-template-curly-in-string': 'off' }
   }
 ];
