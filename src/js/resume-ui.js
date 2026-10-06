@@ -1,6 +1,6 @@
 /**
  * Recuperação de UI ao voltar do 2º plano (WebView/Maps) e restore da câmera nativa.
- * Lock screen / ScreenEvents ficam no main — este módulo só trata resume/visibility.
+ * Lock screen / ScreenEvents: src/js/lock-screen.js — este módulo só trata resume/visibility.
  */
 
 let deps = {

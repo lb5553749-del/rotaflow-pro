@@ -49,6 +49,12 @@ import {
     setupCameraRestoreHandler
 } from './resume-ui.js';
 import {
+    configureLockScreen,
+    clearActiveStopNotification,
+    syncActiveStopNotification,
+    setupScreenLockNotificationBridge
+} from './lock-screen.js';
+import {
     openGallery,
     closeGallery,
     nextPhoto,
@@ -413,7 +419,7 @@ function updateSyncBadge() {
 // Persistência de fotos no item: src/js/item-photos.js (configureItemPhotos no boot).
 
 // Resume UI / restore câmera: src/js/resume-ui.js (configureResumeUi no boot).
-// Lock screen / ScreenEvents permanece abaixo (ponte nativa — extrair por último).
+// Lock screen / ScreenEvents: src/js/lock-screen.js (configureLockScreen no boot).
 
 // ========== ROTAS MÚLTIPLAS ==========
 // Implementação em src/js/routes.js (configureRoutes no boot).
@@ -463,6 +469,10 @@ function configureExtractedModules() {
         getGpsEnabled: () => gpsEnabled,
         startBackgroundGpsWatch,
         syncBackgroundGpsTargets
+    });
+    configureLockScreen({
+        isNativeApp,
+        getCurrentSelectedDelivery: () => currentSelectedDelivery
     });
     configureItemPhotos({
         currentUid,
@@ -1363,86 +1373,8 @@ function setupPanelPhotoCapture() {
 }
 
 // ========== INFO NA TELA DE BLOQUEIO (nativo, sem alerta) ==========
-let lockScreenBridgeReady = false;
-
-function getScreenEvents() {
-    return window.RotaFlowCap?.ScreenEvents || null;
-}
-
-function lockScreenStopPayload(delivery) {
-    if (!delivery || delivery.status === 'entregue' || delivery.status === 'falhou') return null;
-    const idLabel = String(delivery.sequentialId || '—');
-    const qty = Math.max(1, Number(delivery.pacotes) || 1);
-    const qtyLabel = qty === 1 ? '1 pacote' : `${qty} pacotes`;
-    const street = shortStreetAddress(delivery.endereco);
-    const nome = String(delivery.nome || '').trim();
-    const body = nome ? `${nome} · ${street}` : street;
-    return {
-        title: `Indo para ${idLabel} · ${qtyLabel}`,
-        body: body || 'Entrega em andamento'
-    };
-}
-
-async function ensureLockScreenPermission() {
-    if (!isNativeApp()) return false;
-    // Reusa o plugin de notificações só para pedir POST_NOTIFICATIONS uma vez
-    const LN = window.RotaFlowCap?.LocalNotifications;
-    if (!LN) return true;
-    try {
-        let perm = await LN.checkPermissions();
-        if (perm?.display !== 'granted') {
-            perm = await LN.requestPermissions();
-        }
-        return perm?.display === 'granted';
-    } catch (_) {
-        return false;
-    }
-}
-
-async function clearActiveStopNotification() {
-    if (!isNativeApp()) return;
-    const SE = getScreenEvents();
-    if (!SE?.clearActiveStop) return;
-    try {
-        await SE.clearActiveStop();
-    } catch (e) {
-        console.warn('clearActiveStop', e);
-    }
-}
-
-/** Memoriza no nativo; a notificação só aparece em SCREEN_OFF. */
-async function syncActiveStopNotification(delivery) {
-    if (!isNativeApp()) return;
-    const SE = getScreenEvents();
-    if (!SE?.setActiveStop) return;
-    const payload = lockScreenStopPayload(delivery);
-    try {
-        if (!payload) {
-            await SE.clearActiveStop();
-            return;
-        }
-        await SE.setActiveStop(payload);
-    } catch (e) {
-        console.warn('setActiveStop', e);
-    }
-}
-
-async function setupScreenLockNotificationBridge() {
-    if (!isNativeApp() || lockScreenBridgeReady) return;
-    const SE = getScreenEvents();
-    if (!SE) return;
-    lockScreenBridgeReady = true;
-    try {
-        await SE.ping?.();
-    } catch (e) {
-        console.warn('ScreenEvents ping', e);
-    }
-    await ensureLockScreenPermission();
-    // Se já houver entrega selecionada, sincroniza
-    if (currentSelectedDelivery) {
-        syncActiveStopNotification(currentSelectedDelivery);
-    }
-}
+// Implementação em src/js/lock-screen.js (configureLockScreen no boot).
+// Helpers puros: lib/lock-screen-helpers.js.
 
 function adjustPacotes(delta) {
     if (!currentSelectedDelivery) return;
