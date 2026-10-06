@@ -22,11 +22,15 @@ import { getSequentialId, nextGeneratedId, seedIdCounterFromLists } from '../../
 import {
     formatPhoneNumber,
     formatPhoneShort,
-    normalizeStoredPhone,
-    getWhatsAppPhoneDigits,
-    getWhatsAppLink,
-    getWhatsAppAppLink
+    normalizeStoredPhone
 } from '../../lib/phone-helpers.js';
+import {
+    configureWhatsApp,
+    openExternalUrl,
+    openWhatsAppChat,
+    buildDeliveryWhatsAppMessage,
+    sendWhatsApp
+} from './whatsapp.js';
 import {
     openGallery,
     closeGallery,
@@ -373,44 +377,7 @@ function setupOverflowMenus() {
 
 // ========== UTILITÁRIOS ==========
 // Telefone, escape HTML e ids sequenciais vivem em lib/ (testáveis, sem DOM).
-
-async function openExternalUrl(url) {
-    if (!url) return false;
-    try {
-        if (isNativeApp() && window.RotaFlowCap && typeof window.RotaFlowCap.openUrl === 'function') {
-            return !!(await window.RotaFlowCap.openUrl(url));
-        }
-    } catch (_) {
-        if (isNativeApp()) return false;
-    }
-    try {
-        const a = document.createElement('a');
-        a.href = url;
-        a.target = '_blank';
-        a.rel = 'noopener noreferrer';
-        document.body.appendChild(a);
-        a.click();
-        a.remove();
-        return true;
-    } catch (_) {}
-    try {
-        window.location.href = url;
-        return true;
-    } catch (_) {
-        return false;
-    }
-}
-
-async function openWhatsAppChat(phone, msg) {
-    if (!getWhatsAppPhoneDigits(phone)) return false;
-    const webLink = getWhatsAppLink(phone, msg);
-    if (webLink && await openExternalUrl(webLink)) return true;
-    if (isNativeApp()) {
-        const appLink = getWhatsAppAppLink(phone, msg);
-        if (appLink && await openExternalUrl(appLink)) return true;
-    }
-    return false;
-}
+// WhatsApp / openExternalUrl: src/js/whatsapp.js (configureWhatsApp no boot).
 
 // Toast/modais: src/js/modals.js
 
@@ -611,6 +578,16 @@ async function setupCameraRestoreHandler() {
 // Implementação em src/js/persist.js (configurePersist no boot).
 
 function configureExtractedModules() {
+    configureWhatsApp({
+        isNativeApp,
+        getUserProfile,
+        showToast,
+        showChoiceModal,
+        prepareTrackingUrl,
+        publishTrackingSession,
+        getGpsEnabled: () => gpsEnabled,
+        getStartPoint: () => startPoint
+    });
     configureItemPhotos({
         currentUid,
         getRoutes: () => routes,
@@ -1750,76 +1727,8 @@ function editPhonesPanel() {
 }
 
 // ========== WHATSAPP ==========
-
-function companyDisplayName() {
-    const profile = getUserProfile();
-    const name = profile && String(profile.empresa || '').trim();
-    return name || EMPRESA_PADRAO;
-}
-
-function buildDeliveryWhatsAppMessage(delivery, opts = {}) {
-    const trackUrl = opts.trackUrl || '';
-    const nome = opts.nome != null ? opts.nome : (delivery.nome || 'cliente');
-    const empresa = opts.empresa != null ? opts.empresa : companyDisplayName();
-    const profile = getUserProfile();
-    const template = (profile && profile.mensagemPadrao) || MENSAGEM_WHATSAPP_PADRAO;
-    let msg = template
-        .replace(/{nome}/g, nome)
-        .replace(/{id}/g, delivery.sequentialId)
-        .replace(/{pacotes}/g, delivery.pacotes || 1)
-        .replace(/{endereco}/g, delivery.endereco || '')
-        .replace(/{empresa}/g, empresa)
-        .replace(/{obs}/g, delivery.notes ? `📝 Obs: ${delivery.notes}\n` : '')
-        .replace(/{km}/g, '')
-        .replace(/{min}/g, '')
-        .replace(/{link}/g, trackUrl || '');
-    // Sem km/ETA na mensagem ao cliente.
-    msg = msg
-        .replace(/\n?⏱\s*Faltam cerca de[^\n]*/g, '')
-        .replace(/[ \t]+\n/g, '\n')
-        .replace(/\n{3,}/g, '\n\n')
-        .trim();
-    if (trackUrl && !msg.includes(trackUrl)) {
-        msg += `\n${trackUrl}`;
-    }
-    return msg;
-}
-
-async function sendWhatsApp(delivery) {
-    if (!delivery.telefones || delivery.telefones.length === 0) {
-        return showToast("Nenhum telefone cadastrado para esta entrega", true);
-    }
-    let phoneToUse = delivery.telefones[0];
-    if (delivery.telefones.length > 1) {
-        const choice = await showChoiceModal({
-            title: 'WhatsApp',
-            message: 'Selecione o número para enviar a mensagem:',
-            options: delivery.telefones.map(p => ({
-                label: (p.label ? p.label + ' · ' : '') + formatPhoneShort(p.numero),
-                value: p,
-                icon: 'fab fa-whatsapp',
-                iconColor: '#25D366'
-            }))
-        });
-        if (!choice) return;
-        phoneToUse = choice;
-    }
-    const trackUrl = prepareTrackingUrl(delivery) || '';
-    if (trackUrl) publishTrackingSession(delivery);
-    const msg = buildDeliveryWhatsAppMessage(delivery, {
-        nome: phoneToUse.label || delivery.nome,
-        trackUrl
-    });
-    if (trackUrl && (!gpsEnabled || !startPoint)) {
-        showToast('Link no WhatsApp. Ligue o GPS para o cliente ver você no mapa');
-    }
-    if (!getWhatsAppPhoneDigits(phoneToUse.numero)) {
-        showToast("Número de telefone inválido", true);
-        return;
-    }
-    const opened = await openWhatsAppChat(phoneToUse.numero, msg);
-    if (!opened) showToast('Não foi possível abrir o WhatsApp', true);
-}
+// Implementação em src/js/whatsapp.js (configureWhatsApp no boot).
+// Helpers puros: lib/whatsapp-helpers.js.
 
 // ========== NOVA ENTREGA - TELEFONES ==========
 function renderTempPhones() {
