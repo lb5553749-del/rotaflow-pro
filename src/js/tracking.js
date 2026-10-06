@@ -11,6 +11,7 @@ import {
     stripTrackEtaFields,
     buildTrackPayload as buildTrackPayloadFromSchema,
     isWithinNearKm,
+    trackExpiresAtMs,
     shouldPublishTrack as shouldPublishTrackPure
 } from '../../lib/track-schema.js';
 
@@ -153,10 +154,14 @@ export async function refreshActiveTrackSessions(opts) {
     }
 }
 
+function expiresAtFor(status) {
+    return firebase.firestore.Timestamp.fromMillis(trackExpiresAtMs(status, Date.now()));
+}
+
 /** Cada token é escrito à parte: um track legado (sem ownerUid, imutável nas rules) não derruba os demais. */
 async function setTrackDoc(db, token, payload) {
     const ref = db.collection('tracks').doc(token);
-    const data = { ...payload, ownerUid: trackUid };
+    const data = { ...payload, ownerUid: trackUid, expiresAt: expiresAtFor(payload.status) };
     try {
         await ref.set(data, { merge: true });
     } catch (err) {

@@ -30,7 +30,7 @@ service cloud.firestore {
                'status', 'nearNotified', 'deliveredNotified', 'absentNotified',
                'failReason', 'destLat', 'destLng',
                'destName', 'motorista', 'sequentialId',
-               'etaSeconds', 'stopsAhead'
+               'etaSeconds', 'stopsAhead', 'expiresAt'
              ]);
 
       allow delete: if false;
@@ -54,14 +54,22 @@ service cloud.firestore {
     }
   }
 
+  // LGPD: cleanupExpiredTracks (functions/index.js) apaga o track + subcoleções após expiresAt.
+  // Teto de 7 dias impede um cliente de "eternizar" o doc; folga cobre relógio adiantado.
+  function isValidExpiry(data) {
+    return data.expiresAt is timestamp
+      && data.expiresAt <= request.time + duration.value(7, 'd');
+  }
+
   function isValidTrack(data) {
     return data.keys().hasOnly([
         'destLat', 'destLng', 'destName', 'sequentialId', 'status',
         'motorista', 'driverLat', 'driverLng', 'accuracy',
         'updatedAt', 'nearNotified', 'deliveredNotified', 'absentNotified', 'failReason',
-        'etaSeconds', 'stopsAhead', 'ownerUid'
+        'etaSeconds', 'stopsAhead', 'ownerUid', 'expiresAt'
       ])
       && data.ownerUid is string
+      && isValidExpiry(data)
       && data.destLat is number
       && data.destLng is number
       && data.destLat >= -90 && data.destLat <= 90

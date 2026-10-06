@@ -7,7 +7,9 @@
  * redeploy functions, e peça aos clientes para reativar notificações na página /r/.
  */
 const { initializeApp } = require('firebase-admin/app');
+const { getFirestore, Timestamp } = require('firebase-admin/firestore');
 const { onDocumentUpdated } = require('firebase-functions/v2/firestore');
+const { onSchedule } = require('firebase-functions/v2/scheduler');
 const webpush = require('web-push');
 const vapid = require('./vapid-private.json');
 
@@ -43,6 +45,54 @@ exports.onTrackNotify = onDocumentUpdated('tracks/{token}', async (event) => {
     }));
   }
   await Promise.all(jobs);
+});
+
+/** Tracks sem expiresAt (versões antigas do app) saem após este prazo sem atualização. */
+const LEGACY_TRACK_MAX_AGE_MS = 3 * 24 * 60 * 60 * 1000;
+const CLEANUP_PAGE = 200;
+const CLEANUP_MAX_PAGES = 10;
+
+/**
+ * LGPD: apaga tracks expirados junto com live/ e subs/ (recursiveDelete).
+ * TTL nativo do Firestore não serve aqui: apagaria só o doc pai e deixaria
+ * subs/ (endpoint + chaves de push do cliente) órfãs.
+ */
+exports.cleanupExpiredTracks = onSchedule({ schedule: 'every 6 hours', timeZone: 'America/Porto_Velho' }, async () => {
+  const db = getFirestore();
+  const now = Date.now();
+  let deleted = 0;
+
+  for (let page = 0; page < CLEANUP_MAX_PAGES; page++) {
+    const snap = await db.collection('tracks')
+      .where('expiresAt', '<=', Timestamp.fromMillis(now))
+      .limit(CLEANUP_PAGE)
+      .get();
+    if (snap.empty) break;
+    for (const doc of snap.docs) {
+      await db.recursiveDelete(doc.ref);
+      deleted++;
+    }
+    if (snap.size < CLEANUP_PAGE) break;
+  }
+
+  for (let page = 0; page < CLEANUP_MAX_PAGES; page++) {
+    const snap = await db.collection('tracks')
+      .where('updatedAt', '<', now - LEGACY_TRACK_MAX_AGE_MS)
+      .limit(CLEANUP_PAGE)
+      .get();
+    if (snap.empty) break;
+    let removedHere = 0;
+    for (const doc of snap.docs) {
+      const exp = doc.get('expiresAt');
+      if (exp && exp.toMillis() > now) continue;
+      await db.recursiveDelete(doc.ref);
+      removedHere++;
+      deleted++;
+    }
+    if (snap.size < CLEANUP_PAGE || removedHere === 0) break;
+  }
+
+  console.log('cleanupExpiredTracks', { deleted });
 });
 
 async function sendTrackPushes(event, token, extra) {

@@ -25,7 +25,10 @@ const {
   isValidTrack,
   TRACK_FIELD_KEYS,
   TRACK_UPDATE_KEYS,
-  TRACK_NEAR_KM
+  TRACK_NEAR_KM,
+  trackExpiresAtMs,
+  TRACK_RETENTION_ACTIVE_MS,
+  TRACK_RETENTION_FINAL_MS
 } = require('../lib/track-schema.js');
 
 function quotedKeysAfter(source, marker) {
@@ -207,7 +210,7 @@ describe('buildTrackPayload / isValidTrack', () => {
     assert.equal(payload.stopsAhead, 0);
     assert.equal(payload.driverLat, -8.75);
     assert.equal(payload.accuracy, 12);
-    const doc = { ...payload, ownerUid: 'uid-motorista' };
+    const doc = { ...payload, ownerUid: 'uid-motorista', expiresAt: { seconds: 1, nanoseconds: 0 } };
     assert.equal(isValidTrack(doc), true);
     TRACK_FIELD_KEYS.forEach((k) => {
       if (k === 'driverLat' || k === 'driverLng' || k === 'accuracy') return;
@@ -216,12 +219,26 @@ describe('buildTrackPayload / isValidTrack', () => {
   });
 
   it('rejects extra keys, out-of-range coords and missing ownerUid', () => {
-    const payload = { ...buildTrackPayload(sampleDelivery(), null, { now: 1 }), ownerUid: 'u1' };
+    const payload = { ...buildTrackPayload(sampleDelivery(), null, { now: 1 }), ownerUid: 'u1', expiresAt: { seconds: 1, nanoseconds: 0 } };
     assert.equal(isValidTrack(payload), true);
     assert.equal(isValidTrack({ ...payload, hack: true }), false);
     assert.equal(isValidTrack({ ...payload, destLat: 200 }), false);
     const { ownerUid, ...noOwner } = payload;
     assert.equal(ownerUid, 'u1');
     assert.equal(isValidTrack(noOwner), false);
+    const { expiresAt, ...noExpiry } = payload;
+    assert.ok(expiresAt);
+    assert.equal(isValidTrack(noExpiry), false);
+  });
+});
+
+describe('trackExpiresAtMs', () => {
+  it('keeps active tracks 48h after the last write and finished ones 24h', () => {
+    const now = 1700000000000;
+    assert.equal(trackExpiresAtMs('active', now), now + TRACK_RETENTION_ACTIVE_MS);
+    assert.equal(trackExpiresAtMs('entregue', now), now + TRACK_RETENTION_FINAL_MS);
+    assert.equal(trackExpiresAtMs('falhou', now), now + TRACK_RETENTION_FINAL_MS);
+    assert.equal(TRACK_RETENTION_ACTIVE_MS, 48 * 3600 * 1000);
+    assert.equal(TRACK_RETENTION_FINAL_MS, 24 * 3600 * 1000);
   });
 });
