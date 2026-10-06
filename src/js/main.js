@@ -256,6 +256,11 @@ import {
     markNotDelivered,
     resetVoltarDepoisAlert
 } from './not-delivered.js';
+import {
+    configureUndoSnackbar,
+    showUndoSnackbar,
+    setupUndoSnackbar
+} from './undo-snackbar.js';
 
 // --- App local ---
 if (location.hostname === '127.0.0.1') {
@@ -534,6 +539,9 @@ function configureExtractedModules() {
         showUndoSnackbar,
         minimizeDeliveryPanel,
         goToAdjacentDelivery
+    });
+    configureUndoSnackbar({
+        undoDeliveryStatus
     });
     configureItemPhotos({
         currentUid,
@@ -920,36 +928,7 @@ configureExtractedModules();
 // Implementação em src/js/history.js (configureHistory no boot).
 
 // ========== DESFAZER RÁPIDO (SNACKBAR) ==========
-let undoSnackbarTimer = null;
-let undoSnackbarTargetId = null;
-
-function hideUndoSnackbar() {
-    clearTimeout(undoSnackbarTimer);
-    undoSnackbarTimer = null;
-    undoSnackbarTargetId = null;
-    const el = document.getElementById('undoSnackbar');
-    if (el) el.hidden = true;
-}
-
-function showUndoSnackbar(deliveryId, message) {
-    const el = document.getElementById('undoSnackbar');
-    const text = document.getElementById('undoSnackbarText');
-    if (!el || !text) return;
-    undoSnackbarTargetId = deliveryId;
-    text.textContent = message;
-    el.hidden = false;
-    clearTimeout(undoSnackbarTimer);
-    undoSnackbarTimer = setTimeout(hideUndoSnackbar, 6000);
-}
-
-function setupUndoSnackbar() {
-    document.getElementById('undoSnackbarBtn')?.addEventListener('click', () => {
-        if (undoSnackbarTargetId == null) return;
-        const id = undoSnackbarTargetId;
-        hideUndoSnackbar();
-        undoDeliveryStatus(id, { keepPanel: true, keepMinimized: true });
-    });
-}
+// Implementação em src/js/undo-snackbar.js (configureUndoSnackbar no boot).
 
 /** uid cujos dados já estão em memória (evita o 2º loadStorage no initMap). */
 let storageLoadedUid = null;
