@@ -3,7 +3,7 @@
  * e upload opcional para a nuvem (Firebase Storage, atrás de CLOUD_BACKUP_ENABLED).
  * Montar o JSON e a UI ficam em main.js; aqui não há estado de rota/agenda.
  */
-import { loadFirebaseSdk } from './firebase-loader.js';
+import { loadFirebaseSdk, ensureAnonUser } from './firebase-loader.js';
 
 let deps = {
     getUid: () => 'guest',
@@ -160,13 +160,8 @@ export async function writeSilentLocalBackup(json) {
     }
 }
 
-export async function ensureFirebaseAnonAuth() {
-    const fb = await loadFirebaseSdk(['auth']);
-    if (!fb.auth) throw new Error('auth-missing');
-    const auth = fb.auth();
-    if (auth.currentUser) return auth.currentUser;
-    const cred = await auth.signInAnonymously();
-    return cred.user;
+export function ensureFirebaseAnonAuth() {
+    return ensureAnonUser();
 }
 
 export async function uploadCloudBackup(json) {

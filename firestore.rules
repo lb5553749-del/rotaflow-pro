@@ -7,30 +7,57 @@ service cloud.firestore {
       allow read, write: if request.auth != null && request.auth.uid == userId;
     }
 
-    // Rastreio v1: o token (32 hex) é a senha do documento.
-    // Leitura pública para a página do cliente; escrita só com o token.
+    // Rastreio: o token (32 hex) vai no link do cliente, então só serve para LER.
+    // Escrita exige o motorista autenticado (anônimo) que criou o doc (ownerUid).
+    // Tracks antigos sem ownerUid ficam imutáveis.
     match /tracks/{token} {
       allow read: if token.matches('^[a-f0-9]{32}$');
 
       allow create: if token.matches('^[a-f0-9]{32}$')
+        && request.auth != null
+        && request.resource.data.ownerUid == request.auth.uid
         && isValidTrack(request.resource.data);
 
       allow update: if token.matches('^[a-f0-9]{32}$')
+        && request.auth != null
+        && 'ownerUid' in resource.data
+        && resource.data.ownerUid == request.auth.uid
+        && request.resource.data.ownerUid == resource.data.ownerUid
         && isValidTrack(request.resource.data)
         && request.resource.data.diff(resource.data).affectedKeys()
              .hasOnly([
-               'driverLat', 'driverLng', 'accuracy', 'updatedAt',
-               'status', 'nearNotified', 'deliveredNotified', 'absentNotified',
+               'updatedAt', 'status', 'nearNotified', 'deliveredNotified', 'absentNotified',
                'failReason', 'destLat', 'destLng',
-               'destName', 'motorista', 'sequentialId',
-               'etaSeconds', 'stopsAhead'
+               'destName', 'motorista', 'sequentialId', 'expiresAt'
              ]);
 
       allow delete: if false;
 
-      // Inscrição de push do cliente (página fechada)
+      // Posição/ETA ao vivo (~4 s). Fica fora do doc pai para não disparar onTrackNotify
+      // a cada GPS. ownerUid replicado aqui evita um get() do pai em cada update.
+      match /live/{liveId} {
+        allow read: if token.matches('^[a-f0-9]{32}$') && liveId == 'pos';
+
+        allow create: if token.matches('^[a-f0-9]{32}$') && liveId == 'pos'
+          && request.auth != null
+          && request.resource.data.ownerUid == request.auth.uid
+          && getAfter(/databases/$(database)/documents/tracks/$(token)).data.ownerUid == request.auth.uid
+          && isValidTrackLive(request.resource.data);
+
+        allow update: if token.matches('^[a-f0-9]{32}$') && liveId == 'pos'
+          && request.auth != null
+          && resource.data.ownerUid == request.auth.uid
+          && request.resource.data.ownerUid == resource.data.ownerUid
+          && isValidTrackLive(request.resource.data);
+
+        allow delete: if false;
+      }
+
+      // Inscrição de push do cliente (página fechada). track.html só grava; quem lê é a
+      // Cloud Function (Admin SDK ignora rules). Endpoint + chaves não podem vazar.
       match /subs/{subId} {
         allow create, update: if token.matches('^[a-f0-9]{32}$')
+          && exists(/databases/$(database)/documents/tracks/$(token))
           && request.resource.data.keys().hasOnly(['endpoint', 'keys', 'createdAt'])
           && request.resource.data.endpoint is string
           && request.resource.data.endpoint.size() > 20
@@ -39,19 +66,27 @@ service cloud.firestore {
           && request.resource.data['keys'].keys().hasOnly(['p256dh', 'auth'])
           && request.resource.data['keys'].p256dh is string
           && request.resource.data['keys'].auth is string;
-        allow read: if token.matches('^[a-f0-9]{32}$');
+        allow read: if false;
         allow delete: if false;
       }
     }
   }
 
+  // LGPD: cleanupExpiredTracks (functions/index.js) apaga o track + subcoleções após expiresAt.
+  // Teto de 7 dias impede um cliente de "eternizar" o doc; folga cobre relógio adiantado.
+  function isValidExpiry(data) {
+    return data.expiresAt is timestamp
+      && data.expiresAt <= request.time + duration.value(7, 'd');
+  }
+
   function isValidTrack(data) {
     return data.keys().hasOnly([
         'destLat', 'destLng', 'destName', 'sequentialId', 'status',
-        'motorista', 'driverLat', 'driverLng', 'accuracy',
-        'updatedAt', 'nearNotified', 'deliveredNotified', 'absentNotified', 'failReason',
-        'etaSeconds', 'stopsAhead'
+        'motorista', 'updatedAt', 'nearNotified', 'deliveredNotified', 'absentNotified', 'failReason',
+        'ownerUid', 'expiresAt'
       ])
+      && data.ownerUid is string
+      && isValidExpiry(data)
       && data.destLat is number
       && data.destLng is number
       && data.destLat >= -90 && data.destLat <= 90
@@ -61,13 +96,23 @@ service cloud.firestore {
       && data.destName is string && data.destName.size() < 80
       && data.sequentialId is string && data.sequentialId.size() < 20
       && data.motorista is string && data.motorista.size() < 80
-      && (!('driverLat' in data) || (data.driverLat is number && data.driverLat >= -90 && data.driverLat <= 90))
-      && (!('driverLng' in data) || (data.driverLng is number && data.driverLng >= -180 && data.driverLng <= 180))
-      && (!('accuracy' in data) || data.accuracy is number)
       && (!('nearNotified' in data) || data.nearNotified is bool)
       && (!('deliveredNotified' in data) || data.deliveredNotified is bool)
       && (!('absentNotified' in data) || data.absentNotified is bool)
-      && (!('failReason' in data) || data.failReason in ['', 'ausente', 'endereco-errado', 'recusou'])
+      && (!('failReason' in data) || data.failReason in ['', 'ausente', 'endereco-errado', 'recusou']);
+  }
+
+  function isValidTrackLive(data) {
+    return data.keys().hasOnly([
+        'driverLat', 'driverLng', 'accuracy', 'updatedAt', 'etaSeconds', 'stopsAhead',
+        'ownerUid', 'expiresAt'
+      ])
+      && data.ownerUid is string
+      && isValidExpiry(data)
+      && data.updatedAt is number
+      && (!('driverLat' in data) || (data.driverLat is number && data.driverLat >= -90 && data.driverLat <= 90))
+      && (!('driverLng' in data) || (data.driverLng is number && data.driverLng >= -180 && data.driverLng <= 180))
+      && (!('accuracy' in data) || data.accuracy is number)
       && (!('etaSeconds' in data) || (data.etaSeconds is number && data.etaSeconds >= 0 && data.etaSeconds <= 172800))
       && (!('stopsAhead' in data) || (data.stopsAhead is number && data.stopsAhead >= 0 && data.stopsAhead <= 500));
   }

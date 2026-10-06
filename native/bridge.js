@@ -193,7 +193,10 @@ window.RotaFlowCap = {
   CameraResultType,
   CameraSource,
   Crashlytics: FirebaseCrashlytics,
-  MAPS_API_KEY: 'AIzaSyCRcCeryXHln-E84STTLlAl-oGrPh4mP8g',
+  /** Fonte única: window.ROTAFLOW_MAPS_KEY (firebase-config.js, carregado antes do bundle). */
+  get MAPS_API_KEY() {
+    return window.ROTAFLOW_MAPS_KEY || '';
+  },
   isNative() {
     try {
       return Capacitor.isNativePlatform();

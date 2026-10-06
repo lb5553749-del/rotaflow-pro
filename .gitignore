@@ -5,8 +5,9 @@ node_modules/
 .DS_Store
 www/
 build/
-android/
-ios/
+# Ancorados na raiz: native/android/ (plugins Java próprios) precisa ser versionado.
+/android/
+/ios/
 .idea/
 *.apk
 *.aab
@@ -15,9 +16,19 @@ signing/
 dist/
 functions/node_modules/
 functions/vapid-private.json
+functions/.secret.local
+functions/.env*
+.env
+.env.*
 android/app/google-services.json
 *.jks
 *.keystore
 key.properties
+*.p8
+*.p12
+*.pem
+serviceAccount*.json
+*-service-account*.json
+.runtimeconfig.json
 
 .marker-venv/

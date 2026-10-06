@@ -25,7 +25,14 @@ const {
   isValidTrack,
   TRACK_FIELD_KEYS,
   TRACK_UPDATE_KEYS,
-  TRACK_NEAR_KM
+  TRACK_NEAR_KM,
+  trackExpiresAtMs,
+  splitTrackPayload,
+  trackEventSignature,
+  isValidTrackLive,
+  TRACK_LIVE_KEYS,
+  TRACK_RETENTION_ACTIVE_MS,
+  TRACK_RETENTION_FINAL_MS
 } = require('../lib/track-schema.js');
 
 function quotedKeysAfter(source, marker) {
@@ -44,6 +51,10 @@ describe('firestore.rules stay aligned with TRACK_FIELD_KEYS', () => {
     const updateKeys = quotedKeysAfter(rules, 'affectedKeys()');
     assert.deepEqual(createKeys, [...TRACK_FIELD_KEYS].sort());
     assert.deepEqual(updateKeys, [...TRACK_UPDATE_KEYS].sort());
+  });
+
+  it('matches isValidTrackLive', () => {
+    assert.deepEqual(quotedKeysAfter(rules, 'function isValidTrackLive'), [...TRACK_LIVE_KEYS].sort());
   });
 });
 
@@ -207,16 +218,74 @@ describe('buildTrackPayload / isValidTrack', () => {
     assert.equal(payload.stopsAhead, 0);
     assert.equal(payload.driverLat, -8.75);
     assert.equal(payload.accuracy, 12);
-    assert.equal(isValidTrack(payload), true);
-    TRACK_FIELD_KEYS.forEach((k) => {
-      if (k === 'driverLat' || k === 'driverLng' || k === 'accuracy') return;
-      assert.ok(k in payload, k);
-    });
+    const stamp = { ownerUid: 'uid-motorista', expiresAt: { seconds: 1, nanoseconds: 0 } };
+    const { event, live } = splitTrackPayload(payload);
+    assert.equal(isValidTrack({ ...event, ...stamp }), true);
+    assert.equal(isValidTrackLive({ ...live, ...stamp }), true);
+    TRACK_FIELD_KEYS.forEach((k) => assert.ok(k in { ...event, ...stamp }, k));
   });
 
-  it('rejects extra keys and out-of-range coords', () => {
-    const payload = buildTrackPayload(sampleDelivery(), null, { now: 1 });
+  it('keeps live position out of the event doc', () => {
+    const payload = buildTrackPayload(sampleDelivery(), { pos: { lat: -8.75, lng: -63.88 } }, {
+      estimateStopEta: () => ({ seconds: 60 }),
+      pendingStops: [sampleDelivery()],
+      now: 5
+    });
+    const { event, live } = splitTrackPayload(payload);
+    ['driverLat', 'driverLng', 'accuracy', 'etaSeconds', 'stopsAhead'].forEach((k) => {
+      assert.ok(!(k in event), k);
+      assert.ok(k in live, k);
+    });
+    ['status', 'nearNotified', 'deliveredNotified', 'absentNotified', 'failReason', 'destName'].forEach((k) => {
+      assert.ok(k in event, k);
+      assert.ok(!(k in live), k);
+    });
+    assert.equal(event.updatedAt, 5);
+    assert.equal(live.updatedAt, 5);
+    const stamp = { ownerUid: 'u1', expiresAt: { seconds: 1, nanoseconds: 0 } };
+    assert.equal(isValidTrack({ ...event, ...stamp, driverLat: 1 }), false);
+  });
+
+  it('rejects extra keys, out-of-range coords and missing ownerUid', () => {
+    const { event } = splitTrackPayload(buildTrackPayload(sampleDelivery(), null, { now: 1 }));
+    const payload = { ...event, ownerUid: 'u1', expiresAt: { seconds: 1, nanoseconds: 0 } };
+    assert.equal(isValidTrack(payload), true);
     assert.equal(isValidTrack({ ...payload, hack: true }), false);
     assert.equal(isValidTrack({ ...payload, destLat: 200 }), false);
+    const { ownerUid, ...noOwner } = payload;
+    assert.equal(ownerUid, 'u1');
+    assert.equal(isValidTrack(noOwner), false);
+    const { expiresAt, ...noExpiry } = payload;
+    assert.ok(expiresAt);
+    assert.equal(isValidTrack(noExpiry), false);
+  });
+});
+
+describe('trackEventSignature', () => {
+  const base = {
+    destLat: 1, destLng: 2, destName: 'Ana', sequentialId: 'A1', status: 'active', motorista: 'João',
+    nearNotified: false, deliveredNotified: false, absentNotified: false, failReason: '', updatedAt: 1
+  };
+
+  it('ignores updatedAt/expiresAt so position-only refreshes do not rewrite the event doc', () => {
+    assert.equal(trackEventSignature(base), trackEventSignature({ ...base, updatedAt: 999, expiresAt: {} }));
+  });
+
+  it('changes on every field that can trigger a push', () => {
+    const sig = trackEventSignature(base);
+    assert.notEqual(trackEventSignature({ ...base, nearNotified: true }), sig);
+    assert.notEqual(trackEventSignature({ ...base, status: 'entregue' }), sig);
+    assert.notEqual(trackEventSignature({ ...base, failReason: 'ausente' }), sig);
+  });
+});
+
+describe('trackExpiresAtMs', () => {
+  it('keeps active tracks 48h after the last write and finished ones 24h', () => {
+    const now = 1700000000000;
+    assert.equal(trackExpiresAtMs('active', now), now + TRACK_RETENTION_ACTIVE_MS);
+    assert.equal(trackExpiresAtMs('entregue', now), now + TRACK_RETENTION_FINAL_MS);
+    assert.equal(trackExpiresAtMs('falhou', now), now + TRACK_RETENTION_FINAL_MS);
+    assert.equal(TRACK_RETENTION_ACTIVE_MS, 48 * 3600 * 1000);
+    assert.equal(TRACK_RETENTION_FINAL_MS, 24 * 3600 * 1000);
   });
 });

@@ -152,8 +152,21 @@ export function setupDomContentLoadedBoot() {
     });
 }
 
+function loadGoogleMapsJs() {
+    const key = window.ROTAFLOW_MAPS_KEY || '';
+    if (!key || document.querySelector('script[data-rf-maps]')) return;
+    const s = document.createElement('script');
+    s.src = 'https://maps.googleapis.com/maps/api/js?key=' + encodeURIComponent(key)
+        + '&callback=initMap&loading=async&v=weekly';
+    s.async = true;
+    s.defer = true;
+    s.dataset.rfMaps = '1';
+    document.head.appendChild(s);
+}
+
 export function setupRuntimeBoot() {
     window.initMap = deps.initMap;
+    loadGoogleMapsJs();
     window.addEventListener('beforeunload', deps.persistStorageNow);
 
     if ('serviceWorker' in navigator && !deps.isNativeApp()) {

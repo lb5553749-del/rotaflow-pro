@@ -15,7 +15,6 @@ import { setDirectionsService } from './routing.js';
 
 export const PORTO_VELHO_CENTER = { lat: -8.7619, lng: -63.9038 };
 export const PORTO_VELHO_RADIUS = 50000;
-export const MAPS_WEB_KEY = 'AIzaSyCRcCeryXHln-E84STTLlAl-oGrPh4mP8g';
 
 export const mapStyle = [
     { elementType: 'geometry', stylers: [{ color: '#f1f3f4' }] },
@@ -251,7 +250,7 @@ async function initNativeGoogleMap() {
     const nativeGoogleMap = await cap.GoogleMap.create({
         id: 'rotaflow',
         element: el,
-        apiKey: cap.MAPS_API_KEY || MAPS_WEB_KEY,
+        apiKey: cap.MAPS_API_KEY,
         config: {
             center: PORTO_VELHO_CENTER,
             zoom: 12,

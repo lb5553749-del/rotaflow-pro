@@ -17,6 +17,7 @@ import {
 } from '../../lib/gps-helpers.js';
 import { gpsErrorMessage as gpsErrorMessageOf } from '../../lib/routing-helpers.js';
 import { TRACK_NEAR_METERS } from '../../lib/track-schema.js';
+import { ensureAnonUser } from './firebase-loader.js';
 
 let deps = {
     isNativeApp: () => false,
@@ -51,6 +52,7 @@ let lastWatchCoords = null;
 let stationaryStreak = 0;
 let watchStationaryMode = false;
 let watchRetuneTimer = null;
+let bgAuthUid = '';
 
 export function configureGps(opts) {
     deps = { ...deps, ...(opts || {}) };
@@ -260,8 +262,25 @@ export async function startBackgroundGpsWatch() {
             targets: activeTrackTargets()
         });
         bgGpsStarted = true;
+        pushBackgroundGpsAuth(bg);
     } catch (err) {
         console.warn('bg gps start', err);
+    }
+}
+
+/**
+ * O serviço nativo grava live/pos direto na REST do Firestore; as rules exigem o mesmo
+ * usuário anônimo dono do track. Só carrega o SDK quando há entrega com link de rastreio.
+ */
+async function pushBackgroundGpsAuth(bg) {
+    if (!bg || typeof bg.setAuth !== 'function' || !activeTrackTargets().length) return;
+    try {
+        const user = await ensureAnonUser();
+        if (!user || !user.refreshToken || user.uid === bgAuthUid) return;
+        await bg.setAuth({ uid: user.uid, refreshToken: user.refreshToken });
+        bgAuthUid = user.uid;
+    } catch (err) {
+        console.warn('bg gps auth', err);
     }
 }
 
@@ -269,6 +288,7 @@ export function syncBackgroundGpsTargets() {
     const bg = window.RotaFlowCap && window.RotaFlowCap.BackgroundGps;
     if (!bgGpsStarted || !bg || typeof bg.updateTargets !== 'function') return;
     bg.updateTargets({ targets: activeTrackTargets() }).catch(() => {});
+    pushBackgroundGpsAuth(bg);
 }
 
 export function readGpsPosition(options) {

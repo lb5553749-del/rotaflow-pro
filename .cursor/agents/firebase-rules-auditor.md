@@ -26,7 +26,7 @@ O app guarda dados pessoais reais de clientes (nome, telefone, endereço, fotos 
 - `src/js/backup-store.js` faz `signInAnonymously()` e sobe `users/{uid}/backups/latest.json` no Storage, atrás da flag `CLOUD_BACKUP_ENABLED`.
 - `track-sw.js` embute `PROJECT_ID` e uma `API_KEY` web e consulta a REST do Firestore direto do service worker.
 - `native/android/BackgroundGpsService.java:315-351` faz `PATCH` direto na REST do Firestore usando a mesma `apiKey` web pública, sem nenhuma autenticação. A chave chega do JavaScript em `src/js/main.js:6572` e fica em `SharedPreferences`. Ou seja, a superfície de escrita em `tracks` hoje é literalmente "qualquer pessoa na internet", e não há nada secreto dentro do APK que precise ser extraído para isso.
-- `native/android/WebPushSender.java` ainda sabe assinar VAPID com chave privada no próprio aparelho. É código morto e perigoso: se algum dia voltar a ser chamado, coloca uma chave privada no APK. Sinalize sempre que encostarem nele.
+- `WebPushSender.java` (assinava VAPID com chave privada no aparelho) foi removido; `patch-screen-events-android.js` apaga a cópia antiga em `android/`. Push sai só da Cloud Function. Sinalize qualquer tentativa de reintroduzir assinatura VAPID no cliente.
 
 ## Achados já levantados em `docs/AUDITORIA-TECNICA.md`
 
