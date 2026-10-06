@@ -1,0 +1,17 @@
+{
+  "id": "rotaflow-rastreio",
+  "name": "Rastreio RotaFlow",
+  "short_name": "Rastreio",
+  "description": "Acompanhe sua entrega em tempo real",
+  "start_url": "/r/",
+  "scope": "/r/",
+  "display": "standalone",
+  "orientation": "portrait-primary",
+  "lang": "pt-BR",
+  "theme_color": "#0f172a",
+  "background_color": "#0f172a",
+  "icons": [
+    { "src": "/track-icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "/track-icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "maskable" }
+  ]
+}

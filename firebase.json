@@ -1,0 +1,89 @@
+{
+  "hosting": {
+    "public": ".",
+    "ignore": [
+      "firebase.json",
+      "**/.*",
+      "**/node_modules/**",
+      "**/.git/**",
+      "**/package*.json",
+      "**/*.md",
+      "**/_*.js",
+      "firestore.rules",
+      "storage.rules",
+      "firestore.indexes.json",
+      "database.rules.json",
+      "android/**",
+      "www/**",
+      "native/**",
+      "src/**",
+      "lib/**",
+      "test/**",
+      "scripts/**",
+      "dist/**",
+      "signing/**",
+      "functions/**",
+      "estudo-transpetro/**",
+      "capacitor.config.json"
+    ],
+    "headers": [
+      {
+        "source": "**",
+        "headers": [
+          { "key": "X-Content-Type-Options", "value": "nosniff" },
+          { "key": "Referrer-Policy", "value": "strict-origin-when-cross-origin" }
+        ]
+      },
+      {
+        "source": "index.html",
+        "headers": [
+          { "key": "Cache-Control", "value": "no-cache" }
+        ]
+      },
+      {
+        "source": "track.html",
+        "headers": [
+          { "key": "Cache-Control", "value": "no-cache" }
+        ]
+      },
+      {
+        "source": "track-sw.js",
+        "headers": [
+          { "key": "Cache-Control", "value": "no-cache" },
+          { "key": "Service-Worker-Allowed", "value": "/" }
+        ]
+      },
+      {
+        "source": "track-notify.wav",
+        "headers": [
+          { "key": "Cache-Control", "value": "no-cache" },
+          { "key": "Content-Type", "value": "audio/wav" }
+        ]
+      },
+      {
+        "source": "track-manifest.webmanifest",
+        "headers": [
+          { "key": "Cache-Control", "value": "no-cache" },
+          { "key": "Content-Type", "value": "application/manifest+json" }
+        ]
+      }
+    ],
+    "rewrites": [
+      { "source": "/r/**", "destination": "/track.html" }
+    ]
+  },
+  "firestore": {
+    "rules": "firestore.rules",
+    "indexes": "firestore.indexes.json"
+  },
+  "storage": {
+    "rules": "storage.rules"
+  },
+  "functions": [
+    {
+      "source": "functions",
+      "codebase": "default",
+      "ignore": ["node_modules", ".git", "firebase-debug.log"]
+    }
+  ]
+}

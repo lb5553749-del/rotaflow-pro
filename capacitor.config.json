@@ -1,0 +1,16 @@
+{
+  "appId": "com.rotaflow.pro",
+  "appName": "RotaFlow Pro",
+  "webDir": "www",
+  "server": {
+    "androidScheme": "https"
+  },
+  "android": {
+    "allowMixedContent": false
+  },
+  "plugins": {
+    "StatusBar": {
+      "style": "DARK"
+    }
+  }
+}
