@@ -10,7 +10,10 @@ import {
     canUseWebGeolocation,
     canUseNativeGeolocation,
     buildActiveTrackTargets,
-    positionFromBackgroundLocation
+    positionFromBackgroundLocation,
+    isGpsStationary,
+    adaptiveWatchOptions,
+    nextStationaryState
 } from '../../lib/gps-helpers.js';
 import { gpsErrorMessage as gpsErrorMessageOf } from '../../lib/routing-helpers.js';
 import { TRACK_NEAR_METERS } from '../../lib/track-schema.js';
@@ -43,6 +46,11 @@ let bgGpsStarted = false;
 let chipUpdateTimer = null;
 let extrasAsked = false;
 let lastEnableError = null;
+/** Adaptive battery: last coords + stationary streak for JS watch retune. */
+let lastWatchCoords = null;
+let stationaryStreak = 0;
+let watchStationaryMode = false;
+let watchRetuneTimer = null;
 
 export function configureGps(opts) {
     deps = { ...deps, ...(opts || {}) };
@@ -114,6 +122,60 @@ export function clearGpsWatchOnly() {
     watchId = null;
 }
 
+function resetAdaptiveGpsState() {
+    lastWatchCoords = null;
+    stationaryStreak = 0;
+    watchStationaryMode = false;
+    if (watchRetuneTimer) {
+        clearTimeout(watchRetuneTimer);
+        watchRetuneTimer = null;
+    }
+}
+
+/**
+ * Re-bind watchPosition with adaptive options when stationary state flips.
+ * Skips native BackgroundGps (Java interval stays 4s — see docs/GPS-ADAPTIVO.md).
+ */
+async function retuneGpsWatchIfNeeded(wantStationary) {
+    if (wantStationary === watchStationaryMode) return;
+    watchStationaryMode = wantStationary;
+    if (!deps.getGpsEnabled()) return;
+    const canNative = canUseNativeGeolocation({
+        isNative: deps.isNativeApp(),
+        hasNativeGeo: !!window.RotaFlowCap?.Geolocation
+    });
+    const canWeb = canUseWebGeolocation({
+        isSecureContext: !!window.isSecureContext,
+        hasGeolocation: !!navigator.geolocation
+    });
+    if (!canNative && !canWeb) return;
+    clearGpsWatchOnly();
+    const watchOpts = adaptiveWatchOptions({ stationary: watchStationaryMode });
+    const onWatch = applyGpsWatchPosition;
+    if (canNative) {
+        watchId = await window.RotaFlowCap.Geolocation.watchPosition(watchOpts, (p, err) => {
+            if (!err) onWatch(p);
+        });
+    } else {
+        watchId = navigator.geolocation.watchPosition(onWatch, () => {}, watchOpts);
+    }
+}
+
+function noteAdaptiveMovement(coords) {
+    if (!coords) return;
+    const moved = !isGpsStationary(lastWatchCoords, coords);
+    const next = nextStationaryState(stationaryStreak, moved);
+    stationaryStreak = next.streak;
+    lastWatchCoords = { lat: coords.lat, lng: coords.lng };
+    if (next.stationary === watchStationaryMode) return;
+    if (watchRetuneTimer) clearTimeout(watchRetuneTimer);
+    // Debounce retunes to avoid thrashing clearWatch/watchPosition.
+    watchRetuneTimer = setTimeout(() => {
+        watchRetuneTimer = null;
+        retuneGpsWatchIfNeeded(next.stationary).catch(() => {});
+    }, 800);
+}
+
 export async function stopBackgroundGpsWatch() {
     const bg = window.RotaFlowCap && window.RotaFlowCap.BackgroundGps;
     bgGpsStarted = false;
@@ -125,6 +187,7 @@ export async function stopBackgroundGpsWatch() {
 export function clearGpsTracking() {
     stopBackgroundGpsWatch();
     clearGpsWatchOnly();
+    resetAdaptiveGpsState();
     deps.setStartPoint(null);
     deps.setGpsAccuracyMeters(0);
     deps.updateOptimizeFabVisibility();
@@ -139,6 +202,7 @@ export function applyGpsWatchPosition(p) {
     if (!deps.getGpsEnabled() || !p?.coords) return;
     const coords = coordsFromPosition(p);
     if (!coords) return;
+    noteAdaptiveMovement(coords);
     deps.setStartPoint({ lat: coords.lat, lng: coords.lng });
     if (coords.accuracy != null) deps.setGpsAccuracyMeters(coords.accuracy);
     deps.publishDriverGpsFromWatch(p);
@@ -259,9 +323,10 @@ export async function enableGpsTracking() {
         updateGpsButton();
         deps.updateOptimizeFabVisibility();
         clearGpsWatchOnly();
+        resetAdaptiveGpsState();
         applyGpsWatchPosition(pos);
         const onWatch = applyGpsWatchPosition;
-        const watchOpts = { enableHighAccuracy: true, maximumAge: 10000, timeout: 20000 };
+        const watchOpts = adaptiveWatchOptions({ stationary: false });
         if (canNative) {
             watchId = await window.RotaFlowCap.Geolocation.watchPosition(watchOpts, (p, err) => {
                 if (!err) onWatch(p);

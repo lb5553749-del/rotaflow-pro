@@ -77,3 +77,33 @@ describe('buildActiveTrackTargets / background location', () => {
     assert.equal(positionFromBackgroundLocation({ latitude: 1 }), null);
   });
 });
+
+describe('adaptive GPS battery helpers', () => {
+  const {
+    isGpsStationary,
+    adaptiveWatchOptions,
+    suggestedBackgroundIntervalMs,
+    nextStationaryState,
+    GPS_STATIONARY_SAMPLES
+  } = require('../lib/gps-helpers.js');
+
+  it('detects stationary and retunes watch options', () => {
+    assert.equal(
+      isGpsStationary({ lat: 0, lng: 0 }, { lat: 0.00001, lng: 0 }),
+      true
+    );
+    assert.equal(
+      isGpsStationary({ lat: 0, lng: 0 }, { lat: 0.01, lng: 0 }),
+      false
+    );
+    assert.equal(adaptiveWatchOptions({ stationary: true }).enableHighAccuracy, false);
+    assert.equal(adaptiveWatchOptions({ stationary: false }).maximumAge, 10000);
+    assert.equal(suggestedBackgroundIntervalMs({ stationary: true }), 12000);
+    let state = nextStationaryState(0, false);
+    for (let i = 1; i < GPS_STATIONARY_SAMPLES; i++) {
+      state = nextStationaryState(state.streak, false);
+    }
+    assert.equal(state.stationary, true);
+    assert.equal(nextStationaryState(5, true).stationary, false);
+  });
+});
