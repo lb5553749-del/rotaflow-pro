@@ -46,6 +46,30 @@ import {
     showProfileModal
 } from './profile.js';
 import {
+    configureRiskAreas,
+    loadRiskAreas,
+    getRiskAreas,
+    riskLevelForDelivery,
+    setRiskLevelFromList,
+    showRiskAreasModal
+} from './risk-areas.js';
+import {
+    configureVehicleMode,
+    loadVehicleMode,
+    isVehicleModeEnabled,
+    setVehicleModeEnabled,
+    buildNavigationUrls
+} from './vehicle-mode.js';
+import {
+    configureHaptics,
+    playDeliveryHaptic,
+    playNearHaptic
+} from './haptics.js';
+import {
+    preferDaytimeRiskOrder,
+    summarizeRouteRisk
+} from '../../lib/risk-area-helpers.js';
+import {
     configureResumeUi,
     recoverUiAfterResume,
     setupCameraRestoreHandler
@@ -490,13 +514,34 @@ function configureExtractedModules() {
         getPinSizePref: () => pinSizePref,
         getFeedbackVibrateEnabled: () => feedbackVibrateEnabled,
         getFeedbackSoundEnabled: () => feedbackSoundEnabled,
+        getVehicleModeEnabled: () => isVehicleModeEnabled(),
         setPinSizePref,
         setFeedbackPrefs,
+        setVehicleModeEnabled,
+        showRiskAreasModal,
         saveStorage,
         backupData,
         logoutUser,
         showToast
     });
+    configureRiskAreas({
+        getStorage: () => (typeof localStorage !== 'undefined' ? localStorage : null),
+        showToast,
+        onAreasChanged: () => {
+            try { rebuildMarkers(false); } catch (_) {}
+            try { renderDeliveriesList(); } catch (_) {}
+        }
+    });
+    configureVehicleMode({
+        getStorage: () => (typeof localStorage !== 'undefined' ? localStorage : null),
+        showToast
+    });
+    configureHaptics({
+        getFeedbackVibrateEnabled: () => feedbackVibrateEnabled,
+        isNativeApp
+    });
+    loadRiskAreas();
+    loadVehicleMode();
     configureResumeUi({
         isNativeApp,
         getUseNativeMap: () => useNativeMap,
@@ -537,6 +582,7 @@ function configureExtractedModules() {
         isActiveStop,
         getFeedbackVibrateEnabled: () => feedbackVibrateEnabled,
         getFeedbackSoundEnabled: () => feedbackSoundEnabled,
+        playDeliveryHaptic,
         getAppIcon: () => APP_ICON,
         showToast,
         showChoiceModal,
@@ -623,7 +669,8 @@ function configureExtractedModules() {
         getMap: () => map,
         getUseNativeMap: () => useNativeMap,
         getNativeGoogleMap: () => nativeGoogleMap,
-        setNativeMapZoom: (z) => { nativeMapZoom = z; }
+        setNativeMapZoom: (z) => { nativeMapZoom = z; },
+        getRiskLevelForDelivery: riskLevelForDelivery
     });
     configureDeliveryStatus({
         getDeliveries: () => deliveries,
@@ -720,7 +767,10 @@ function configureExtractedModules() {
         playDeliveryFeedback,
         noteDeliveryCompletedForBackup,
         countNormalActiveStops,
-        maybeNotifyVoltarDepois
+        maybeNotifyVoltarDepois,
+        getRiskLevelForDelivery: riskLevelForDelivery,
+        setRiskLevelFromList,
+        rebuildMarkers
     });
     configureAgendaList({
         getAgenda: () => agenda,
@@ -759,14 +809,16 @@ function configureExtractedModules() {
     });
     configureMapPins({
         getPinSizePref: () => pinSizePref,
-        countActivePins: () => deliveries.filter((d) => shouldShowOnMap(d) && !isMutedPin(d)).length
+        countActivePins: () => deliveries.filter((d) => shouldShowOnMap(d) && !isMutedPin(d)).length,
+        getRiskLevelForDelivery: riskLevelForDelivery
     });
     configureMapMarkers({
         getMap: () => map,
         getUseNativeMap: () => useNativeMap,
         getDeliveries: () => deliveries,
         openDeliveryPanel,
-        updateDeliveryStats
+        updateDeliveryStats,
+        getRiskLevelForDelivery: riskLevelForDelivery
     });
     configureDeliveryPanel({
         getDeliveries: () => deliveries,
@@ -793,7 +845,11 @@ function configureExtractedModules() {
         saveDeliveryPhotoToAgenda,
         idbDeletePhoto,
         saveStorage,
-        scheduleDeliveriesListPhotoRefresh
+        scheduleDeliveriesListPhotoRefresh,
+        isVehicleModeEnabled,
+        showChoiceModal,
+        buildNavigationUrls,
+        getRiskLevelForDelivery: riskLevelForDelivery
     });
     configureMapLayer({
         isNativeApp,
@@ -856,7 +912,10 @@ function configureExtractedModules() {
         syncBackgroundGpsTargets,
         showToast,
         yieldToUiFrame,
-        getTravelMode: () => google.maps.TravelMode.DRIVING
+        getTravelMode: () => google.maps.TravelMode.DRIVING,
+        getRiskAreas,
+        preferDaytimeRiskOrder,
+        summarizeRouteRisk
     });
     configureTracking({
         isNativeApp,
@@ -877,7 +936,8 @@ function configureExtractedModules() {
         openWhatsAppChat,
         buildDeliveryWhatsAppMessage,
         syncBackgroundGpsTargets,
-        isBgGpsStarted
+        isBgGpsStarted,
+        playNearHaptic
     });
     configureAuth({
         loadStorage,

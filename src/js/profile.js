@@ -17,8 +17,11 @@ let deps = {
     getPinSizePref: () => 'p',
     getFeedbackVibrateEnabled: () => true,
     getFeedbackSoundEnabled: () => true,
+    getVehicleModeEnabled: () => false,
     setPinSizePref: () => {},
     setFeedbackPrefs: () => {},
+    setVehicleModeEnabled: () => {},
+    showRiskAreasModal: () => {},
     saveStorage: () => {},
     backupData: async () => {},
     logoutUser: () => {},
@@ -37,6 +40,7 @@ export function showProfileModal() {
     const pinSizePref = deps.getPinSizePref();
     const feedbackVibrateEnabled = deps.getFeedbackVibrateEnabled();
     const feedbackSoundEnabled = deps.getFeedbackSoundEnabled();
+    const vehicleModeEnabled = !!deps.getVehicleModeEnabled();
     overlay.innerHTML = `
         <div class="modal-container" style="max-width:450px;">
             <h3 class="modal-title">Perfil e preferências</h3>
@@ -100,6 +104,26 @@ export function showProfileModal() {
                 </div>
             </div>
             <div class="form-group">
+                <label>Modo suporte veicular</label>
+                <div class="pref-toggle-row">
+                    <div>
+                        <span>Alto contraste e botões maiores</span>
+                        <small>Próximo destino em destaque · Maps/Waze</small>
+                    </div>
+                    <input type="checkbox" id="profileVehicleMode" ${vehicleModeEnabled ? 'checked' : ''} aria-label="Ativar modo suporte veicular">
+                </div>
+            </div>
+            <div class="form-group">
+                <label>Áreas de risco</label>
+                <div class="pref-toggle-row">
+                    <div>
+                        <span>Bairros / ruas com alerta</span>
+                        <small>Amarelo ou vermelho (priorize diurno)</small>
+                    </div>
+                    <button type="button" class="action-btn backup-agenda-btn" id="profileRiskAreasBtn" style="margin:0;white-space:nowrap;"><i class="fas fa-exclamation-triangle"></i> Gerir</button>
+                </div>
+            </div>
+            <div class="form-group">
                 <label>Backup</label>
                 <div class="pref-toggle-row">
                     <div>
@@ -135,6 +159,11 @@ export function showProfileModal() {
         }
     });
 
+    document.getElementById('profileRiskAreasBtn')?.addEventListener('click', () => {
+        overlay.remove();
+        deps.showRiskAreasModal();
+    });
+
     document.getElementById('saveProfileBtn').onclick = () => {
         applyProfileFormValues(userProfile, {
             motorista: document.getElementById('profileMotorista').value,
@@ -149,6 +178,7 @@ export function showProfileModal() {
             vibrate: !!document.getElementById('profileVibrate')?.checked,
             sound: !!document.getElementById('profileSound')?.checked
         });
+        deps.setVehicleModeEnabled(!!document.getElementById('profileVehicleMode')?.checked);
         deps.saveStorage();
         deps.showToast("Perfil salvo");
         overlay.remove();
