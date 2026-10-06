@@ -16,6 +16,7 @@ import {
     appendEmptyRoute,
     sanitizeRouteName
 } from '../../lib/route-helpers.js';
+import { routeDayStats } from '../../lib/history-helpers.js';
 import { escapeHtml } from '../../lib/html.js';
 
 let deps = {
@@ -47,7 +48,8 @@ let deps = {
     persistStorageNow: () => false,
     showToast: () => {},
     showConfirmModal: async () => false,
-    showPromptModal: async () => null
+    showPromptModal: async () => null,
+    archiveCurrentRouteDay: () => {}
 };
 
 export function configureRoutes(opts) {
@@ -203,6 +205,27 @@ export async function startNewRoute() {
     applyLoadedRouteState(route);
     deps.persistStorageNow();
     deps.showToast(`${route.name} criada — ${previousName} continua disponível`);
+}
+
+export async function clearRoute() {
+    const deliveries = deps.getDeliveries();
+    if (!deliveries.length) {
+        deps.showToast('A rota já está vazia', true);
+        return;
+    }
+    const stats = routeDayStats(deliveries);
+    const pendingNote = stats.pendente > 0
+        ? ` Ainda há ${stats.pendente} parada(s) pendente(s).`
+        : '';
+    const ok = await deps.showConfirmModal({
+        title: 'Limpar rota',
+        message: `Deseja limpar todas as entregas da rota atual? O dia será salvo no histórico.${pendingNote} A agenda não será alterada.`,
+        confirmText: 'Limpar',
+        danger: true
+    });
+    if (!ok) return;
+    deps.archiveCurrentRouteDay({ silent: true, clearAfter: true });
+    deps.showToast('Rota limpa e dia salvo no histórico');
 }
 
 export async function renameRoute(routeId) {

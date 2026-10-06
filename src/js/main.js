@@ -153,7 +153,8 @@ import {
     syncActiveRouteIntoRoutes,
     hydrateRoutesFromData,
     renderRouteSwitcher,
-    startNewRoute
+    startNewRoute,
+    clearRoute
 } from './routes.js';
 import {
     configurePersist,
@@ -786,7 +787,8 @@ function configureExtractedModules() {
         persistStorageNow,
         showToast,
         showConfirmModal,
-        showPromptModal
+        showPromptModal,
+        archiveCurrentRouteDay
     });
     configureHistory({
         getDeliveries: () => deliveries,
@@ -1689,25 +1691,7 @@ async function copyFromOtherRoute() {
 // Implementação em src/js/backup-ui.js (configureBackupUi no boot).
 
 // ========== LIMPAR ROTA / NOVA ROTA ==========
-async function clearRoute() {
-    if (!deliveries.length) {
-        showToast('A rota já está vazia', true);
-        return;
-    }
-    const stats = routeDayStats(deliveries);
-    const pendingNote = stats.pendente > 0
-        ? ` Ainda há ${stats.pendente} parada(s) pendente(s).`
-        : '';
-    const ok = await showConfirmModal({
-        title: 'Limpar rota',
-        message: `Deseja limpar todas as entregas da rota atual? O dia será salvo no histórico.${pendingNote} A agenda não será alterada.`,
-        confirmText: 'Limpar',
-        danger: true
-    });
-    if (!ok) return;
-    archiveCurrentRouteDay({ silent: true, clearAfter: true });
-    showToast('Rota limpa e dia salvo no histórico');
-}
+// clearRoute / startNewRoute: src/js/routes.js (configureRoutes no boot).
 
 // Toggle sidebar / fechar overlays: src/js/sidebar.js.
 
