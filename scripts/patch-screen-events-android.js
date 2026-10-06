@@ -24,7 +24,6 @@ for (const file of [
   'ScreenEventsPlugin.java',
   'BackgroundGpsPlugin.java',
   'BackgroundGpsService.java',
-  'WebPushSender.java',
   'MultiCameraPlugin.java',
   'MultiCameraActivity.java'
 ]) {
@@ -35,6 +34,9 @@ for (const file of [
   }
   fs.copyFileSync(src, path.join(javaDir, file));
 }
+
+// Removido: assinava VAPID com chave privada no aparelho. Push sai só da Cloud Function.
+fs.rmSync(path.join(javaDir, 'WebPushSender.java'), { force: true });
 
 const desiredMain = `package com.rotaflow.pro;
 
@@ -102,11 +104,9 @@ const gradlePath = path.join(root, 'android/app/build.gradle');
 if (fs.existsSync(gradlePath)) {
   let gradle = fs.readFileSync(gradlePath, 'utf8');
   let changed = false;
-  if (!gradle.includes('bcprov-jdk18on')) {
-    gradle = gradle.replace(
-      /dependencies\s*\{/,
-      "dependencies {\n    implementation 'org.bouncycastle:bcprov-jdk18on:1.78.1'"
-    );
+  const bcprov = /\n\s*implementation 'org\.bouncycastle:bcprov-jdk18on:[^']+'/;
+  if (bcprov.test(gradle)) {
+    gradle = gradle.replace(bcprov, '');
     changed = true;
   }
   const cameraDeps = [
