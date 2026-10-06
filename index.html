@@ -267,8 +267,8 @@
 <input type="file" id="agendaGalleryInput" accept="image/*" multiple style="display:none;" aria-hidden="true">
 
 <script src="./firebase-config.js"></script>
-<!-- Gerado por `npm run build` a partir de src/js/ (inclui native/bridge.js). Firebase SDK carrega sob demanda. -->
+<!-- Gerado por `npm run build` a partir de src/js/ (inclui native/bridge.js). Firebase SDK carrega sob demanda;
+     Maps JS é injetado por app-boot.js com window.ROTAFLOW_MAPS_KEY. -->
 <script src="./build/app.js"></script>
-<script async defer src="https://maps.googleapis.com/maps/api/js?key=AIzaSyCRcCeryXHln-E84STTLlAl-oGrPh4mP8g&callback=initMap&loading=async&v=weekly"></script>
 </body>
 </html>
