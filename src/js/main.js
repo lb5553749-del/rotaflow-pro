@@ -243,13 +243,19 @@ import {
     editAgendaItem
 } from './edit-modals.js';
 import {
-    FAIL_REASON_LABELS,
-    FAIL_REASON_OPTIONS,
     findActiveDeliveryByAddress
 } from '../../lib/list-helpers.js';
 import {
     configureBackupStore
 } from './backup-store.js';
+import {
+    configureNotDelivered,
+    playDeliveryFeedback,
+    countNormalActiveStops,
+    maybeNotifyVoltarDepois,
+    markNotDelivered,
+    resetVoltarDepoisAlert
+} from './not-delivered.js';
 
 // --- App local ---
 if (location.hostname === '127.0.0.1') {
@@ -505,6 +511,29 @@ function configureExtractedModules() {
         updateDeliveryStats,
         showToast,
         addDeliveryDirect
+    });
+    configureNotDelivered({
+        getDeliveries: () => deliveries,
+        isActiveStop,
+        getFeedbackVibrateEnabled: () => feedbackVibrateEnabled,
+        getFeedbackSoundEnabled: () => feedbackSoundEnabled,
+        getAppIcon: () => APP_ICON,
+        showToast,
+        showChoiceModal,
+        saveStorage,
+        getMarker,
+        updateMarkerIcon,
+        rebuildMarkers,
+        updateDeliveryStats,
+        renderDeliveriesList,
+        releaseInMemoryPhotosExcept,
+        syncTrackingStatus,
+        sendAbsentPush,
+        notifyRouteCompositionChanged,
+        noteDeliveryCompletedForBackup,
+        showUndoSnackbar,
+        minimizeDeliveryPanel,
+        goToAdjacentDelivery
     });
     configureItemPhotos({
         currentUid,
@@ -1961,187 +1990,14 @@ function undoDeliveryStatus(id, { keepPanel = false, keepMinimized = false } = {
 }
 
 // ========== NÃO ENTREGUE / VOLTAR DEPOIS ==========
-// FAIL_REASON_*: lib/list-helpers.js
-
-let voltarDepoisAlertShown = false;
-
-function playDeliveryFeedback() {
-    try {
-        if (feedbackVibrateEnabled && navigator.vibrate) navigator.vibrate([35, 25, 45]);
-    } catch (e) {}
-    if (!feedbackSoundEnabled) return;
-    try {
-        const Ctx = window.AudioContext || window.webkitAudioContext;
-        if (!Ctx) return;
-        const ctx = new Ctx();
-        const osc = ctx.createOscillator();
-        const gain = ctx.createGain();
-        osc.type = 'sine';
-        osc.frequency.value = 880;
-        gain.gain.value = 0.07;
-        osc.connect(gain);
-        gain.connect(ctx.destination);
-        osc.start();
-        gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.12);
-        osc.stop(ctx.currentTime + 0.13);
-        setTimeout(() => { try { ctx.close(); } catch (e) {} }, 250);
-    } catch (e) {}
-}
-
-async function ensureNotificationPermission() {
-    if (!('Notification' in window)) return false;
-    if (Notification.permission === 'granted') return true;
-    if (Notification.permission === 'denied') return false;
-    try {
-        const result = await Notification.requestPermission();
-        return result === 'granted';
-    } catch (e) {
-        return false;
-    }
-}
-
-function countNormalActiveStops() {
-    return deliveries.filter(d => isActiveStop(d) && !d.voltarDepois).length;
-}
-
-function getVoltarDepoisStops() {
-    return deliveries.filter(d => isActiveStop(d) && d.voltarDepois);
-}
-
-// Avisa ao terminar a penúltima (ou a última) entrega "normal",
-// para o motorista lembrar de voltar às paradas adiadas.
-function maybeNotifyVoltarDepois(normalsBefore) {
-    const postponed = getVoltarDepoisStops();
-    if (!postponed.length) {
-        voltarDepoisAlertShown = false;
-        return;
-    }
-    const normalsAfter = countNormalActiveStops();
-    // Penúltima: saiu de 2+ normais para 1 (ou 0).
-    if (!(normalsBefore > 1 && normalsAfter <= 1)) return;
-    if (voltarDepoisAlertShown) return;
-    voltarDepoisAlertShown = true;
-    notifyVoltarDepoisStops(postponed);
-}
-
-function notifyVoltarDepoisStops(list) {
-    const items = list || getVoltarDepoisStops();
-    if (!items.length) return;
-
-    const names = items.map(d => `${d.sequentialId} · ${d.nome}`).join(', ');
-    const msg = items.length === 1
-        ? `Lembrete: retornar à entrega ${names}`
-        : `Lembrete: retornar a ${items.length} entregas adiadas — ${names}`;
-    showToast(msg, true);
-
-    try {
-        if (feedbackVibrateEnabled && navigator.vibrate) navigator.vibrate([120, 60, 120, 60, 180]);
-    } catch (e) {}
-
-    if (feedbackSoundEnabled) {
-        try {
-            const Ctx = window.AudioContext || window.webkitAudioContext;
-            if (Ctx) {
-                const ctx = new Ctx();
-                const osc = ctx.createOscillator();
-                const gain = ctx.createGain();
-                osc.type = 'triangle';
-                osc.frequency.value = 660;
-                gain.gain.value = 0.08;
-                osc.connect(gain);
-                gain.connect(ctx.destination);
-                osc.start();
-                gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.25);
-                osc.stop(ctx.currentTime + 0.26);
-                setTimeout(() => { try { ctx.close(); } catch (e) {} }, 350);
-            }
-        } catch (e) {}
-    }
-
-    if ('Notification' in window && Notification.permission === 'granted') {
-        try {
-            new Notification('RotaFlow — Voltar depois', {
-                body: names,
-                tag: 'voltar-depois-penultima',
-                renotify: true,
-                icon: APP_ICON
-            });
-        } catch (e) {}
-    }
-}
-
-async function markNotDelivered(id) {
-    try {
-        const d = deliveries.find(x => x.id === id);
-        if (!d || d.status === 'entregue') return;
-
-        const choice = await showChoiceModal({
-            title: 'Não entregue',
-            message: `Selecione o motivo para a entrega ${d.sequentialId} (${d.nome}):`,
-            options: FAIL_REASON_OPTIONS.map(o => ({
-                label: o.label,
-                value: o.id,
-                icon: o.icon,
-                iconColor: o.iconColor
-            }))
-        });
-        if (!choice) return;
-
-        const normalsBefore = countNormalActiveStops();
-
-        if (choice === 'voltar-depois') {
-            d.status = 'pendente';
-            d.voltarDepois = true;
-            d.failReason = 'voltar-depois';
-            try { await ensureNotificationPermission(); } catch (_) {}
-            try { saveStorage(); } catch (_) {}
-            try {
-                const marker = getMarker(d.sequentialId);
-                if (marker) updateMarkerIcon(marker, d);
-            } catch (_) {}
-            try { updateDeliveryStats(); } catch (_) {}
-            try { renderDeliveriesList(); } catch (_) {}
-            voltarDepoisAlertShown = false;
-            showToast(`Entrega ${d.sequentialId} adiada. Aviso na penúltima parada`);
-            try { minimizeDeliveryPanel(); } catch (_) {}
-            try { goToAdjacentDelivery(1, { preferPending: true, keepMinimized: true }); } catch (_) {}
-            return;
-        }
-
-        d.status = 'falhou';
-        d.voltarDepois = false;
-        d.failReason = choice;
-        try { releaseInMemoryPhotosExcept(d.id); } catch (_) {}
-        try { saveStorage(); } catch (_) {}
-        try { syncTrackingStatus(d); } catch (_) {}
-        if (choice === 'ausente') {
-            try { sendAbsentPush(d); } catch (_) {}
-        }
-        try {
-            const marker = getMarker(d.sequentialId);
-            if (marker) updateMarkerIcon(marker, d);
-            else rebuildMarkers(false);
-        } catch (_) {}
-        try { updateDeliveryStats(); } catch (_) {}
-        try { renderDeliveriesList(); } catch (_) {}
-        try { notifyRouteCompositionChanged({ keepRoute: true }); } catch (_) {}
-        try { noteDeliveryCompletedForBackup(); } catch (_) {}
-        showUndoSnackbar(d.id, `Entrega ${d.sequentialId}: ${FAIL_REASON_LABELS[choice] || 'não entregue'}`);
-        try { maybeNotifyVoltarDepois(normalsBefore); } catch (_) {}
-        try { minimizeDeliveryPanel(); } catch (_) {}
-        try { goToAdjacentDelivery(1, { preferPending: true, keepMinimized: true }); } catch (_) {}
-    } catch (e) {
-        console.error('markNotDelivered', e);
-        try { showToast('Não foi possível atualizar a entrega', true); } catch (_) {}
-    }
-}
+// Helpers: lib/not-delivered-helpers.js · UI: src/js/not-delivered.js (configureNotDelivered).
 
 // ========== EVENTO DO BOTÃO "ADICIONAR ENTREGA" (FORMULÁRIO MANUAL) ==========
 document.addEventListener('DOMContentLoaded', function() {
     initAuthUi();
     initAppUi();
     localStorage.removeItem('rotaflow_reminders');
-    voltarDepoisAlertShown = false;
+    resetVoltarDepoisAlert();
     document.getElementById("routeSearchInput").addEventListener("input", debounce((e) => { routeFilter = e.target.value.toLowerCase(); renderDeliveriesList(); }, 150));
     document.getElementById("agendaSearchInput").addEventListener("input", debounce((e) => { agendaFilter = e.target.value.toLowerCase(); renderAgendaList(); }, 150));
 
