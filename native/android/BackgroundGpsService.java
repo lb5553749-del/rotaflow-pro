@@ -28,9 +28,14 @@ import java.io.InputStreamReader;
 import java.io.OutputStream;
 import java.net.HttpURLConnection;
 import java.net.URL;
+import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
+import java.text.SimpleDateFormat;
 import java.util.ArrayList;
+import java.util.Date;
 import java.util.List;
+import java.util.Locale;
+import java.util.TimeZone;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import org.json.JSONArray;
@@ -55,6 +60,11 @@ public class BackgroundGpsService extends Service implements LocationListener {
     private static String projectId = "rotaflow-83610";
     private static String apiKey = "";
     private static String trackHost = "https://rotaflow-83610.web.app";
+    /** Usuário anônimo do app (mesmo do Firebase JS): rules exigem auth.uid == ownerUid. */
+    private static String authUid = "";
+    private static String refreshToken = "";
+    /** Retenção ativa (LGPD) — igual a TRACK_RETENTION_ACTIVE_MS em lib/track-schema.js. */
+    private static final long RETENTION_ACTIVE_MS = 48L * 60 * 60 * 1000;
     private static final List<Target> targets = new ArrayList<>();
     private static Context appCtx;
 
@@ -63,12 +73,25 @@ public class BackgroundGpsService extends Service implements LocationListener {
     private long lastPublishAt = 0;
     private double lastPubLat = 0;
     private double lastPubLng = 0;
+    /** Só acessados na thread `io`. */
+    private String idToken = "";
+    private long idTokenExpAt = 0;
 
     static class Target {
         String token;
         double lat;
         double lng;
         boolean nearNotified;
+        /** nearNotified já gravado no doc pai (dispara o push na Cloud Function). */
+        boolean nearSynced;
+    }
+
+    static void setAuth(String uid, String token) {
+        synchronized (LOCK) {
+            authUid = uid != null ? uid : "";
+            refreshToken = token != null ? token : "";
+        }
+        persistLocked();
     }
 
     static void configure(com.getcapacitor.PluginCall call) {
@@ -100,6 +123,8 @@ public class BackgroundGpsService extends Service implements LocationListener {
                     t.lat = raw.getDouble("lat");
                     t.lng = raw.getDouble("lng");
                     t.nearNotified = raw.optBoolean("nearNotified", false);
+                    // O JS grava o nearNotified que ele mesmo detectou.
+                    t.nearSynced = t.nearNotified;
                     targets.add(t);
                 } catch (Exception ignored) {}
             }
@@ -196,11 +221,15 @@ public class BackgroundGpsService extends Service implements LocationListener {
         float near;
         String pid;
         String key;
+        String uid;
+        String refresh;
         synchronized (LOCK) {
             snapshot = new ArrayList<>(targets);
             near = nearMeters;
             pid = projectId;
             key = apiKey;
+            uid = authUid;
+            refresh = refreshToken;
         }
         boolean shouldPublish = snapshot.isEmpty() ? false : shouldPublish(lat, lng);
         for (Target t : snapshot) {
@@ -214,7 +243,7 @@ public class BackgroundGpsService extends Service implements LocationListener {
                 // Push near: Cloud Function ao ver nearNotified no Firestore (publishTrack).
             }
             if (becameNear || shouldPublish) {
-                publishTrack(pid, key, t.token, lat, lng, acc, t.nearNotified);
+                publishTrack(pid, key, uid, refresh, t, lat, lng, acc);
             }
         }
         persistLocked();
@@ -263,6 +292,8 @@ public class BackgroundGpsService extends Service implements LocationListener {
                 cfg.put("projectId", projectId);
                 cfg.put("apiKey", apiKey);
                 cfg.put("trackHost", trackHost);
+                cfg.put("authUid", authUid);
+                cfg.put("refreshToken", refreshToken);
                 JSONArray arr = new JSONArray();
                 for (Target t : targets) {
                     JSONObject o = new JSONObject();
@@ -270,6 +301,7 @@ public class BackgroundGpsService extends Service implements LocationListener {
                     o.put("lat", t.lat);
                     o.put("lng", t.lng);
                     o.put("nearNotified", t.nearNotified);
+                    o.put("nearSynced", t.nearSynced);
                     arr.put(o);
                 }
                 cfg.put("targets", arr);
@@ -293,6 +325,8 @@ public class BackgroundGpsService extends Service implements LocationListener {
                 projectId = cfg.optString("projectId", projectId);
                 apiKey = cfg.optString("apiKey", apiKey);
                 trackHost = cfg.optString("trackHost", trackHost);
+                authUid = cfg.optString("authUid", authUid);
+                refreshToken = cfg.optString("refreshToken", refreshToken);
                 // Descarta vapidPrivate legado em SharedPreferences (nunca mais no APK).
                 JSONArray arr = cfg.optJSONArray("targets");
                 if (arr != null && targets.isEmpty()) {
@@ -303,6 +337,7 @@ public class BackgroundGpsService extends Service implements LocationListener {
                         t.lat = rawT.optDouble("lat", Double.NaN);
                         t.lng = rawT.optDouble("lng", Double.NaN);
                         t.nearNotified = rawT.optBoolean("nearNotified", false);
+                        t.nearSynced = rawT.optBoolean("nearSynced", t.nearNotified);
                         if (!t.token.isEmpty() && !Double.isNaN(t.lat) && !Double.isNaN(t.lng)) {
                             targets.add(t);
                         }
@@ -312,43 +347,126 @@ public class BackgroundGpsService extends Service implements LocationListener {
         } catch (Exception ignored) {}
     }
 
-    private void publishTrack(String pid, String key, String token, double lat, double lng, float acc, boolean near) {
-        if (pid == null || pid.isEmpty() || token == null || token.isEmpty()) return;
+    /**
+     * Posição → tracks/{token}/live/pos (não dispara Cloud Function).
+     * nearNotified → doc pai, até a gravação dar certo (é ele que dispara o push "chegando").
+     */
+    private void publishTrack(String pid, String key, String uid, String refresh, Target t,
+                              double lat, double lng, float acc) {
+        if (pid == null || pid.isEmpty() || t.token == null || t.token.isEmpty()) return;
+        if (uid == null || uid.isEmpty() || refresh == null || refresh.isEmpty()) return;
+        final String token = t.token;
+        final boolean sendNear = t.nearNotified && !t.nearSynced;
         io.execute(() -> {
-            HttpURLConnection conn = null;
             try {
-                String url = "https://firestore.googleapis.com/v1/projects/" + pid
-                    + "/databases/(default)/documents/tracks/" + token
-                    + "?updateMask.fieldPaths=driverLat"
+                String bearer = idToken(key, refresh);
+                if (bearer.isEmpty()) return;
+                long now = System.currentTimeMillis();
+                String expiresAt = rfc3339(now + RETENTION_ACTIVE_MS);
+                String base = "https://firestore.googleapis.com/v1/projects/" + pid
+                    + "/databases/(default)/documents/tracks/" + token;
+
+                if (sendNear) {
+                    JSONObject ev = new JSONObject();
+                    ev.put("nearNotified", new JSONObject().put("booleanValue", true));
+                    ev.put("updatedAt", new JSONObject().put("integerValue", String.valueOf(now)));
+                    ev.put("expiresAt", new JSONObject().put("timestampValue", expiresAt));
+                    int code = patch(base + "?updateMask.fieldPaths=nearNotified"
+                        + "&updateMask.fieldPaths=updatedAt"
+                        + "&updateMask.fieldPaths=expiresAt", bearer, ev);
+                    if (code >= 200 && code < 300) {
+                        synchronized (LOCK) { t.nearSynced = true; }
+                        persistLocked();
+                    }
+                }
+
+                JSONObject live = new JSONObject();
+                live.put("driverLat", new JSONObject().put("doubleValue", lat));
+                live.put("driverLng", new JSONObject().put("doubleValue", lng));
+                live.put("accuracy", new JSONObject().put("doubleValue", acc));
+                live.put("updatedAt", new JSONObject().put("integerValue", String.valueOf(now)));
+                live.put("ownerUid", new JSONObject().put("stringValue", uid));
+                live.put("expiresAt", new JSONObject().put("timestampValue", expiresAt));
+                patch(base + "/live/pos?updateMask.fieldPaths=driverLat"
                     + "&updateMask.fieldPaths=driverLng"
                     + "&updateMask.fieldPaths=accuracy"
                     + "&updateMask.fieldPaths=updatedAt"
-                    + "&updateMask.fieldPaths=nearNotified"
-                    + (key != null && !key.isEmpty() ? "&key=" + key : "");
-                JSONObject fields = new JSONObject();
-                fields.put("driverLat", new JSONObject().put("doubleValue", lat));
-                fields.put("driverLng", new JSONObject().put("doubleValue", lng));
-                fields.put("accuracy", new JSONObject().put("doubleValue", acc));
-                fields.put("updatedAt", new JSONObject().put("integerValue", String.valueOf(System.currentTimeMillis())));
-                fields.put("nearNotified", new JSONObject().put("booleanValue", near));
-                JSONObject body = new JSONObject().put("fields", fields);
-                conn = (HttpURLConnection) new URL(url).openConnection();
-                conn.setRequestMethod("PATCH");
-                conn.setConnectTimeout(8000);
-                conn.setReadTimeout(8000);
-                conn.setDoOutput(true);
-                conn.setRequestProperty("Content-Type", "application/json");
-                byte[] bytes = body.toString().getBytes(StandardCharsets.UTF_8);
-                conn.setFixedLengthStreamingMode(bytes.length);
-                OutputStream os = conn.getOutputStream();
-                os.write(bytes);
-                os.close();
-                conn.getResponseCode();
-            } catch (Exception ignored) {
-            } finally {
-                if (conn != null) conn.disconnect();
+                    + "&updateMask.fieldPaths=ownerUid"
+                    + "&updateMask.fieldPaths=expiresAt", bearer, live);
+            } catch (Exception e) {
+                Log.w(TAG, "publishTrack", e);
             }
         });
+    }
+
+    /** ID token do Firebase Auth a partir do refresh token (válido ~1h; renovado com folga). Thread `io`. */
+    private String idToken(String key, String refresh) {
+        long now = System.currentTimeMillis();
+        if (!idToken.isEmpty() && now < idTokenExpAt - 120_000) return idToken;
+        HttpURLConnection conn = null;
+        try {
+            conn = (HttpURLConnection) new URL("https://securetoken.googleapis.com/v1/token?key="
+                + URLEncoder.encode(key == null ? "" : key, "UTF-8")).openConnection();
+            conn.setRequestMethod("POST");
+            conn.setConnectTimeout(8000);
+            conn.setReadTimeout(8000);
+            conn.setDoOutput(true);
+            conn.setRequestProperty("Content-Type", "application/x-www-form-urlencoded");
+            byte[] bytes = ("grant_type=refresh_token&refresh_token=" + URLEncoder.encode(refresh, "UTF-8"))
+                .getBytes(StandardCharsets.UTF_8);
+            conn.setFixedLengthStreamingMode(bytes.length);
+            OutputStream os = conn.getOutputStream();
+            os.write(bytes);
+            os.close();
+            if (conn.getResponseCode() != 200) {
+                idToken = "";
+                return "";
+            }
+            JSONObject res = new JSONObject(readAll(conn.getInputStream()));
+            idToken = res.optString("id_token", "");
+            idTokenExpAt = now + res.optLong("expires_in", 3600) * 1000L;
+            String rotated = res.optString("refresh_token", "");
+            if (!rotated.isEmpty() && !rotated.equals(refresh)) {
+                synchronized (LOCK) { refreshToken = rotated; }
+                persistLocked();
+            }
+            return idToken;
+        } catch (Exception e) {
+            Log.w(TAG, "idToken", e);
+            return "";
+        } finally {
+            if (conn != null) conn.disconnect();
+        }
+    }
+
+    private int patch(String url, String bearer, JSONObject fields) throws Exception {
+        HttpURLConnection conn = null;
+        try {
+            JSONObject body = new JSONObject().put("fields", fields);
+            conn = (HttpURLConnection) new URL(url).openConnection();
+            conn.setRequestMethod("PATCH");
+            conn.setConnectTimeout(8000);
+            conn.setReadTimeout(8000);
+            conn.setDoOutput(true);
+            conn.setRequestProperty("Content-Type", "application/json");
+            conn.setRequestProperty("Authorization", "Bearer " + bearer);
+            byte[] bytes = body.toString().getBytes(StandardCharsets.UTF_8);
+            conn.setFixedLengthStreamingMode(bytes.length);
+            OutputStream os = conn.getOutputStream();
+            os.write(bytes);
+            os.close();
+            int code = conn.getResponseCode();
+            if (code == 401) idToken = "";
+            return code;
+        } finally {
+            if (conn != null) conn.disconnect();
+        }
+    }
+
+    private static String rfc3339(long ms) {
+        SimpleDateFormat f = new SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'", Locale.US);
+        f.setTimeZone(TimeZone.getTimeZone("UTC"));
+        return f.format(new Date(ms));
     }
 
     private void ensureChannel() {

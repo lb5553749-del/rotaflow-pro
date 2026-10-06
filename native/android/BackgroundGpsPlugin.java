@@ -48,6 +48,12 @@ public class BackgroundGpsPlugin extends Plugin {
     }
 
     @PluginMethod
+    public void setAuth(PluginCall call) {
+        BackgroundGpsService.setAuth(call.getString("uid"), call.getString("refreshToken"));
+        call.resolve();
+    }
+
+    @PluginMethod
     public void stop(PluginCall call) {
         BackgroundGpsService.stop(getContext());
         call.resolve();
