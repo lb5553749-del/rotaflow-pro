@@ -35,9 +35,11 @@ service cloud.firestore {
 
       allow delete: if false;
 
-      // Inscrição de push do cliente (página fechada)
+      // Inscrição de push do cliente (página fechada). track.html só grava; quem lê é a
+      // Cloud Function (Admin SDK ignora rules). Endpoint + chaves não podem vazar.
       match /subs/{subId} {
         allow create, update: if token.matches('^[a-f0-9]{32}$')
+          && exists(/databases/$(database)/documents/tracks/$(token))
           && request.resource.data.keys().hasOnly(['endpoint', 'keys', 'createdAt'])
           && request.resource.data.endpoint is string
           && request.resource.data.endpoint.size() > 20
@@ -46,7 +48,7 @@ service cloud.firestore {
           && request.resource.data['keys'].keys().hasOnly(['p256dh', 'auth'])
           && request.resource.data['keys'].p256dh is string
           && request.resource.data['keys'].auth is string;
-        allow read: if token.matches('^[a-f0-9]{32}$');
+        allow read: if false;
         allow delete: if false;
       }
     }
