@@ -33,7 +33,8 @@ let deps = {
     openWhatsAppChat: async () => false,
     buildDeliveryWhatsAppMessage: () => '',
     syncBackgroundGpsTargets: () => {},
-    isBgGpsStarted: () => false
+    isBgGpsStarted: () => false,
+    playNearHaptic: null
 };
 
 export function configureTracking(opts) {
@@ -217,6 +218,9 @@ export function maybeMarkNearCustomer(delivery, pos, opts) {
     delivery.nearNotified = true;
     deps.saveStorage();
     deps.showToast(`A ~${TRACK_NEAR_METERS} m de ${delivery.sequentialId} — aviso enviado ao cliente`);
+    try {
+        if (typeof deps.playNearHaptic === 'function') deps.playNearHaptic();
+    } catch (_) {}
     syncTrackingStatus(delivery).catch(() => {});
     if (!(opts && opts.skipPush)) sendNearPush(delivery);
     return true;

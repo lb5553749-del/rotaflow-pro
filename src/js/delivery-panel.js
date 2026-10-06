@@ -46,7 +46,11 @@ let deps = {
     saveDeliveryPhotoToAgenda: async () => false,
     idbDeletePhoto: async () => {},
     saveStorage: () => {},
-    scheduleDeliveriesListPhotoRefresh: () => {}
+    scheduleDeliveriesListPhotoRefresh: () => {},
+    isVehicleModeEnabled: () => false,
+    showChoiceModal: async () => null,
+    buildNavigationUrls: null,
+    getRiskLevelForDelivery: () => null
 };
 
 let panelSwipeConsumedUntil = 0;
@@ -257,14 +261,36 @@ export async function openMapsNavigation(delivery) {
     if (!delivery || !hasMapCoords(delivery)) return;
     const lat = Number(delivery.lat);
     const lng = Number(delivery.lng);
-    const webUrl = `https://www.google.com/maps/dir/?api=1&destination=${lat},${lng}&travelmode=driving`;
+    const urls = typeof deps.buildNavigationUrls === 'function'
+        ? deps.buildNavigationUrls(lat, lng)
+        : {
+            googleNav: `google.navigation:q=${lat},${lng}`,
+            googleWeb: `https://www.google.com/maps/dir/?api=1&destination=${lat},${lng}&travelmode=driving`,
+            waze: `https://waze.com/ul?ll=${lat}%2C${lng}&navigate=yes`
+        };
+
+    if (deps.isVehicleModeEnabled() && typeof deps.showChoiceModal === 'function') {
+        const choice = await deps.showChoiceModal({
+            title: 'Navegar',
+            message: 'Abrir no app de mapas',
+            options: [
+                { value: 'google', label: 'Google Maps', icon: 'fas fa-location-arrow', iconColor: '#1A73E8' },
+                { value: 'waze', label: 'Waze', icon: 'fas fa-route', iconColor: '#33CCFF' }
+            ]
+        });
+        if (!choice) return;
+        if (choice === 'waze') {
+            const ok = await deps.openExternalUrl(urls.waze);
+            if (!ok) deps.showToast('Não foi possível abrir o Waze', true);
+            return;
+        }
+    }
+
     if (deps.isNativeApp()) {
-        // Preferência: app Google Maps em modo navegação no Android
-        const nativeNav = `google.navigation:q=${lat},${lng}`;
-        const ok = await deps.openExternalUrl(nativeNav);
+        const ok = await deps.openExternalUrl(urls.googleNav);
         if (ok) return;
     }
-    const opened = await deps.openExternalUrl(webUrl);
+    const opened = await deps.openExternalUrl(urls.googleWeb);
     if (!opened) deps.showToast('Não foi possível abrir a navegação', true);
 }
 
@@ -359,8 +385,11 @@ export function renderDeliveryPanelActions(delivery) {
     if (flags.showNav) {
         const navBtn = document.createElement('button');
         navBtn.type = 'button';
-        navBtn.className = 'panel-action-btn nav-fallback';
-        navBtn.innerHTML = '<i class="fas fa-location-arrow"></i><span>Navegar</span>';
+        navBtn.className = 'panel-action-btn nav-fallback'
+            + (deps.isVehicleModeEnabled() ? ' nav-vehicle' : '');
+        navBtn.innerHTML = deps.isVehicleModeEnabled()
+            ? '<i class="fas fa-location-arrow"></i><span>Mapas / Waze</span>'
+            : '<i class="fas fa-location-arrow"></i><span>Navegar</span>';
         navBtn.onclick = () => openMapsNavigation(delivery);
         actionsDiv.appendChild(navBtn);
     }
@@ -415,8 +444,11 @@ export function renderDeliveryPanelActions(delivery) {
     if (flags.showNav) {
         const miniNav = document.createElement('button');
         miniNav.type = 'button';
-        miniNav.className = 'mini-action-btn nav';
-        miniNav.innerHTML = '<i class="fas fa-location-arrow"></i><span>Navegar</span>';
+        miniNav.className = 'mini-action-btn nav'
+            + (deps.isVehicleModeEnabled() ? ' nav-vehicle' : '');
+        miniNav.innerHTML = deps.isVehicleModeEnabled()
+            ? '<i class="fas fa-location-arrow"></i><span>Mapas</span>'
+            : '<i class="fas fa-location-arrow"></i><span>Navegar</span>';
         miniNav.onclick = withMiniActionGuard(() => openMapsNavigation(delivery));
         miniActions.appendChild(miniNav);
     }

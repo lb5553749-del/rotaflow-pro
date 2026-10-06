@@ -17,6 +17,7 @@ let deps = {
     isActiveStop: () => false,
     getFeedbackVibrateEnabled: () => true,
     getFeedbackSoundEnabled: () => true,
+    playDeliveryHaptic: null,
     getAppIcon: () => '',
     showToast: () => {},
     showChoiceModal: async () => null,
@@ -48,7 +49,11 @@ export function resetVoltarDepoisAlert() {
 
 export function playDeliveryFeedback() {
     try {
-        if (deps.getFeedbackVibrateEnabled() && navigator.vibrate) navigator.vibrate([35, 25, 45]);
+        if (typeof deps.playDeliveryHaptic === 'function') {
+            deps.playDeliveryHaptic();
+        } else if (deps.getFeedbackVibrateEnabled() && navigator.vibrate) {
+            navigator.vibrate([35, 25, 45]);
+        }
     } catch (e) {}
     if (!deps.getFeedbackSoundEnabled()) return;
     try {
