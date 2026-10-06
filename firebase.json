@@ -24,6 +24,13 @@
       "signing/**",
       "functions/**",
       "estudo-transpetro/**",
+      "docs/**",
+      "ios/**",
+      "build/**/*.map",
+      "track-*-marker.svg",
+      "eslint.config.js",
+      "jsconfig.json",
+      "version.json",
       "capacitor.config.json"
     ],
     "headers": [
