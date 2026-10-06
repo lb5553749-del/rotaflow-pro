@@ -1,0 +1,205 @@
+/**
+ * Boot da UI do motorista: initAppUi, DOMContentLoaded, PWA e service worker.
+ * Dependências injetadas via configureAppBoot() — main.js só orquestra.
+ */
+
+let deps = {
+    initNameSuggestions: () => {},
+    setupNewDeliveryPhoneUI: () => {},
+    setupAddressDuplicateCheck: () => {},
+    bindGalleryChrome: () => {},
+    closeDeliveryPanel: () => {},
+    adjustPacotes: () => {},
+    editObservation: () => {},
+    editPhonesPanel: () => {},
+    setupPanelSwipe: () => {},
+    setupPanelPhotoCapture: () => {},
+    setupUndoSnackbar: () => {},
+    setupHistoryListDelegation: () => {},
+    setupOverflowMenus: () => {},
+    setupBackupReminderUi: () => {},
+    setupAutoBackupScheduler: () => {},
+    getCurrentSelectedDelivery: () => null,
+    focusDeliveryInPanel: () => {},
+    isNativeApp: () => false,
+    setupScreenLockNotificationBridge: () => {},
+    setupCameraRestoreHandler: () => {},
+    showProfileModal: () => {},
+    bindBackupButtons: () => {},
+    optimizeRoute: () => {},
+    updateOptimizeFabVisibility: () => {},
+    archiveCurrentRouteDay: () => {},
+    startNewRoute: () => {},
+    clearRoute: () => {},
+    toggleSidebar: () => {},
+    copyFromOtherRoute: () => {},
+    toggleGps: () => {},
+    updateGpsButton: () => {},
+    getGpsEnabled: () => false,
+    enableGpsTracking: async () => false,
+    switchSidebarTab: () => {},
+    isGalleryOpen: () => false,
+    closeGallery: () => {},
+    nextPhoto: () => {},
+    prevPhoto: () => {},
+    getGeocoder: () => null,
+    initAuthUi: () => {},
+    resetVoltarDepoisAlert: () => {},
+    debounce: (fn) => fn,
+    setRouteFilter: () => {},
+    setAgendaFilter: () => {},
+    renderDeliveriesList: () => {},
+    renderAgendaList: () => {},
+    setupAddDeliveryForm: () => {},
+    initMap: () => {},
+    persistStorageNow: () => {},
+    getAppIcon: () => ''
+};
+
+export function configureAppBoot(opts) {
+    deps = { ...deps, ...(opts || {}) };
+}
+
+/** Interface do motorista. Roda no DOMContentLoaded, sem esperar o callback do Google Maps. */
+export function initAppUi() {
+    if (initAppUi.done) return;
+    initAppUi.done = true;
+    deps.initNameSuggestions();
+    deps.setupNewDeliveryPhoneUI();
+    deps.setupAddressDuplicateCheck();
+
+    deps.bindGalleryChrome();
+    document.getElementById('closePanelBtn').addEventListener('click', deps.closeDeliveryPanel);
+    document.getElementById('panelPacotesPlus').addEventListener('click', () => deps.adjustPacotes(1));
+    document.getElementById('panelPacotesMinus').addEventListener('click', () => deps.adjustPacotes(-1));
+    document.getElementById('editObsBtn').addEventListener('click', deps.editObservation);
+    document.getElementById('editPhoneBtn').addEventListener('click', deps.editPhonesPanel);
+    deps.setupPanelSwipe();
+    deps.setupPanelPhotoCapture();
+    deps.setupUndoSnackbar();
+    deps.setupHistoryListDelegation();
+    deps.setupOverflowMenus();
+    deps.setupBackupReminderUi();
+    deps.setupAutoBackupScheduler();
+    document.getElementById('mapNextChip')?.addEventListener('click', () => {
+        const selected = deps.getCurrentSelectedDelivery();
+        if (!selected) return;
+        deps.focusDeliveryInPanel(selected, 0, { keepMinimized: false, pan: true, zoom: 16 });
+    });
+    if (deps.isNativeApp()) {
+        deps.setupScreenLockNotificationBridge();
+        deps.setupCameraRestoreHandler();
+    }
+
+    document.getElementById('profileBtn').addEventListener('click', deps.showProfileModal);
+    deps.bindBackupButtons();
+
+    document.getElementById('optimizeRouteBtn').addEventListener('click', deps.optimizeRoute);
+    document.getElementById('optimizeRouteToolBtn')?.addEventListener('click', deps.optimizeRoute);
+    deps.updateOptimizeFabVisibility();
+    document.getElementById('archiveDayBtn')?.addEventListener('click', () => deps.archiveCurrentRouteDay({ silent: false }));
+    document.getElementById('newRouteBtn')?.addEventListener('click', deps.startNewRoute);
+    document.getElementById('newRouteMenuBtn')?.addEventListener('click', deps.startNewRoute);
+    document.getElementById('clearRouteBtn').addEventListener('click', deps.clearRoute);
+    document.getElementById('toggleSidebarBtn').addEventListener('click', deps.toggleSidebar);
+    document.getElementById('copyFromRouteBtn').addEventListener('click', deps.copyFromOtherRoute);
+    document.getElementById('gpsBtn').addEventListener('click', deps.toggleGps);
+    deps.updateGpsButton();
+    // No celular nativo o GPS funciona sem HTTPS; no browser precisa de contexto seguro.
+    if (deps.getGpsEnabled() && (deps.isNativeApp() || window.isSecureContext)) {
+        deps.enableGpsTracking().then(ok => {
+            if (!ok) deps.updateGpsButton();
+        });
+    } else if (deps.getGpsEnabled() && !window.isSecureContext) {
+        deps.updateGpsButton();
+    }
+
+    document.querySelectorAll('.sidebar-tabs button').forEach(btn => {
+        btn.addEventListener('click', () => deps.switchSidebarTab(btn.dataset.tab));
+    });
+
+    document.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape') {
+            if (deps.isGalleryOpen()) deps.closeGallery();
+            else deps.closeDeliveryPanel();
+        }
+        if (deps.isGalleryOpen() && e.key === 'ArrowRight') deps.nextPhoto();
+        if (deps.isGalleryOpen() && e.key === 'ArrowLeft') deps.prevPhoto();
+    });
+
+    setTimeout(() => {
+        if (deps.getGeocoder()) return;
+        const loading = document.getElementById('mapLoading');
+        if (loading) loading.textContent = 'Mapa indisponível. Lista, agenda e backup continuam funcionando.';
+    }, 8000);
+}
+
+export function setupDomContentLoadedBoot() {
+    document.addEventListener('DOMContentLoaded', function() {
+        deps.initAuthUi();
+        initAppUi();
+        localStorage.removeItem('rotaflow_reminders');
+        deps.resetVoltarDepoisAlert();
+        document.getElementById("routeSearchInput").addEventListener("input", deps.debounce((e) => {
+            deps.setRouteFilter(e.target.value.toLowerCase());
+            deps.renderDeliveriesList();
+        }, 150));
+        document.getElementById("agendaSearchInput").addEventListener("input", deps.debounce((e) => {
+            deps.setAgendaFilter(e.target.value.toLowerCase());
+            deps.renderAgendaList();
+        }, 150));
+        deps.setupAddDeliveryForm();
+    });
+}
+
+export function setupRuntimeBoot() {
+    window.initMap = deps.initMap;
+    window.addEventListener('beforeunload', deps.persistStorageNow);
+
+    if ('serviceWorker' in navigator && !deps.isNativeApp()) {
+        navigator.serviceWorker.register('./sw.js').catch(() => {});
+    }
+
+    // Manifesto PWA embutido (o app é um arquivo único).
+    (function () {
+        const dir = location.pathname.replace(/[^/]*$/, '');
+        const APP_ICON = deps.getAppIcon();
+        const manifest = {
+            name: 'RotaFlow Pro',
+            short_name: 'RotaFlow',
+            description: 'Gestão de entregas com mapa, rota e agenda',
+            start_url: location.pathname + location.search,
+            scope: dir,
+            display: 'standalone',
+            orientation: 'portrait-primary',
+            lang: 'pt-BR',
+            theme_color: '#0f172a',
+            background_color: '#ffffff',
+            icons: [
+                { src: APP_ICON, sizes: '192x192', type: 'image/svg+xml', purpose: 'any' },
+                { src: APP_ICON, sizes: '512x512', type: 'image/svg+xml', purpose: 'maskable' }
+            ]
+        };
+        const url = URL.createObjectURL(new Blob([JSON.stringify(manifest)], { type: 'application/manifest+json' }));
+        const link = document.createElement('link');
+        link.rel = 'manifest';
+        link.href = url;
+        document.head.appendChild(link);
+    })();
+
+    (function () {
+        let deferredPrompt;
+        window.addEventListener('beforeinstallprompt', (e) => {
+            e.preventDefault();
+            deferredPrompt = e;
+            const installBtn = document.getElementById('installBtn');
+            if (!installBtn) return;
+            installBtn.style.display = 'flex';
+            installBtn.onclick = () => {
+                installBtn.style.display = 'none';
+                deferredPrompt.prompt();
+                deferredPrompt.userChoice.then(() => { deferredPrompt = null; });
+            };
+        });
+    })();
+}

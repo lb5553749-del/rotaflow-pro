@@ -1,23 +1,17 @@
 // ============================================================
-//  RotaFlow Pro — app do motorista (bundle: npm run build → build/app.js)
-//  Código ainda é majoritariamente um script único; módulos extraídos ficam em src/js/.
+//  RotaFlow Pro — bootstrap/wiring do app do motorista
+//  (bundle: npm run build → build/app.js). Estado compartilhado + configure*
+//  dos módulos em src/js/ e lib/; lógica de domínio vive nos módulos.
 //  Nada aqui é global: o que outro script precisar (ex.: callback do Maps) vai em `window`.
 // ============================================================
 import '../../native/bridge.js';
 import '../../native/push-sender.js';
 import {
-    haversineDistance as haversineDistanceShared
-} from '../../lib/track-schema.js';
-import {
-    hasMapCoords,
     normalizeDeliveryCoords
 } from '../../lib/routing-helpers.js';
 import {
-    isMutedPin,
-    shortStreetAddress
+    isMutedPin
 } from '../../lib/map-helpers.js';
-import { routeDayStats } from '../../lib/history-helpers.js';
-import { escapeHtml } from '../../lib/html.js';
 import {
     configureFormPhones,
     setTempPhones,
@@ -30,9 +24,7 @@ import {
 } from './name-suggestions.js';
 import { getSequentialId, nextGeneratedId, seedIdCounterFromLists } from '../../lib/ids.js';
 import {
-    formatPhoneNumber,
-    formatPhoneShort,
-    normalizeStoredPhone
+    formatPhoneShort
 } from '../../lib/phone-helpers.js';
 import {
     configureWhatsApp,
@@ -118,7 +110,6 @@ import {
     clearRouteOverlay,
     updateOptimizeFabVisibility,
     optimizeRoute,
-    refreshRouteKeepOrder,
     scheduleRouteRefresh,
     notifyRouteCompositionChanged,
     formatKm,
@@ -201,7 +192,6 @@ import {
 } from './backup-ui.js';
 import {
     configurePhotoStore,
-    PHOTO_MAX_PER_ITEM,
     idbGetPhoto,
     idbDeletePhoto,
     enqueuePhotoOp,
@@ -210,8 +200,6 @@ import {
 import {
     configureItemPhotos,
     remainingPhotoSlots,
-    isDuplicatePhotoSave,
-    markPhotoSaved,
     scheduleOrphanPhotoPrune,
     persistPhotoDataUrl,
     addPhotoDataUrlToItem,
@@ -220,9 +208,7 @@ import {
     applyRestoredCameraPhoto,
     scheduleBackgroundPhotoMigrate,
     scheduleListPhotoHydration,
-    releaseInMemoryPhotosExcept,
-    itemPhotoScope,
-    photoFingerprint
+    releaseInMemoryPhotosExcept
 } from './item-photos.js';
 import {
     configureDeliveriesList,
@@ -271,6 +257,44 @@ import {
     copyFromOtherRoute,
     saveDeliveryPhotoToAgenda
 } from './agenda-route.js';
+import {
+    migrateTelefones,
+    migrateFavorito
+} from '../../lib/migrate-helpers.js';
+import {
+    configureRouteUi,
+    updateDeliveryStats,
+    estimateStopEta,
+    hideMapSelectedChip,
+    updateMapNextChip,
+    updateDaySummary,
+    updateProgressAndEstimates,
+    updateLastIdDisplay,
+    focusMapOnDelivery
+} from './route-ui.js';
+import {
+    configureDeliveryStatus,
+    geocodeAddressAndUpdate,
+    markDelivered,
+    undoDeliveryStatus
+} from './delivery-status.js';
+import {
+    configurePanelCapture,
+    scheduleDeliveriesListPhotoRefresh,
+    capturePhotoForSelectedDelivery,
+    setupPanelPhotoCapture
+} from './panel-capture.js';
+import {
+    configurePanelEditActions,
+    adjustPacotes,
+    editObservation,
+    editPhonesPanel
+} from './panel-edit-actions.js';
+import {
+    configureAppBoot,
+    setupDomContentLoadedBoot,
+    setupRuntimeBoot
+} from './app-boot.js';
 
 // --- App local ---
 if (location.hostname === '127.0.0.1') {
@@ -284,6 +308,7 @@ let activeRouteId = null;
 let nextSequenceNumber = 1, nextAgendaId = 1;
 let routeMetrics = null;
 let routeActive = false;
+let startPoint = null;
 let gpsAccuracyMeters = 0;
 let useNativeMap = false, nativeGoogleMap = null, nativeMarkerById = new Map();
 let nativeMapZoom = 12;
@@ -415,31 +440,11 @@ function seedIdCounter() {
     seedIdCounterFromLists(idState, lists);
 }
 
-function haversineDistance(lat1, lon1, lat2, lon2) {
-    return haversineDistanceShared(lat1, lon1, lat2, lon2);
-}
-
 // ========== RASTREIO DO CLIENTE ==========
 // Implementação em src/js/tracking.js (configureTracking no boot).
 
 // ========== MIGRAÇÃO E PERSISTÊNCIA ==========
-function migrateTelefones(obj) {
-    if (!obj) return;
-    if (obj.telefones && Array.isArray(obj.telefones) && obj.telefones.length > 0 && typeof obj.telefones[0] === 'string') {
-        obj.telefones = obj.telefones.map(num => ({ numero: num, label: '' }));
-    }
-    if (!obj.telefones) obj.telefones = [];
-    if (obj.telefone && typeof obj.telefone === 'string') {
-        obj.telefones.push({ numero: obj.telefone, label: '' });
-        delete obj.telefone;
-    }
-    obj.telefones.forEach(p => { p.numero = normalizeStoredPhone(p.numero); });
-    return obj;
-}
-function migrateFavorito(obj) {
-    if (obj.favorito === undefined) obj.favorito = false;
-    return obj;
-}
+// migrateTelefones / migrateFavorito: lib/migrate-helpers.js
 
 configurePhotoStore({ getUid: currentUid });
 configureBackupStore({ getUid: currentUid, storageKey, isNativeApp });
@@ -600,6 +605,74 @@ function configureExtractedModules() {
         idbGetPhoto,
         persistPhotoDataUrl,
         deliveryPhotoCount
+    });
+    configureRouteUi({
+        getDeliveries: () => deliveries,
+        getCurrentSelectedDelivery: () => currentSelectedDelivery,
+        getRouteActive: () => routeActive,
+        getRouteMetrics: () => routeMetrics,
+        getStartPoint: () => startPoint,
+        isActiveStop,
+        pendingStops,
+        routeSignature,
+        formatDuration,
+        formatKm,
+        updateOptimizeFabVisibility,
+        maybeShowBackupReminder,
+        renderRouteSwitcher,
+        getMap: () => map,
+        getUseNativeMap: () => useNativeMap,
+        getNativeGoogleMap: () => nativeGoogleMap,
+        setNativeMapZoom: (z) => { nativeMapZoom = z; }
+    });
+    configureDeliveryStatus({
+        getDeliveries: () => deliveries,
+        getCurrentSelectedDelivery: () => currentSelectedDelivery,
+        getGeocoder: () => geocoder,
+        showToast,
+        saveStorage,
+        syncTrackingStatus,
+        getMarker,
+        updateMarkerIcon,
+        rebuildMarkers,
+        renderDeliveriesList,
+        releaseInMemoryPhotosExcept,
+        sendDeliveredPush,
+        upsertMarker,
+        updateDeliveryStats,
+        notifyRouteCompositionChanged,
+        playDeliveryFeedback,
+        noteDeliveryCompletedForBackup,
+        countNormalActiveStops,
+        maybeNotifyVoltarDepois,
+        minimizeDeliveryPanel,
+        goToAdjacentDelivery,
+        openDeliveryPanel,
+        syncActiveStopNotification
+    });
+    configurePanelCapture({
+        getCurrentSelectedDelivery: () => currentSelectedDelivery,
+        showToast,
+        remainingPhotoSlots,
+        pickPhotoDataUrls,
+        addPhotoDataUrlToItem,
+        persistStorageNow,
+        refreshPanelPhotos,
+        showOptimisticPanelPhoto,
+        updatePanelMiniPhotoUi,
+        renderDeliveriesList,
+        saveDeliveryPhotoToAgenda
+    });
+    configurePanelEditActions({
+        getCurrentSelectedDelivery: () => currentSelectedDelivery,
+        showToast,
+        showPromptModal,
+        saveStorage,
+        getMarker,
+        updateMarkerIcon,
+        renderDeliveriesList,
+        syncActiveStopNotification,
+        syncAgendaByDelivery
     });
     configureItemPhotos({
         currentUid,
@@ -1004,762 +1077,66 @@ function refreshMapAfterStorageLoad() {
 // checkAddressDuplicate / clearForm / addDeliveryDirect: src/js/add-delivery-form.js
 
 // Marcadores (CRUD/rebuild/highlight/fit): src/js/map-markers.js
-
-function updateDeliveryStats() {
-    const total = deliveries.length;
-    const badge = document.getElementById('deliveryCountBadge');
-    if (badge) badge.innerHTML = total;
-    updateProgressAndEstimates();
-    updateOptimizeFabVisibility();
-}
-
-/** ETA da parada: preferir dados da otimização; senão heurística GPS→parada. */
-function estimateStopEta(stop) {
-    if (!stop || !isActiveStop(stop)) return null;
-    if (typeof stop.etaSeconds === 'number' && stop.etaSeconds >= 0
-        && routeActive && routeMetrics
-        && routeMetrics.signature === routeSignature(pendingStops())) {
-        return { seconds: stop.etaSeconds, source: 'route' };
-    }
-    if (typeof stop.legSeconds === 'number' && stop.legSeconds >= 0
-        && routeActive && routeMetrics
-        && routeMetrics.signature === routeSignature(pendingStops())) {
-        return { seconds: stop.legSeconds, source: 'leg' };
-    }
-    if (startPoint && hasMapCoords(stop)) {
-        const km = haversineDistance(startPoint.lat, startPoint.lng, Number(stop.lat), Number(stop.lng));
-        if (Number.isFinite(km)) {
-            // ~25 km/h média urbana — aproximação honesta, não Directions.
-            const seconds = Math.max(60, Math.round((km / 25) * 3600));
-            return { seconds, source: 'approx' };
-        }
-    }
-    return null;
-}
-
-function isMapMenuOpen() {
-    const app = document.getElementById('appContainer');
-    return !!(app && !app.classList.contains('sidebar-hidden'));
-}
-
-function hideMapSelectedChip() {
-    const chip = document.getElementById('mapNextChip');
-    if (!chip) return;
-    chip.hidden = true;
-    chip.classList.remove('is-visible');
-    chip._selectedId = null;
-}
-
-/** HUD da parada selecionada no mapa — só aparece com pin/seleção ativa, some com o menu. */
-function updateMapNextChip() {
-    const chip = document.getElementById('mapNextChip');
-    const nameEl = document.getElementById('mapNextChipName');
-    const clientEl = document.getElementById('mapNextChipClient');
-    const labelEl = document.getElementById('mapNextChipLabel');
-    const etaEl = document.getElementById('mapNextChipEta');
-    if (!chip || !nameEl) return;
-
-    const selected = currentSelectedDelivery;
-    const panel = document.getElementById('deliveryPanel');
-    const panelOpen = !!(panel && panel.classList.contains('open') && selected);
-
-    if (!selected || !panelOpen || isMapMenuOpen()) {
-        hideMapSelectedChip();
-        return;
-    }
-
-    // ID + nome em destaque; rua quieta (3ª linha)
-    const idText = String(selected.sequentialId || '—');
-    const nome = String(selected.nome || '').trim() || 'Cliente';
-    const street = shortStreetAddress(selected.endereco);
-    nameEl.textContent = idText;
-    if (clientEl) clientEl.textContent = nome;
-    if (labelEl) labelEl.textContent = street !== '—' ? street : 'Endereço não informado';
-
-    const eta = estimateStopEta(selected);
-    if (etaEl) {
-        if (eta) {
-            const prefix = eta.source === 'approx' ? '~' : '';
-            etaEl.textContent = prefix + formatDuration(eta.seconds);
-            etaEl.hidden = false;
-            etaEl.removeAttribute('hidden');
-        } else {
-            etaEl.textContent = '';
-            etaEl.hidden = true;
-        }
-    }
-
-    chip.hidden = false;
-    chip.classList.add('is-visible');
-    chip._selectedId = selected.id;
-    chip.title = [idText, nome, street !== '—' ? street : ''].filter(Boolean).join(' · ')
-        || selected.endereco
-        || 'Parada selecionada';
-    chip.setAttribute('aria-label', `Focar mapa na parada ${idText}, ${nome}${street !== '—' ? `, ${street}` : ''}`);
-}
-
-function updateDaySummary() {
-    const root = document.getElementById('daySummary');
-    if (!root) return;
-    const stats = routeDayStats(deliveries);
-    const elE = document.getElementById('daySumEntregue');
-    const elF = document.getElementById('daySumFalhou');
-    const elKm = document.getElementById('daySumKm');
-    const kmItem = document.getElementById('daySumKmItem');
-    if (elE) elE.textContent = String(stats.entregue);
-    if (elF) elF.textContent = String(stats.falhou);
-
-    let kmText = '—';
-    const pending = pendingStops();
-    if (routeActive && routeMetrics && routeMetrics.signature === routeSignature(pending)
-        && typeof routeMetrics.meters === 'number' && routeMetrics.meters >= 0) {
-        kmText = formatKm(routeMetrics.meters) + ' rest.';
-    }
-    if (elKm) elKm.textContent = kmText;
-    if (kmItem) kmItem.title = kmText === '—'
-        ? 'Quilometragem disponível após otimizar a rota'
-        : 'Distância restante da rota otimizada';
-
-    root.hidden = deliveries.length === 0;
-    renderRouteSwitcher();
-}
-
-function updateProgressAndEstimates() {
-    updateDaySummary();
-    updateMapNextChip();
-    maybeShowBackupReminder();
-}
-
-function updateLastIdDisplay(deliveryId) {
-    const container = document.getElementById('lastIdContainer');
-    const valueSpan = document.getElementById('lastIdValue');
-    if (!container || !valueSpan) return;
-    if (deliveryId) {
-        valueSpan.innerText = deliveryId;
-        container.classList.add('show');
-        container.style.display = '';
-    } else {
-        valueSpan.innerText = '—';
-        container.classList.remove('show');
-        container.style.display = '';
-    }
-}
-
-// ========== LIMPEZA DO FORMULÁRIO ==========
-// clearForm: src/js/add-delivery-form.js (configureAddDeliveryForm).
-
-// ========== PAINEL INFERIOR ==========
-/** Centra o mapa na entrega (JS Maps ou facade nativa Capacitor). */
-function focusMapOnDelivery(delivery, opts = {}) {
-    if (!map || !delivery || !hasMapCoords(delivery)) return;
-    const lat = Number(delivery.lat);
-    const lng = Number(delivery.lng);
-    if (!Number.isFinite(lat) || !Number.isFinite(lng)) return;
-    const pos = { lat, lng };
-    const targetZoom = Number.isFinite(opts.zoom) ? opts.zoom : 16;
-    try {
-        if (useNativeMap && nativeGoogleMap && typeof nativeGoogleMap.setCamera === 'function') {
-            const cur = typeof map.getZoom === 'function' ? map.getZoom() : null;
-            const zoom = (cur == null || cur < targetZoom - 0.35 || opts.forceZoom)
-                ? targetZoom
-                : cur;
-            nativeMapZoom = zoom;
-            nativeGoogleMap.setCamera({
-                coordinate: pos,
-                zoom,
-                animate: opts.animate !== false
-            }).catch((e) => console.warn('focusMapOnDelivery native', e));
-            return;
-        }
-        map.panTo(pos);
-        const z = typeof map.getZoom === 'function' ? map.getZoom() : null;
-        if (z == null || z < targetZoom - 0.35 || opts.forceZoom) {
-            map.setZoom(targetZoom);
-        }
-    } catch (e) {
-        console.warn('focusMapOnDelivery', e);
-    }
-}
-
-// Painel inferior (open/actions/fotos/swipe/nav):
-// lib/panel-helpers.js · src/js/delivery-panel.js (configureDeliveryPanel).
-
-// copyDeliveryPhotoIndexToAgenda / saveDeliveryPhotoToAgenda: src/js/agenda-route.js
-
-/** Atualiza só a lista de entregas depois (badge de fotos) sem travar o thumb. */
-function scheduleDeliveriesListPhotoRefresh() {
-    const run = () => renderDeliveriesList();
-    if (typeof requestIdleCallback === 'function') requestIdleCallback(run, { timeout: 700 });
-    else setTimeout(run, 120);
-}
-
-async function addPhotoDataUrlsToDelivery(delivery, dataUrls, opts = {}) {
-    if (!delivery || !dataUrls || !dataUrls.length) return 0;
-    const { hadOptimistic = false, silent = false } = opts;
-    let saved = 0;
-    try {
-        for (const dataUrl of dataUrls) {
-            const id = await addPhotoDataUrlToItem(delivery, dataUrl);
-            if (!id) continue; // duplicata (onPhoto + lote / 2º shutter)
-            saved += 1;
-            // Persistência por foto: sobrevive a kill/troca de cliente a meio do lote.
-            persistStorageNow();
-            refreshPanelPhotos(delivery);
-        }
-        if (saved) {
-            scheduleDeliveriesListPhotoRefresh();
-            if (!silent) {
-                showToast(saved > 1 ? `${saved} fotos salvas nesta entrega` : 'Foto salva nesta entrega');
-            }
-        } else if (hadOptimistic && !silent) {
-            refreshPanelPhotos(delivery);
-        }
-        return saved;
-    } catch (e) {
-        if (hadOptimistic || saved) refreshPanelPhotos(delivery);
-        if (saved) {
-            scheduleDeliveriesListPhotoRefresh();
-            if (!silent) showToast(`${saved} foto(s) salvas; algumas falharam`, true);
-            return saved;
-        }
-        if (String(e?.message || e) === 'photo-limit') {
-            showToast(`Limite de ${PHOTO_MAX_PER_ITEM} fotos por entrega`, true);
-        } else if (!silent) {
-            showToast('Não foi possível adicionar a foto', true);
-        }
-        return saved;
-    }
-}
-
-async function capturePhotoForSelectedDelivery(mode = 'camera') {
-    const delivery = currentSelectedDelivery;
-    if (!delivery) {
-        showToast('Selecione uma entrega no mapa', true);
-        return;
-    }
-    const slots = remainingPhotoSlots(delivery);
-    if (slots <= 0) {
-        showToast(`Limite de ${PHOTO_MAX_PER_ITEM} fotos por entrega`, true);
-        return;
-    }
-    const cameraInput = document.getElementById('panelCameraInput');
-    const galleryInput = document.getElementById('panelGalleryInput');
-    const fileInput = mode === 'gallery' ? galleryInput : cameraInput;
-    let optimisticEl = null;
-    let optimisticUrl = null;
-    let savedIncremental = 0;
-    let lastErr = null;
-    const urls = await pickPhotoDataUrls(mode, {
-        fileInput,
-        multiple: mode === 'gallery',
-        maxPhotos: slots,
-        pendingTarget: { kind: 'delivery', sequentialId: delivery.sequentialId },
-        onPreview: (previewUrl) => {
-            if (!previewUrl || optimisticEl) return;
-            optimisticUrl = previewUrl;
-            optimisticEl = showOptimisticPanelPhoto(delivery, previewUrl);
-        },
-        onPhoto: async (dataUrl, n, total) => {
-            try {
-                const id = await addPhotoDataUrlToItem(delivery, dataUrl);
-                if (!id) return; // já gravada (dedupe)
-                savedIncremental += 1;
-                persistStorageNow();
-                if (optimisticEl) {
-                    try { optimisticEl.remove(); } catch (_) {}
-                    optimisticEl = null;
-                }
-                refreshPanelPhotos(delivery);
-                if (total && total > 1) {
-                    showToast(`A guardar fotos… ${n}/${total}`);
-                }
-            } catch (e) {
-                lastErr = e;
-                if (String(e?.message || e) === 'photo-limit') throw e;
-                console.warn('incremental photo save', e);
-            }
-        }
-    });
-    // Segurança: lote final com dedupe — cobre corrida onPhoto vs Concluir e caminhos sem onPhoto.
-    let batchSaved = 0;
-    if (urls.length) {
-        batchSaved = await addPhotoDataUrlsToDelivery(delivery, urls, {
-            hadOptimistic: !!optimisticEl,
-            silent: savedIncremental > 0
-        }) || 0;
-    }
-    const totalSaved = savedIncremental + batchSaved;
-    if (totalSaved > 0) {
-        scheduleDeliveriesListPhotoRefresh();
-        if (savedIncremental > 0) {
-            showToast(totalSaved > 1 ? `${totalSaved} fotos salvas nesta entrega` : 'Foto salva nesta entrega');
-        }
-    } else if (optimisticEl) {
-        optimisticEl.remove();
-        updatePanelMiniPhotoUi(delivery);
-        if (lastErr && String(lastErr?.message || lastErr) === 'photo-limit') {
-            showToast(`Limite de ${PHOTO_MAX_PER_ITEM} fotos por entrega`, true);
-        }
-    }
-    if (optimisticUrl && String(optimisticUrl).startsWith('blob:')) {
-        try { URL.revokeObjectURL(optimisticUrl); } catch (_) {}
-    }
-}
-
-function setupPanelPhotoCapture() {
-    const cameraBtn = document.getElementById('panelCameraBtn');
-    const galleryBtn = document.getElementById('panelGalleryBtn');
-    const saveAgendaBtn = document.getElementById('panelSavePhotoAgendaBtn');
-    if (!cameraBtn || cameraBtn.dataset.ready) return;
-    cameraBtn.dataset.ready = '1';
-
-    cameraBtn.addEventListener('click', async (e) => {
-        e.stopPropagation();
-        await capturePhotoForSelectedDelivery('camera');
-    });
-    galleryBtn.addEventListener('click', async (e) => {
-        e.stopPropagation();
-        await capturePhotoForSelectedDelivery('gallery');
-    });
-    if (saveAgendaBtn) {
-        saveAgendaBtn.addEventListener('click', async (e) => {
-            e.stopPropagation();
-            await saveDeliveryPhotoToAgenda(currentSelectedDelivery, null);
-        });
-    }
-}
-
-// ========== INFO NA TELA DE BLOQUEIO (nativo, sem alerta) ==========
-// Implementação em src/js/lock-screen.js (configureLockScreen no boot).
-// Helpers puros: lib/lock-screen-helpers.js.
-
-function adjustPacotes(delta) {
-    if (!currentSelectedDelivery) return;
-    const newValue = (currentSelectedDelivery.pacotes || 1) + delta;
-    if (newValue < 1) return;
-    currentSelectedDelivery.pacotes = newValue;
-    const pacotesSpan = document.getElementById('panelPacotesValue');
-    pacotesSpan.innerText = newValue;
-    if (newValue >= 2) {
-        pacotesSpan.classList.add('pacotes-highlight');
-    } else {
-        pacotesSpan.classList.remove('pacotes-highlight');
-    }
-    const miniQty = document.getElementById('panelMiniQty');
-    if (miniQty) {
-        miniQty.textContent = String(newValue);
-        miniQty.classList.toggle('pacotes-highlight', newValue >= 2);
-    }
-    const panel = document.getElementById('deliveryPanel');
-    if (newValue >= 2) {
-        panel.classList.add('red-bg');
-    } else {
-        panel.classList.remove('red-bg');
-    }
-    saveStorage();
-    const marker = getMarker(currentSelectedDelivery.sequentialId);
-    if (marker) {
-        updateMarkerIcon(marker, currentSelectedDelivery);
-    }
-    renderDeliveriesList();
-    syncActiveStopNotification(currentSelectedDelivery);
-    showToast(`Quantidade de pacotes atualizada para ${newValue}`);
-}
-
-async function editObservation() {
-    if (!currentSelectedDelivery) return;
-    const currentObs = currentSelectedDelivery.notes || '';
-    const newObs = await showPromptModal({
-        title: 'Observação',
-        message: 'Informe a observação desta entrega:',
-        defaultValue: currentObs,
-        placeholder: 'Ex.: deixar com o porteiro',
-        multiline: true
-    });
-    if (newObs !== null) {
-        currentSelectedDelivery.notes = newObs.trim();
-        document.getElementById('panelObsText').innerText = currentSelectedDelivery.notes || 'Nenhuma observação';
-        saveStorage();
-        renderDeliveriesList();
-        showToast("Observação salva com sucesso");
-    }
-}
-
-function editPhonesPanel() {
-    if (!currentSelectedDelivery) return;
-    const overlay = document.createElement('div');
-    overlay.className = 'modal-overlay';
-    const phones = currentSelectedDelivery.telefones || [];
-    overlay.innerHTML = `
-        <div class="modal-container" style="max-width:480px;">
-            <h3 class="modal-title">Editar telefones</h3>
-            <div class="modal-form-group">
-                <label class="modal-field-label">Telefones</label>
-                <div id="phoneListModal" class="modal-phone-list"></div>
-                <div class="modal-add-phone">
-                    <input type="text" id="newPhoneLabelModal" placeholder="Identificação">
-                    <input type="tel" id="newPhoneModal" placeholder="(69) 99999-9999">
-                    <button type="button" id="addPhoneModalBtn" class="modal-add-phone-btn" aria-label="Adicionar telefone"><i class="fas fa-plus"></i></button>
-                </div>
-            </div>
-            <div class="modal-buttons">
-                <button type="button" class="modal-confirm" id="savePhonesModal">Salvar</button>
-                <button type="button" class="modal-cancel" id="cancelPhonesModal">Cancelar</button>
-            </div>
-        </div>
-    `;
-    document.body.appendChild(overlay);
-
-    function refreshPhoneList() {
-        const list = overlay.querySelector('#phoneListModal');
-        list.innerHTML = phones.map((p, i) =>
-            `<div class="modal-phone-row">
-                <input type="text" class="edit-phone-label" data-index="${i}" value="${escapeHtml(p.label || '')}" placeholder="Identificação">
-                <input type="tel" class="edit-phone-number" data-index="${i}" value="${escapeHtml(p.numero || '')}" placeholder="Número">
-                <button type="button" class="remove-phone-modal modal-phone-remove" data-index="${i}" aria-label="Remover telefone"><i class="fas fa-times"></i></button>
-            </div>`
-        ).join('');
-        list.querySelectorAll('.remove-phone-modal').forEach(btn => {
-            btn.addEventListener('click', () => {
-                const idx = parseInt(btn.dataset.index);
-                phones.splice(idx, 1);
-                refreshPhoneList();
-            });
-        });
-        list.querySelectorAll('.edit-phone-label').forEach(inp => {
-            inp.addEventListener('change', function() {
-                const idx = parseInt(this.dataset.index);
-                if (phones[idx]) phones[idx].label = this.value;
-            });
-        });
-        list.querySelectorAll('.edit-phone-number').forEach(inp => {
-            inp.addEventListener('change', function() {
-                const idx = parseInt(this.dataset.index);
-                if (phones[idx]) phones[idx].numero = this.value;
-            });
-        });
-    }
-    refreshPhoneList();
-
-    overlay.querySelector('#addPhoneModalBtn').addEventListener('click', () => {
-        const labelInput = overlay.querySelector('#newPhoneLabelModal');
-        const numInput = overlay.querySelector('#newPhoneModal');
-        const label = labelInput.value.trim();
-        const numero = numInput.value.trim();
-        if (!numero) return showToast("Informe um número de telefone", true);
-        const formatted = formatPhoneNumber(numero);
-        if (!formatted) return showToast("Número de telefone inválido", true);
-        phones.push({ numero: formatted, label: label || '' });
-        refreshPhoneList();
-        labelInput.value = '';
-        numInput.value = '';
-    });
-
-    overlay.querySelector('#savePhonesModal').addEventListener('click', () => {
-        const list = overlay.querySelector('#phoneListModal');
-        const labels = list.querySelectorAll('.edit-phone-label');
-        const numbers = list.querySelectorAll('.edit-phone-number');
-        const newPhones = [];
-        labels.forEach((inp, i) => {
-            const num = numbers[i]?.value?.trim() || '';
-            if (num) {
-                const formatted = formatPhoneNumber(num);
-                if (formatted) {
-                    newPhones.push({ numero: formatted, label: inp.value.trim() || '' });
-                }
-            }
-        });
-        currentSelectedDelivery.telefones = newPhones;
-        saveStorage();
-        const phoneContainer = document.getElementById('panelPhone');
-        if (newPhones.length) {
-            phoneContainer.innerHTML = newPhones.map(p => {
-                const label = p.label ? p.label + ': ' : '';
-                return label + formatPhoneShort(p.numero);
-            }).join(', ');
-        } else {
-            phoneContainer.innerText = 'Não informado';
-        }
-        renderDeliveriesList();
-        syncAgendaByDelivery(currentSelectedDelivery);
-        showToast("Telefones atualizados");
-        overlay.remove();
-    });
-    overlay.querySelector('#cancelPhonesModal').addEventListener('click', () => overlay.remove());
-    overlay.querySelector('#newPhoneModal').addEventListener('keydown', (e) => {
-        if (e.key === 'Enter') overlay.querySelector('#addPhoneModalBtn').click();
-    });
-}
-
-// ========== WHATSAPP ==========
-// Implementação em src/js/whatsapp.js (configureWhatsApp no boot).
-// Helpers puros: lib/whatsapp-helpers.js.
-
-// ========== NOVA ENTREGA - TELEFONES ==========
-// Implementação em src/js/form-phones.js (configureFormPhones no boot).
-
-// Lista de entregas: src/js/deliveries-list.js (configureDeliveriesList no boot).
-
-// Modais de edição (entrega/agenda): src/js/edit-modals.js (configureEditModals no boot).
-// Helpers puros: lib/edit-helpers.js.
-
-// ========== ADICIONAR DA AGENDA PARA A ROTA / SALVAR NA AGENDA ==========
-// findActiveRouteByAddress, addAgendaToRoute, saveToAgenda, copyFromOtherRoute:
-// src/js/agenda-route.js (configureAgendaRoute).
-
-// ========== BACKUP E RESTORE ==========
-// Implementação em src/js/backup-ui.js (configureBackupUi no boot).
-
-// ========== LIMPAR ROTA / NOVA ROTA ==========
-// clearRoute / startNewRoute: src/js/routes.js (configureRoutes no boot).
-
-// Toggle sidebar / fechar overlays: src/js/sidebar.js.
-
-// ========== PERFIL ==========
-// Implementação em src/js/profile.js (configureProfile no boot).
-// Helpers puros: lib/profile-helpers.js.
-
-// ========== SUGESTÕES (SEM BADGE "NA AGENDA") ==========
-// Ranking puro: lib/suggestion-helpers.js · UI: src/js/name-suggestions.js (configureNameSuggestions).
-
-// ========== ADICIONAR ENTREGA DIRETO (PERMITE AGENDA) ==========
-// addDeliveryDirect / setupAddDeliveryForm: src/js/add-delivery-form.js
-
-// ========== ROTA OTIMIZADA (Directions API) ==========
-// Geometria: lib/routing-helpers.js · orquestração: src/js/routing.js (configureRouting).
-// GPS / BackgroundGps: src/js/gps.js (configureGps) · helpers: lib/gps-helpers.js.
-let startPoint = null;
-
-// Directions/otimização: src/js/routing.js
-
-// ========== MAPA E INICIALIZAÇÃO ==========
-// Init nativo/web + Places: src/js/map-layer.js (configureMapLayer, initMap).
-
-/** Interface do motorista. Roda no DOMContentLoaded, sem esperar o callback do Google Maps. */
-function initAppUi() {
-    if (initAppUi.done) return;
-    initAppUi.done = true;
-    initNameSuggestions();
-    setupNewDeliveryPhoneUI();
-    setupAddressDuplicateCheck();
-
-    bindGalleryChrome();
-    document.getElementById('closePanelBtn').addEventListener('click', closeDeliveryPanel);
-    document.getElementById('panelPacotesPlus').addEventListener('click', () => adjustPacotes(1));
-    document.getElementById('panelPacotesMinus').addEventListener('click', () => adjustPacotes(-1));
-    document.getElementById('editObsBtn').addEventListener('click', editObservation);
-    document.getElementById('editPhoneBtn').addEventListener('click', editPhonesPanel);
-    setupPanelSwipe();
-    setupPanelPhotoCapture();
-    setupUndoSnackbar();
-    setupHistoryListDelegation();
-    setupOverflowMenus();
-    setupBackupReminderUi();
-    setupAutoBackupScheduler();
-    document.getElementById('mapNextChip')?.addEventListener('click', () => {
-        const selected = currentSelectedDelivery;
-        if (!selected) return;
-        focusDeliveryInPanel(selected, 0, { keepMinimized: false, pan: true, zoom: 16 });
-    });
-    if (isNativeApp()) {
-        setupScreenLockNotificationBridge();
-        setupCameraRestoreHandler();
-    }
-
-    document.getElementById('profileBtn').addEventListener('click', showProfileModal);
-    bindBackupButtons();
-
-    document.getElementById('optimizeRouteBtn').addEventListener('click', optimizeRoute);
-    document.getElementById('optimizeRouteToolBtn')?.addEventListener('click', optimizeRoute);
-    updateOptimizeFabVisibility();
-    document.getElementById('archiveDayBtn')?.addEventListener('click', () => archiveCurrentRouteDay({ silent: false }));
-    document.getElementById('newRouteBtn')?.addEventListener('click', startNewRoute);
-    document.getElementById('newRouteMenuBtn')?.addEventListener('click', startNewRoute);
-    document.getElementById('clearRouteBtn').addEventListener('click', clearRoute);
-    document.getElementById('toggleSidebarBtn').addEventListener('click', toggleSidebar);
-    document.getElementById('copyFromRouteBtn').addEventListener('click', copyFromOtherRoute);
-    document.getElementById('gpsBtn').addEventListener('click', toggleGps);
-    updateGpsButton();
-    // No celular nativo o GPS funciona sem HTTPS; no browser precisa de contexto seguro.
-    if (gpsEnabled && (isNativeApp() || window.isSecureContext)) {
-        enableGpsTracking().then(ok => {
-            if (!ok) updateGpsButton();
-        });
-    } else if (gpsEnabled && !window.isSecureContext) {
-        updateGpsButton();
-    }
-
-    document.querySelectorAll('.sidebar-tabs button').forEach(btn => {
-        btn.addEventListener('click', () => switchSidebarTab(btn.dataset.tab));
-    });
-
-    document.addEventListener('keydown', (e) => {
-        if (e.key === 'Escape') {
-            if (isGalleryOpen()) closeGallery();
-            else closeDeliveryPanel();
-        }
-        if (isGalleryOpen() && e.key === 'ArrowRight') nextPhoto();
-        if (isGalleryOpen() && e.key === 'ArrowLeft') prevPhoto();
-    });
-
-    setTimeout(() => {
-        if (geocoder) return;
-        const loading = document.getElementById('mapLoading');
-        if (loading) loading.textContent = 'Mapa indisponível. Lista, agenda e backup continuam funcionando.';
-    }, 8000);
-}
-
-function geocodeAddressAndUpdate(delivery, newAddress, callback) {
-    // Adia 1 frame para não competir com o fecho do modal / gesto.
-    if (newAddress === delivery.endereco) { callback?.(true); return; }
-    if (!geocoder) {
-        showToast('Aguarde o mapa carregar para localizar o endereço', true);
-        callback?.(false);
-        return;
-    }
-    showToast("Localizando endereço…");
-    const run = () => {
-        geocoder.geocode({ address: newAddress }, (res, stat) => {
-            if (stat === "OK" && res[0]) {
-                delivery.lat = res[0].geometry.location.lat();
-                delivery.lng = res[0].geometry.location.lng();
-                delivery.endereco = newAddress;
-                saveStorage();
-                syncTrackingStatus(delivery);
-                const marker = getMarker(delivery.sequentialId);
-                if (marker) { marker.setPosition({ lat: delivery.lat, lng: delivery.lng }); updateMarkerIcon(marker, delivery); } else { rebuildMarkers(false); }
-                renderDeliveriesList();
-                showToast("Endereço atualizado");
-                callback?.(true);
-            } else { showToast("Não foi possível localizar este endereço", true); callback?.(false); }
-        });
-    };
-    if (typeof requestIdleCallback === 'function') requestIdleCallback(run, { timeout: 600 });
-    else setTimeout(run, 50);
-}
-
-async function markDelivered(id, { advance = false } = {}) {
-    try {
-        let d = deliveries.find(x => x.id === id);
-        if (!d || d.status === 'entregue') return;
-        const normalsBefore = countNormalActiveStops();
-        d.status = 'entregue';
-        d.voltarDepois = false;
-        delete d.failReason;
-        // Libera JPEGs em memória de outras paradas — o backup/auto e o avanço no painel matavam o WebView.
-        try { releaseInMemoryPhotosExcept(d.id); } catch (_) {}
-        try { saveStorage(); } catch (_) {}
-        try { syncTrackingStatus(d); } catch (e) { console.warn('syncTrackingStatus', e); }
-        try { sendDeliveredPush(d); } catch (e) { console.warn('sendDeliveredPush', e); }
-        try { upsertMarker(d); } catch (e) { console.warn('upsertMarker', e); }
-        try { updateDeliveryStats(); } catch (_) {}
-        try { renderDeliveriesList(); } catch (_) {}
-        try { notifyRouteCompositionChanged({ keepRoute: true }); } catch (_) {}
-        try { playDeliveryFeedback(); } catch (_) {}
-        try { noteDeliveryCompletedForBackup(); } catch (_) {}
-        try { maybeNotifyVoltarDepois(normalsBefore); } catch (_) {}
-        if (advance) {
-            try { minimizeDeliveryPanel(); } catch (_) {}
-            try {
-                goToAdjacentDelivery(1, { preferPending: true, keepMinimized: true });
-            } catch (e) {
-                console.warn('goToAdjacentDelivery', e);
-            }
-        } else if (currentSelectedDelivery && currentSelectedDelivery.id === id) {
-            const mini = !!document.getElementById('deliveryPanel')?.classList.contains('minimized');
-            try { await openDeliveryPanel(d, { keepMinimized: mini }); } catch (_) {}
-        } else {
-            try { syncActiveStopNotification(currentSelectedDelivery); } catch (_) {}
-        }
-    } catch (e) {
-        console.error('markDelivered', e);
-        try { showToast('Não foi possível concluir a entrega', true); } catch (_) {}
-    }
-}
-
-// releaseInMemoryPhotosExcept: src/js/item-photos.js
-
-function undoDeliveryStatus(id, { keepPanel = false, keepMinimized = false } = {}) {
-    let d = deliveries.find(d => d.id === id);
-    if (!d) return;
-    if (d.status !== 'entregue' && d.status !== 'falhou') return;
-    d.status = 'pendente';
-    d.voltarDepois = false;
-    delete d.failReason;
-    delete d.deliveredNotified;
-    delete d.absentNotified;
-    saveStorage();
-    syncTrackingStatus(d);
-    upsertMarker(d);
-    updateDeliveryStats();
-    renderDeliveriesList();
-    notifyRouteCompositionChanged({ keepRoute: true });
-    showToast(`Entrega ${d.sequentialId} reaberta como pendente`);
-    if (keepPanel || (currentSelectedDelivery && currentSelectedDelivery.id === id)) {
-        openDeliveryPanel(d, { keepMinimized });
-    }
-}
+// HUD / stats / focusMap: src/js/route-ui.js (configureRouteUi).
+// Fotos do painel: src/js/panel-capture.js · edição painel: src/js/panel-edit-actions.js
+// Status entregue/undo/geocode: src/js/delivery-status.js
 
 // ========== NÃO ENTREGUE / VOLTAR DEPOIS ==========
 // Helpers: lib/not-delivered-helpers.js · UI: src/js/not-delivered.js (configureNotDelivered).
 
-// ========== EVENTO DO BOTÃO "ADICIONAR ENTREGA" (FORMULÁRIO MANUAL) ==========
-document.addEventListener('DOMContentLoaded', function() {
-    initAuthUi();
-    initAppUi();
-    localStorage.removeItem('rotaflow_reminders');
-    resetVoltarDepoisAlert();
-    document.getElementById("routeSearchInput").addEventListener("input", debounce((e) => { routeFilter = e.target.value.toLowerCase(); renderDeliveriesList(); }, 150));
-    document.getElementById("agendaSearchInput").addEventListener("input", debounce((e) => { agendaFilter = e.target.value.toLowerCase(); renderAgendaList(); }, 150));
-    setupAddDeliveryForm();
+// ========== BOOT ==========
+// initAppUi / DOMContentLoaded / PWA / SW: src/js/app-boot.js (configureAppBoot).
+configureAppBoot({
+    initNameSuggestions,
+    setupNewDeliveryPhoneUI,
+    setupAddressDuplicateCheck,
+    bindGalleryChrome,
+    closeDeliveryPanel,
+    adjustPacotes,
+    editObservation,
+    editPhonesPanel,
+    setupPanelSwipe,
+    setupPanelPhotoCapture,
+    setupUndoSnackbar,
+    setupHistoryListDelegation,
+    setupOverflowMenus,
+    setupBackupReminderUi,
+    setupAutoBackupScheduler,
+    getCurrentSelectedDelivery: () => currentSelectedDelivery,
+    focusDeliveryInPanel,
+    isNativeApp,
+    setupScreenLockNotificationBridge,
+    setupCameraRestoreHandler,
+    showProfileModal,
+    bindBackupButtons,
+    optimizeRoute,
+    updateOptimizeFabVisibility,
+    archiveCurrentRouteDay,
+    startNewRoute,
+    clearRoute,
+    toggleSidebar,
+    copyFromOtherRoute,
+    toggleGps,
+    updateGpsButton,
+    getGpsEnabled: () => gpsEnabled,
+    enableGpsTracking,
+    switchSidebarTab,
+    isGalleryOpen,
+    closeGallery,
+    nextPhoto,
+    prevPhoto,
+    getGeocoder: () => geocoder,
+    initAuthUi,
+    resetVoltarDepoisAlert,
+    debounce,
+    setRouteFilter: (v) => { routeFilter = v; },
+    setAgendaFilter: (v) => { agendaFilter = v; },
+    renderDeliveriesList,
+    renderAgendaList,
+    setupAddDeliveryForm,
+    initMap,
+    persistStorageNow,
+    getAppIcon: () => APP_ICON
 });
-
-
-window.initMap = initMap;
-window.addEventListener('beforeunload', persistStorageNow);
-
-if ('serviceWorker' in navigator && !isNativeApp()) {
-    navigator.serviceWorker.register('./sw.js').catch(() => {});
-}
-
-// ========== MANIFESTO PWA (embutido, pois o app é um arquivo único) ==========
-(function () {
-    const dir = location.pathname.replace(/[^/]*$/, '');
-    const manifest = {
-        name: 'RotaFlow Pro',
-        short_name: 'RotaFlow',
-        description: 'Gestão de entregas com mapa, rota e agenda',
-        start_url: location.pathname + location.search,
-        scope: dir,
-        display: 'standalone',
-        orientation: 'portrait-primary',
-        lang: 'pt-BR',
-        theme_color: '#0f172a',
-        background_color: '#ffffff',
-        icons: [
-            { src: APP_ICON, sizes: '192x192', type: 'image/svg+xml', purpose: 'any' },
-            { src: APP_ICON, sizes: '512x512', type: 'image/svg+xml', purpose: 'maskable' }
-        ]
-    };
-    const url = URL.createObjectURL(new Blob([JSON.stringify(manifest)], { type: 'application/manifest+json' }));
-    const link = document.createElement('link');
-    link.rel = 'manifest';
-    link.href = url;
-    document.head.appendChild(link);
-})();
-
-(function () {
-    let deferredPrompt;
-    window.addEventListener('beforeinstallprompt', (e) => {
-        e.preventDefault();
-        deferredPrompt = e;
-        const installBtn = document.getElementById('installBtn');
-        if (!installBtn) return;
-        installBtn.style.display = 'flex';
-        installBtn.onclick = () => {
-            installBtn.style.display = 'none';
-            deferredPrompt.prompt();
-            deferredPrompt.userChoice.then(() => { deferredPrompt = null; });
-        };
-    });
-})();
+setupDomContentLoadedBoot();
+setupRuntimeBoot();
