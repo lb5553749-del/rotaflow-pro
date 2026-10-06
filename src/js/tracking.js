@@ -190,11 +190,16 @@ export async function writeTrackDoc(token, payload) {
     await setTrackDoc(db, token, payload);
 }
 
+/** Tokens de antes do ownerUid ficaram imutáveis nas rules: ao compartilhar de novo, gera outro. */
+const TRACK_TOKEN_VERSION = 2;
+
 export function prepareTrackingUrl(delivery) {
     if (!delivery || typeof delivery.lat !== 'number' || typeof delivery.lng !== 'number') return null;
-    if (!delivery.trackToken) {
+    if (!delivery.trackToken || delivery.trackTokenV !== TRACK_TOKEN_VERSION) {
         delivery.trackToken = newTrackToken();
+        delivery.trackTokenV = TRACK_TOKEN_VERSION;
         deps.saveStorage();
+        deps.syncBackgroundGpsTargets();
     }
     return trackingUrl(delivery.trackToken);
 }
