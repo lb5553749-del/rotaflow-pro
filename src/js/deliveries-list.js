@@ -44,7 +44,10 @@ let deps = {
     playDeliveryFeedback: () => {},
     noteDeliveryCompletedForBackup: () => {},
     countNormalActiveStops: () => 0,
-    maybeNotifyVoltarDepois: () => {}
+    maybeNotifyVoltarDepois: () => {},
+    getRiskLevelForDelivery: () => null,
+    setRiskLevelFromList: () => {},
+    rebuildMarkers: () => {}
 };
 
 let renderDeliveriesQueued = false;
@@ -109,7 +112,9 @@ function paintDeliveryListWindow(container, force) {
 
     deliveryListVirtual.start = range.start;
     deliveryListVirtual.end = range.end;
-    const rowHtmls = filtered.map((d) => buildDeliveryListItemHtml(d));
+    const rowHtmls = filtered.map((d) => buildDeliveryListItemHtml(d, {
+        riskLevel: deps.getRiskLevelForDelivery(d)
+    }));
     container.innerHTML = joinVirtualListHtml(rowHtmls, range, DELIVERY_LIST_ROW_EST);
 }
 
@@ -234,6 +239,24 @@ function ensureDeliveryListDelegation(container) {
             renderDeliveriesList();
             deps.updateProgressAndEstimates();
             deps.showToast('Entrega removida da rota');
+            return;
+        }
+        if (action === 'risk-amarelo') {
+            deps.setRiskLevelFromList(delivery, 'amarelo');
+            deps.rebuildMarkers(false);
+            renderDeliveriesList();
+            return;
+        }
+        if (action === 'risk-vermelho') {
+            deps.setRiskLevelFromList(delivery, 'vermelho');
+            deps.rebuildMarkers(false);
+            renderDeliveriesList();
+            return;
+        }
+        if (action === 'risk-clear') {
+            deps.setRiskLevelFromList(delivery, null);
+            deps.rebuildMarkers(false);
+            renderDeliveriesList();
             return;
         }
         if (action === 'agenda') {

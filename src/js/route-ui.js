@@ -24,7 +24,8 @@ let deps = {
     getMap: () => null,
     getUseNativeMap: () => false,
     getNativeGoogleMap: () => null,
-    setNativeMapZoom: () => {}
+    setNativeMapZoom: () => {},
+    getRiskLevelForDelivery: () => null
 };
 
 export function configureRouteUi(opts) {
@@ -103,7 +104,21 @@ export function updateMapNextChip() {
     const street = shortStreetAddress(selected.endereco);
     nameEl.textContent = idText;
     if (clientEl) clientEl.textContent = nome;
-    if (labelEl) labelEl.textContent = street !== '—' ? street : 'Endereço não informado';
+    if (labelEl) {
+        const risk = typeof deps.getRiskLevelForDelivery === 'function'
+            ? deps.getRiskLevelForDelivery(selected)
+            : null;
+        const riskPrefix = risk === 'vermelho'
+            ? '⚠ Risco alto · '
+            : risk === 'amarelo'
+                ? '⚠ Atenção · '
+                : '';
+        labelEl.textContent = street !== '—'
+            ? riskPrefix + street
+            : (riskPrefix || 'Endereço não informado');
+        chip.classList.toggle('risk-amarelo', risk === 'amarelo');
+        chip.classList.toggle('risk-vermelho', risk === 'vermelho');
+    }
 
     const eta = estimateStopEta(selected);
     if (etaEl) {

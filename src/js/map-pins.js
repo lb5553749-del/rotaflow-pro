@@ -11,7 +11,8 @@ import {
 
 let deps = {
     getPinSizePref: () => 'p',
-    countActivePins: () => 0
+    countActivePins: () => 0,
+    getRiskLevelForDelivery: () => null
 };
 
 export function configureMapPins(opts) {
@@ -26,7 +27,8 @@ export function nativePinDisplaySize() {
 export function buildMapPinIcon(delivery, { highlighted = false } = {}) {
     const muted = isMutedPin(delivery) && !highlighted;
     const label = String(delivery?.sequentialId ?? '');
-    const fill = highlighted ? '#174EA6' : markerColorFor(delivery);
+    const riskLevel = muted ? null : deps.getRiskLevelForDelivery(delivery);
+    const fill = highlighted ? '#174EA6' : markerColorFor(delivery, { riskLevel });
     const textColor = pinTextColorFor(delivery, highlighted);
     const display = nativePinDisplaySize();
     const scale = 2;

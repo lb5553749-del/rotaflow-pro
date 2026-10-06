@@ -36,6 +36,14 @@ describe('isMutedPin / markerColorFor', () => {
     assert.equal(markerColorFor({ status: 'pendente', pacotes: 1 }), '#1A73E8');
     assert.equal(markerColorFor({ status: 'pendente', pacotes: 2 }), '#EF4444');
     assert.equal(markerColorFor(null), '#3b82f6');
+    assert.equal(
+      markerColorFor({ status: 'pendente', pacotes: 1 }, { riskLevel: 'amarelo' }),
+      '#D97706'
+    );
+    assert.equal(
+      markerColorFor({ status: 'pendente', pacotes: 1 }, { riskLevel: 'vermelho' }),
+      '#B91C1C'
+    );
   });
 });
 

@@ -20,7 +20,8 @@ let deps = {
     getUseNativeMap: () => false,
     getDeliveries: () => [],
     openDeliveryPanel: () => {},
-    updateDeliveryStats: () => {}
+    updateDeliveryStats: () => {},
+    getRiskLevelForDelivery: () => null
 };
 
 const markersList = [];
@@ -83,7 +84,8 @@ export function applyPinVisual(marker, delivery, { highlighted = false } = {}) {
     if (deps.getUseNativeMap()) {
         marker._muted = isMutedPin(delivery);
         marker._highlighted = highlighted;
-        marker._color = highlighted ? '#1E3A8A' : markerColorFor(delivery);
+        const riskLevel = isMutedPin(delivery) ? null : (deps.getRiskLevelForDelivery?.(delivery) || null);
+        marker._color = highlighted ? '#1E3A8A' : markerColorFor(delivery, { riskLevel });
         marker._label = String(delivery.sequentialId);
         marker.setTitle(`${delivery.sequentialId} - ${delivery.nome}`);
         marker._sync();

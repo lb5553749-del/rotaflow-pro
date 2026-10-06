@@ -43,7 +43,10 @@ let deps = {
     syncBackgroundGpsTargets: () => {},
     showToast: () => {},
     yieldToUiFrame: async () => {},
-    getTravelMode: () => (typeof google !== 'undefined' && google.maps ? google.maps.TravelMode.DRIVING : 'DRIVING')
+    getTravelMode: () => (typeof google !== 'undefined' && google.maps ? google.maps.TravelMode.DRIVING : 'DRIVING'),
+    getRiskAreas: () => [],
+    preferDaytimeRiskOrder: (ordered) => ordered,
+    summarizeRouteRisk: () => ({ toastMessage: null })
 };
 
 export function configureRouting(opts) {
@@ -259,6 +262,17 @@ export async function optimizeRoute() {
         }
 
         applyStopOrder(ordered);
+        const riskAreas = deps.getRiskAreas();
+        if (riskAreas && riskAreas.length) {
+            const riskOrdered = deps.preferDaytimeRiskOrder(ordered, riskAreas, { now: new Date() });
+            const reordered = riskOrdered.some((s, i) => s !== ordered[i]);
+            if (reordered) {
+                ordered = riskOrdered;
+                applyStopOrder(ordered);
+                // Directions precompute is tied to previous waypoint order.
+                precomputed = null;
+            }
+        }
         await deps.yieldToUiFrame();
         await renderRoute(ordered, precomputed);
         deps.saveStorage();
@@ -272,8 +286,10 @@ export async function optimizeRoute() {
         const metrics = deps.getRouteMetrics();
         const origem = deps.getStartPoint() ? 'sua localização' : 'a 1ª entrega';
         const windowNote = usedWindows ? ' · janelas de horário' : '';
+        const riskSummary = deps.summarizeRouteRisk(ordered, riskAreas || [], { now: new Date() });
+        const riskNote = riskSummary && riskSummary.toastMessage ? ` · ${riskSummary.toastMessage}` : '';
         deps.showToast(
-            `Rota otimizada (partida: ${origem}${windowNote}): ${formatKm(metrics.meters)} · ${formatDuration(metrics.seconds)}`
+            `Rota otimizada (partida: ${origem}${windowNote}): ${formatKm(metrics.meters)} · ${formatDuration(metrics.seconds)}${riskNote}`
         );
     } catch (e) {
         clearRouteOverlay();

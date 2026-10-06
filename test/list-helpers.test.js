@@ -113,6 +113,21 @@ describe('build list item html', () => {
     assert.doesNotMatch(html, /data-action="whatsapp"/);
   });
 
+  it('shows risk badge and overflow actions', () => {
+    const html = buildDeliveryListItemHtml({
+      id: 2,
+      sequentialId: 'B2',
+      nome: 'Cli',
+      endereco: 'Rua Perigo',
+      status: 'pendente',
+      telefones: []
+    }, { riskLevel: 'vermelho' });
+    assert.match(html, /risk-vermelho/);
+    assert.match(html, /Risco alto/);
+    assert.match(html, /data-action="risk-amarelo"/);
+    assert.match(html, /data-action="risk-clear"/);
+  });
+
   it('marks agenda item already on route', () => {
     const html = buildAgendaListItemHtml(
       { agendaId: 9, nome: 'Cli', endereco: 'Rua', pacotes: 2, telefones: [] },
