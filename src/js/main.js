@@ -268,6 +268,7 @@ import {
 import {
     configureAddDeliveryForm,
     setupAddressDuplicateCheck,
+    checkAddressDuplicate,
     addDeliveryDirect,
     setupAddDeliveryForm
 } from './add-delivery-form.js';
