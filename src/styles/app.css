@@ -893,11 +893,27 @@ html.native-map .map-next-chip {
     gap: 8px;
     margin: 0 0 12px;
 }
+/* ⋯ da rota atual: não encolher na sidebar estreita (hit target de polegar). */
+.route-tools > .overflow-wrap {
+    flex-shrink: 0;
+}
+.route-tools .overflow-trigger {
+    flex-shrink: 0;
+    width: var(--fab-size);
+    height: var(--fab-size);
+    min-width: var(--fab-size);
+    min-height: var(--fab-size);
+    color: var(--ink);
+}
 .route-tools-end {
     display: flex;
     align-items: center;
     gap: 8px;
     margin-left: auto;
+    min-width: 0;
+    flex: 1 1 auto;
+    flex-wrap: wrap;
+    justify-content: flex-end;
 }
 .route-tool-btn {
     display: inline-flex;

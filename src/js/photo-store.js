@@ -87,6 +87,34 @@ export async function idbPutPhoto(photoId, blobOrDataUrl) {
         tx.onerror = () => reject(tx.error);
     });
 }
+/**
+ * Lê o Blob/data URL do IndexedDB e devolve data URL para exportação (backup).
+ * Não cria object URL de exibição — evita vazamento de RAM no export.
+ * @returns {Promise<string|null>}
+ */
+export async function idbExportPhotoDataUrl(photoId) {
+    const db = await openPhotoDb();
+    const raw = await new Promise((resolve, reject) => {
+        const tx = db.transaction('photos', 'readonly');
+        const req = tx.objectStore('photos').get(photoDbKey(photoId));
+        req.onsuccess = () => resolve(req.result || null);
+        req.onerror = () => reject(req.error);
+    });
+    if (raw == null) return null;
+    const norm = normalizeIdbPhotoValue(raw);
+    if (!norm) return null;
+    if (norm.kind === 'dataurl') return norm.value;
+    const blob = norm.kind === 'blob'
+        ? norm.value
+        : new Blob([norm.value], { type: 'image/jpeg' });
+    return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(typeof reader.result === 'string' ? reader.result : null);
+        reader.onerror = () => reject(reader.error || new Error('read'));
+        reader.readAsDataURL(blob);
+    });
+}
+
 /** @returns {Promise<string|null>} URL de exibição (blob: ou data: legado) */
 export async function idbGetPhoto(photoId) {
     const db = await openPhotoDb();

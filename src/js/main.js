@@ -218,6 +218,8 @@ import {
     configurePhotoStore,
     idbGetPhoto,
     idbDeletePhoto,
+    idbPutPhoto,
+    idbExportPhotoDataUrl,
     enqueuePhotoOp,
     yieldToUiFrame
 } from './photo-store.js';
@@ -1103,6 +1105,9 @@ function configureExtractedModules() {
         migrateFavorito,
         normalizeDeliveryCoords,
         hydrateAllPhotos,
+        exportPhotoDataUrl: idbExportPhotoDataUrl,
+        idbPutPhoto,
+        yieldToUiFrame,
         seedIdCounter,
         clearRouteOverlay,
         renderDeliveriesList,

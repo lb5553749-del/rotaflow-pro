@@ -5,6 +5,12 @@
 import { cloneWithoutHeavyPhotos } from '../../lib/persist-helpers.js';
 import { parseBackupPayload, parseAgendaBackup } from '../../lib/backup-schema.js';
 import {
+    attachPhotoBlobs,
+    collectBackupPhotoIds,
+    collectPhotoBlobsMap,
+    planPhotoRestoreEntries
+} from '../../lib/backup-photos.js';
+import {
     BACKUP_REMIND_DAYS,
     BACKUP_DISMISS_DAYS,
     BACKUP_AUTO_DELIVERIES,
@@ -41,6 +47,9 @@ let deps = {
     migrateFavorito: () => {},
     normalizeDeliveryCoords: () => {},
     hydrateAllPhotos: async () => {},
+    exportPhotoDataUrl: async () => null,
+    idbPutPhoto: async () => {},
+    yieldToUiFrame: async () => {},
     seedIdCounter: () => {},
     clearRouteOverlay: () => {},
     renderDeliveriesList: () => {},
@@ -120,6 +129,7 @@ export function setupBackupReminderUi() {
     }
 }
 
+/** Backup leve (sem blobs) — auto-backup / silencioso. */
 export function buildFullBackupObject() {
     deps.persistStorageNow();
     deps.syncActiveRouteIntoRoutes();
@@ -143,6 +153,45 @@ export function buildFullBackupObject() {
         nextAgendaId: deps.getNextAgendaId(),
         userProfile: deps.getUserProfile()
     };
+}
+
+/**
+ * Backup de exportação do menu ⋯: JSON leve + mapa `photoBlobs` (data URLs).
+ * Carrega fotos do IndexedDB uma a uma para não estourar a WebView.
+ */
+export async function buildExportBackupObject() {
+    const data = buildFullBackupObject();
+    const ids = collectBackupPhotoIds(data);
+    if (!ids.length) {
+        return attachPhotoBlobs(data, {});
+    }
+    deps.showToast(`A incluir ${ids.length} foto${ids.length === 1 ? '' : 's'} no backup…`);
+    const photoBlobs = await collectPhotoBlobsMap(
+        ids,
+        (id) => deps.exportPhotoDataUrl(id),
+        {
+            onProgress: async (done, total) => {
+                if (done % 3 === 0 || done === total) {
+                    await deps.yieldToUiFrame();
+                }
+            }
+        }
+    );
+    return attachPhotoBlobs(data, photoBlobs);
+}
+
+async function restorePhotoBlobsIntoIdb(data) {
+    const entries = planPhotoRestoreEntries(data);
+    for (let i = 0; i < entries.length; i++) {
+        const { id, dataUrl } = entries[i];
+        try {
+            await deps.idbPutPhoto(id, dataUrl);
+        } catch (e) {
+            console.warn('restore photo', id, e);
+        }
+        if (i % 3 === 2) await deps.yieldToUiFrame();
+    }
+    return entries.length;
 }
 
 export async function runAutoBackup({ reason = 'auto', cloud = true, silent = true } = {}) {
@@ -350,7 +399,7 @@ async function backupDataLocal(filename, data) {
 }
 
 export async function backupData() {
-    const data = buildFullBackupObject();
+    const data = await buildExportBackupObject();
     const filename = `rotaflow_backup_${new Date().toISOString().slice(0, 10)}.json`;
 
     if (!CLOUD_BACKUP_ENABLED) {
@@ -368,7 +417,7 @@ export async function backupData() {
     const choice = await deps.showChoiceModal({
         title: 'Backup',
         message: online
-            ? 'Salvar cópia da rota e da agenda:'
+            ? 'Salvar cópia da rota, agenda e fotos:'
             : 'Sem internet — só é possível salvar neste aparelho.',
         options
     });
@@ -432,6 +481,8 @@ export function restoreData(file) {
                 danger: true
             });
             if (!ok) return;
+            deps.showToast('A restaurar fotos…');
+            const photosRestored = await restorePhotoBlobsIntoIdb(data);
             deps.setAgenda(data.agenda);
             deps.setNextAgendaId(data.nextAgendaId || 1);
             if (data.userProfile) deps.setUserProfile(data.userProfile);
@@ -456,7 +507,11 @@ export function restoreData(file) {
             deps.updateDeliveryStats();
             deps.updateOptimizeFabVisibility();
             deps.updateLastIdDisplay(deps.getDeliveries().length ? deps.getDeliveries()[deps.getDeliveries().length - 1].sequentialId : null);
-            deps.showToast('Dados restaurados com sucesso');
+            deps.showToast(
+                photosRestored
+                    ? `Dados restaurados (${photosRestored} foto${photosRestored === 1 ? '' : 's'})`
+                    : 'Dados restaurados com sucesso'
+            );
         } catch (err) {
             deps.showToast('Não foi possível restaurar os dados. Arquivo inválido', true);
         }
