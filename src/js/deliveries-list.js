@@ -12,6 +12,8 @@ import {
     virtualScrollRange,
     joinVirtualListHtml
 } from '../../lib/list-helpers.js';
+import { advancedFilters } from './advanced-filters.js';
+import { updateFiltersUI, updateDistrictsOptions } from './filters-ui.js';
 
 let deps = {
     getDeliveries: () => [],
@@ -135,13 +137,22 @@ function renderDeliveriesListNow() {
     ensureDeliveryListVirtualScroll(container);
     deps.updateDeliveryStats();
 
-    const filtered = filterItemsByTextQuery(deps.getDeliveries(), deps.getRouteFilter());
+    // Aplica filtros avançados (incluindo busca de texto)
+    const deliveries = deps.getDeliveries();
+    const filtered = advancedFilters.applyFilters(deliveries);
+
+    // Atualiza UI dos filtros
+    const panelRota = document.getElementById('panelRota');
+    if (panelRota) {
+        updateFiltersUI(panelRota);
+        updateDistrictsOptions(panelRota, deliveries);
+    }
 
     if (filtered.length === 0) {
         deliveryListVirtual.filtered = [];
         deliveryListVirtual.start = -1;
         deliveryListVirtual.end = -1;
-        container.innerHTML = emptyListStateHtml('deliveries', !!deps.getRouteFilter());
+        container.innerHTML = emptyListStateHtml('deliveries', advancedFilters.hasActiveFilters());
         return;
     }
 

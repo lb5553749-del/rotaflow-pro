@@ -3,6 +3,8 @@
  * Dependências injetadas via configureAppBoot() — main.js só orquestra.
  */
 import { initDarkModeFromStorage } from './profile.js';
+import { initFiltersUI, updateDistrictsOptions, applyFiltersToDeliveries } from './filters-ui.js';
+import { advancedFilters } from './advanced-filters.js';
 
 let deps = {
     initNameSuggestions: () => {},
@@ -143,14 +145,27 @@ export function setupDomContentLoadedBoot() {
         initAppUi();
         localStorage.removeItem('rotaflow_reminders');
         deps.resetVoltarDepoisAlert();
+
+        // Busca simples na rota
         document.getElementById("routeSearchInput").addEventListener("input", deps.debounce((e) => {
-            deps.setRouteFilter(e.target.value.toLowerCase());
+            advancedFilters.setFilter('search', e.target.value.toLowerCase());
             deps.renderDeliveriesList();
         }, 150));
+
+        // Inicializa filtros avançados
+        const panelRota = document.getElementById('panelRota');
+        if (panelRota) {
+            initFiltersUI(panelRota, () => {
+                deps.renderDeliveriesList();
+            });
+        }
+
+        // Busca na agenda (mantém comportamento anterior)
         document.getElementById("agendaSearchInput").addEventListener("input", deps.debounce((e) => {
             deps.setAgendaFilter(e.target.value.toLowerCase());
             deps.renderAgendaList();
         }, 150));
+
         deps.setupAddDeliveryForm();
     });
 }
