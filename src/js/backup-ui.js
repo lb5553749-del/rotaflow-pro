@@ -4,6 +4,7 @@
  */
 import { cloneWithoutHeavyPhotos } from '../../lib/persist-helpers.js';
 import { parseBackupPayload, parseAgendaBackup } from '../../lib/backup-schema.js';
+
 import {
     attachPhotoBlobs,
     collectBackupPhotoIds,
@@ -156,11 +157,47 @@ export function buildFullBackupObject() {
 }
 
 /**
- * Backup de exportação do menu ⋯: JSON leve + mapa `photoBlobs` (data URLs).
+ * Exportação do menu ⋯: apenas a rota atual (não a agenda nem outras rotas).
+ * O marcador `kind: 'route-export'` faz a restauração importar como rota nova
+ * em vez de substituir tudo — é o formato que "abre em outro celular".
+ */
+export function buildRouteExportObject() {
+    deps.persistStorageNow();
+    deps.syncActiveRouteIntoRoutes();
+    const activeId = deps.getActiveRouteId();
+    const route = (deps.getRoutes() || []).find((r) => r && r.id === activeId) || {};
+    const deliveries = cloneWithoutHeavyPhotos(
+        Array.isArray(route.deliveries) ? route.deliveries : deps.getDeliveries()
+    );
+    const routeRow = {
+        id: String(route.id || activeId || ''),
+        name: route.name || 'Rota 1',
+        createdAt: route.createdAt,
+        nextSequenceNumber: route.nextSequenceNumber || deps.getNextSequenceNumber(),
+        routeActive: !!route.routeActive,
+        routeMetrics: route.routeMetrics || null,
+        deliveries
+    };
+    return {
+        kind: 'route-export',
+        version: 1,
+        exportedAt: Date.now(),
+        routes: [routeRow],
+        activeRouteId: routeRow.id,
+        deliveries,
+        agenda: [],
+        nextSequenceNumber: routeRow.nextSequenceNumber,
+        nextAgendaId: deps.getNextAgendaId(),
+        userProfile: deps.getUserProfile()
+    };
+}
+
+/**
+ * Arquivo de exportação da rota atual: JSON leve + mapa `photoBlobs` (data URLs).
  * Carrega fotos do IndexedDB uma a uma para não estourar a WebView.
  */
 export async function buildExportBackupObject() {
-    const data = buildFullBackupObject();
+    const data = buildRouteExportObject();
     const ids = collectBackupPhotoIds(data);
     if (!ids.length) {
         return attachPhotoBlobs(data, {});
@@ -383,9 +420,10 @@ export function restoreAgenda(file) {
 }
 
 async function backupDataLocal(filename, data) {
-    const ok = await downloadJsonFile(filename, data, 'Escolha onde salvar o backup completo');
+    const ok = await downloadJsonFile(filename, data, 'Escolha onde salvar o arquivo da rota');
     if (ok) {
-        await writeSilentLocalBackup(JSON.stringify(data)).catch(() => {});
+        // Cópia silenciosa continua completa (rota + agenda) — é a rede de segurança local.
+        await writeSilentLocalBackup(JSON.stringify(buildFullBackupObject())).catch(() => {});
         writeBackupMeta({
             lastBackupAt: Date.now(),
             lastDismissAt: Date.now(),
@@ -399,8 +437,9 @@ async function backupDataLocal(filename, data) {
 }
 
 export async function backupData() {
+    if (!deps.getDeliveries().length) { deps.showToast('A rota atual está vazia', true); return; }
     const data = await buildExportBackupObject();
-    const filename = `rotaflow_backup_${new Date().toISOString().slice(0, 10)}.json`;
+    const filename = `rotaflow_rota_${new Date().toISOString().slice(0, 10)}.rfpro`;
 
     if (!CLOUD_BACKUP_ENABLED) {
         await backupDataLocal(filename, data);
@@ -415,9 +454,9 @@ export async function backupData() {
         options.push({ label: 'Nuvem + aparelho', value: 'cloud', icon: 'fas fa-cloud-upload-alt', iconColor: '#2563eb' });
     }
     const choice = await deps.showChoiceModal({
-        title: 'Backup',
+        title: 'Exportar rota atual',
         message: online
-            ? 'Salvar cópia da rota, agenda e fotos:'
+            ? 'Exporta apenas a rota de hoje com as fotos tiradas. A nuvem guarda tudo (rota + agenda):'
             : 'Sem internet — só é possível salvar neste aparelho.',
         options
     });
@@ -429,9 +468,9 @@ export async function backupData() {
     }
 
     deps.showToast('A guardar backup…');
-    const json = JSON.stringify(data);
-    const local = await writeSilentLocalBackup(json);
-    const cloudRes = await uploadCloudBackup(json);
+    const local = await writeSilentLocalBackup(JSON.stringify(buildFullBackupObject()));
+    const cloudRes = await uploadCloudBackup(JSON.stringify(buildFullBackupObject()));
+    await downloadJsonFile(filename, data, 'Arquivo da rota pronto para partilhar');
 
     const patch = {
         lastDismissAt: Date.now(),
@@ -467,54 +506,63 @@ export async function backupData() {
     hideBackupReminder();
 }
 
+export async function restoreFromJson(rawJson) {
+    try {
+        const parsed = parseBackupPayload(typeof rawJson === 'string' ? JSON.parse(rawJson) : rawJson);
+        if (!parsed.ok) throw new Error(parsed.error);
+        const data = parsed.data;
+        const count = Array.isArray(data.deliveries) ? data.deliveries.length : 0;
+        const ok = await deps.showConfirmModal({
+            title: 'Carregar rota recebida',
+            message: `Deseja abrir esta rota (${count} parada${count === 1 ? '' : 's'}) no RotaFlow Pro agora? A rota atual será substituída.`,
+            confirmText: 'Abrir rota',
+            danger: false
+        });
+        if (!ok) return false;
+        deps.showToast('A restaurar fotos da rota…');
+        const photosRestored = await restorePhotoBlobsIntoIdb(data);
+        if (data.agenda && data.agenda.length) {
+            deps.setAgenda(data.agenda);
+            deps.setNextAgendaId(data.nextAgendaId || 1);
+        }
+        if (data.userProfile) deps.setUserProfile(data.userProfile);
+        deps.hydrateRoutesFromData(data);
+        deps.getAgenda().forEach((a) => {
+            deps.migrateTelefones(a);
+            deps.migrateFavorito(a);
+            if (a.pacotes === undefined) a.pacotes = 1;
+            if (!a.photos) a.photos = [];
+            if (!a.photoIds) a.photoIds = [];
+            if (a.notes === undefined) a.notes = '';
+            deps.normalizeDeliveryCoords(a);
+        });
+        deps.seedIdCounter();
+        deps.clearRouteOverlay();
+        await deps.hydrateAllPhotos();
+        deps.persistStorageNow();
+        deps.renderDeliveriesList();
+        deps.renderRouteSwitcher();
+        deps.renderAgendaList();
+        deps.rebuildMarkers(false);
+        deps.updateDeliveryStats();
+        deps.updateOptimizeFabVisibility();
+        deps.updateLastIdDisplay(deps.getDeliveries().length ? deps.getDeliveries()[deps.getDeliveries().length - 1].sequentialId : null);
+        deps.showToast(
+            photosRestored
+                ? `Rota carregada (${photosRestored} foto${photosRestored === 1 ? '' : 's'})`
+                : 'Rota carregada com sucesso!'
+        );
+        return true;
+    } catch (err) {
+        deps.showToast('Não foi possível carregar a rota. Arquivo inválido', true);
+        return false;
+    }
+}
+
 export function restoreData(file) {
     const reader = new FileReader();
     reader.onload = async (e) => {
-        try {
-            const parsed = parseBackupPayload(JSON.parse(e.target.result));
-            if (!parsed.ok) throw new Error(parsed.error);
-            const data = parsed.data;
-            const ok = await deps.showConfirmModal({
-                title: 'Restaurar backup',
-                message: 'As rotas, a agenda e o perfil atuais serão substituídos. Deseja continuar?',
-                confirmText: 'Substituir',
-                danger: true
-            });
-            if (!ok) return;
-            deps.showToast('A restaurar fotos…');
-            const photosRestored = await restorePhotoBlobsIntoIdb(data);
-            deps.setAgenda(data.agenda);
-            deps.setNextAgendaId(data.nextAgendaId || 1);
-            if (data.userProfile) deps.setUserProfile(data.userProfile);
-            deps.hydrateRoutesFromData(data);
-            deps.getAgenda().forEach((a) => {
-                deps.migrateTelefones(a);
-                deps.migrateFavorito(a);
-                if (a.pacotes === undefined) a.pacotes = 1;
-                if (!a.photos) a.photos = [];
-                if (!a.photoIds) a.photoIds = [];
-                if (a.notes === undefined) a.notes = '';
-                deps.normalizeDeliveryCoords(a);
-            });
-            deps.seedIdCounter();
-            deps.clearRouteOverlay();
-            await deps.hydrateAllPhotos();
-            deps.persistStorageNow();
-            deps.renderDeliveriesList();
-            deps.renderRouteSwitcher();
-            deps.renderAgendaList();
-            deps.rebuildMarkers(false);
-            deps.updateDeliveryStats();
-            deps.updateOptimizeFabVisibility();
-            deps.updateLastIdDisplay(deps.getDeliveries().length ? deps.getDeliveries()[deps.getDeliveries().length - 1].sequentialId : null);
-            deps.showToast(
-                photosRestored
-                    ? `Dados restaurados (${photosRestored} foto${photosRestored === 1 ? '' : 's'})`
-                    : 'Dados restaurados com sucesso'
-            );
-        } catch (err) {
-            deps.showToast('Não foi possível restaurar os dados. Arquivo inválido', true);
-        }
+        await restoreFromJson(e.target.result);
     };
     reader.readAsText(file);
 }
@@ -534,6 +582,13 @@ export function bindBackupButtons() {
         if (e.target.files.length) {
             restoreAgenda(e.target.files[0]);
             e.target.value = '';
+        }
+    });
+
+    // Escuta evento nativo disparado pelo Android ao clicar num arquivo .rfpro
+    window.addEventListener('rotaflow:openBackup', (e) => {
+        if (e && e.detail) {
+            restoreFromJson(e.detail).catch(() => {});
         }
     });
 }

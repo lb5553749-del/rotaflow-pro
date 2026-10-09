@@ -99,7 +99,10 @@ async function main() {
     entryPoints: [path.join(root, 'src/js/main.js')],
     outfile: path.join(outDir, 'app.js'),
     format: 'iife',
-    platform: 'browser'
+    platform: 'browser',
+    splitting: false, // IIFE não suporta splitting, mas dynamic imports sim
+    // Permite dynamic imports para lazy loading
+    // Os chunks serão gerados automaticamente quando main.js usar import()
   });
 
   await esbuild.build({

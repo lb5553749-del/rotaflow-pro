@@ -6,11 +6,21 @@
     "androidScheme": "https"
   },
   "android": {
-    "allowMixedContent": false
+    "allowMixedContent": false,
+    "backgroundColor": "#f1f5f9",
+    "webContentsDebuggingEnabled": false
   },
   "plugins": {
     "StatusBar": {
-      "style": "DARK"
+      "style": "DARK",
+      "backgroundColor": "#0f172a",
+      "overlaysWebView": false
+    },
+    "SplashScreen": {
+      "launchAutoHide": true,
+      "launchShowDuration": 0,
+      "backgroundColor": "#0f172a",
+      "showSpinner": false
     }
   }
 }

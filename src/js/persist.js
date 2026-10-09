@@ -93,7 +93,13 @@ export function persistStorageNow() {
 
 export function saveStorage() {
     clearTimeout(saveTimer);
-    saveTimer = setTimeout(persistStorageNow, 80);
+    saveTimer = setTimeout(() => {
+        if (typeof requestIdleCallback === 'function') {
+            requestIdleCallback(persistStorageNow, { timeout: 350 });
+        } else {
+            persistStorageNow();
+        }
+    }, 120);
 }
 
 function maybeMigrateLegacyKeys() {

@@ -244,11 +244,12 @@ window.RotaFlowCap = {
     const uri = result?.uri;
     if (!uri) throw new Error('no-uri');
     try {
+      // Quando 'text' é enviado junto com 'url', o Android envia texto simples para o WhatsApp
+      // Usando 'files: [uri]' ou apenas 'url: uri' sem 'text', o WhatsApp anexa o arquivo real (.rfpro)
       await Share.share({
         title: title || filename,
-        text: title || filename,
-        url: uri,
-        dialogTitle: title || 'Salvar arquivo'
+        files: [uri],
+        dialogTitle: title || 'Compartilhar rota'
       });
     } catch (e) {
       // Usuário cancelou o share — arquivo já está no cache

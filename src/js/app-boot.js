@@ -2,6 +2,7 @@
  * Boot da UI do motorista: initAppUi, DOMContentLoaded, PWA e service worker.
  * Dependências injetadas via configureAppBoot() — main.js só orquestra.
  */
+import { initDarkModeFromStorage } from './profile.js';
 
 let deps = {
     initNameSuggestions: () => {},
@@ -64,6 +65,7 @@ export function configureAppBoot(opts) {
 export function initAppUi() {
     if (initAppUi.done) return;
     initAppUi.done = true;
+    initDarkModeFromStorage();
     deps.initNameSuggestions();
     deps.setupNewDeliveryPhoneUI();
     deps.setupAddressDuplicateCheck();
@@ -87,6 +89,7 @@ export function initAppUi() {
         deps.focusDeliveryInPanel(selected, 0, { keepMinimized: false, pan: true, zoom: 16 });
     });
     if (deps.isNativeApp()) {
+        document.documentElement.classList.add('native-app');
         deps.setupScreenLockNotificationBridge();
         deps.setupCameraRestoreHandler();
     }

@@ -40,11 +40,18 @@ fs.rmSync(path.join(javaDir, 'WebPushSender.java'), { force: true });
 
 const desiredMain = `package com.rotaflow.pro;
 
+import android.content.Intent;
 import android.graphics.Color;
+import android.net.Uri;
 import android.os.Bundle;
 import android.view.View;
 import android.webkit.WebView;
 import com.getcapacitor.BridgeActivity;
+
+import java.io.BufferedReader;
+import java.io.InputStream;
+import java.io.InputStreamReader;
+import java.nio.charset.StandardCharsets;
 
 public class MainActivity extends BridgeActivity {
     @Override
@@ -55,17 +62,69 @@ public class MainActivity extends BridgeActivity {
         super.onCreate(savedInstanceState);
     }
 
-    /**
-     * Ao voltar do 2º plano: restaura WebView + z-order do mapa nativo.
-     * Não force WebView.onResume() em onPause — isso dessincroniza o ciclo
-     * (MapView pausa, WebView transparente fica preta) e causa tela preta.
-     * GPS em background e notificação de tela bloqueada já são nativos.
-     */
+    @Override
+    public void onStart() {
+        super.onStart();
+        handleOpenFileIntent(getIntent());
+    }
+
+    @Override
+    protected void onNewIntent(Intent intent) {
+        super.onNewIntent(intent);
+        setIntent(intent);
+        handleOpenFileIntent(intent);
+    }
+
+    private void handleOpenFileIntent(Intent intent) {
+        if (intent == null) return;
+        if (!Intent.ACTION_VIEW.equals(intent.getAction())) return;
+        Uri uri = intent.getData();
+        if (uri == null) return;
+
+        try {
+            InputStream is = getContentResolver().openInputStream(uri);
+            if (is == null) return;
+            BufferedReader reader = new BufferedReader(new InputStreamReader(is, StandardCharsets.UTF_8));
+            StringBuilder sb = new StringBuilder();
+            String line;
+            while ((line = reader.readLine()) != null) sb.append(line).append('\\n');
+            reader.close();
+            is.close();
+
+            final String content = sb.toString().trim();
+            if (content.isEmpty()) return;
+
+            dispatchBackupContentToJs(content);
+        } catch (Exception e) {
+            android.util.Log.w("RotaFlow", "Erro ao ler arquivo: " + e.getMessage());
+        }
+    }
+
+    private void dispatchBackupContentToJs(String jsonContent) {
+        final String escaped = jsonContent
+            .replace("\\\\", "\\\\\\\\")
+            .replace("\`", "\\\\\`")
+            .replace("$", "\\\\$");
+
+        Runnable dispatch = () -> {
+            try {
+                WebView wv = getBridge() != null ? getBridge().getWebView() : null;
+                if (wv == null) {
+                    getWindow().getDecorView().postDelayed(() -> dispatchBackupContentToJs(jsonContent), 600);
+                    return;
+                }
+                String js = "window.dispatchEvent(new CustomEvent('rotaflow:openBackup', { detail: \`" + escaped + "\` }));";
+                wv.evaluateJavascript(js, null);
+            } catch (Exception ignored) {}
+        };
+
+        runOnUiThread(() -> getWindow().getDecorView().postDelayed(dispatch, 900));
+    }
+
     @Override
     public void onResume() {
         super.onResume();
         restoreWebViewAfterResume();
-        // Segundo passe após o frame do sistema (Home / lock / câmera → mapa)
         getWindow().getDecorView().post(this::restoreWebViewAfterResume);
         getWindow().getDecorView().postDelayed(this::restoreWebViewAfterResume, 120);
         getWindow().getDecorView().postDelayed(this::restoreWebViewAfterResume, 400);
@@ -88,7 +147,6 @@ public class MainActivity extends BridgeActivity {
             wv.onResume();
             wv.resumeTimers();
             wv.setVisibility(View.VISIBLE);
-            // Maps SDK fica atrás do WebView — fundo transparente obrigatório
             wv.setBackgroundColor(Color.TRANSPARENT);
             wv.setAlpha(1f);
             wv.bringToFront();
@@ -214,6 +272,50 @@ if (fs.existsSync(manifestPath)) {
             android:screenOrientation="portrait"
             android:theme="@style/AppTheme.NoActionBar"
             android:configChanges="orientation|keyboardHidden|keyboard|screenSize|locale|uiMode" />\n    </application>`
+    );
+  }
+  if (!manifest.includes('android:pathPattern=".*\\\\.rfpro"')) {
+    const rfproFilters = `            <intent-filter android:label="Abrir rota no RotaFlow Pro">
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="content" />
+                <data android:host="*" />
+                <data android:pathPattern=".*\\\\.rfpro" />
+            </intent-filter>
+            <intent-filter android:label="Abrir rota no RotaFlow Pro">
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="file" />
+                <data android:host="*" />
+                <data android:pathPattern=".*\\\\.rfpro" />
+            </intent-filter>
+            <intent-filter android:label="Abrir rota no RotaFlow Pro">
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="content" />
+                <data android:mimeType="*/*" />
+                <data android:pathPattern=".*\\\\.rfpro" />
+            </intent-filter>
+            <intent-filter android:label="Abrir rota no RotaFlow Pro">
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="content" />
+                <data android:mimeType="application/octet-stream" />
+            </intent-filter>
+            <intent-filter android:label="Abrir rota no RotaFlow Pro">
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="content" />
+                <data android:mimeType="application/json" />
+            </intent-filter>`;
+    manifest = manifest.replace(
+      /(<category android:name="android\.intent\.category\.LAUNCHER" \/>\s*<\/intent-filter>)/,
+      `$1\n\n${rfproFilters}`
     );
   }
   fs.writeFileSync(manifestPath, manifest);

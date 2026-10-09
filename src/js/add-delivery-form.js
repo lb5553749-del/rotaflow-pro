@@ -50,12 +50,7 @@ export function clearForm() {
     renderTempPhones();
     document.getElementById("pacotes").value = "1";
     document.getElementById("saveToAgendaCheckbox").checked = false;
-    const valorEl = document.getElementById("deliveryValor");
-    if (valorEl) valorEl.value = "";
-    const ji = document.getElementById("janelaInicio");
-    if (ji) ji.value = "";
-    const jf = document.getElementById("janelaFim");
-    if (jf) jf.value = "";
+
     document.getElementById("nameSuggestions").style.display = 'none';
     document.getElementById('addressWarning').classList.remove('show');
     document.getElementById('address').classList.remove('duplicate');
@@ -93,12 +88,36 @@ export function checkAddressDuplicate() {
     }
 }
 
+const geocodePrefetchCache = new Map();
+
+export function prefetchGeocodeAddress(rawAddress) {
+    const addr = (rawAddress || '').trim();
+    if (addr.length < 4) return;
+    const key = addr.toLowerCase();
+    if (geocodePrefetchCache.has(key)) return;
+    const geocoder = deps.getGeocoder();
+    if (!geocoder) return;
+    try {
+        geocoder.geocode({ address: addr }, (res, stat) => {
+            if (stat === "OK" && res && res[0] && res[0].geometry && res[0].geometry.location) {
+                geocodePrefetchCache.set(key, {
+                    lat: res[0].geometry.location.lat(),
+                    lng: res[0].geometry.location.lng()
+                });
+            }
+        });
+    } catch (_) {}
+}
+
 export function setupAddressDuplicateCheck() {
     const addressInput = document.getElementById('address');
     if (addressInput) {
         addressInput.addEventListener('input', function() {
             clearTimeout(duplicateCheckTimer);
-            duplicateCheckTimer = setTimeout(checkAddressDuplicate, 300);
+            duplicateCheckTimer = setTimeout(() => {
+                checkAddressDuplicate();
+                prefetchGeocodeAddress(addressInput.value);
+            }, 300);
         });
     }
 }
@@ -117,7 +136,7 @@ export function addDeliveryDirect(nome, endereco, telefones, pacotes, notes, ext
 
     const agenda = deps.getAgenda();
     const known = agenda.find(a => a.endereco.toLowerCase() === endereco.toLowerCase());
-    const extra = extras || {};
+    const _extra = extras || {};
     const finish = (lat, lng) => {
         const seqId = getSequentialId(deps.getNextSequenceNumber());
         const newDelivery = { 
@@ -135,9 +154,6 @@ export function addDeliveryDirect(nome, endereco, telefones, pacotes, notes, ext
             notes: notes || '',
             favorito: known ? !!known.favorito : false
         };
-        if (extra.valor != null) newDelivery.valor = extra.valor;
-        if (extra.janelaInicio) newDelivery.janelaInicio = extra.janelaInicio;
-        if (extra.janelaFim) newDelivery.janelaFim = extra.janelaFim;
         deps.pushDelivery(newDelivery);
         deps.setNextSequenceNumber(deps.getNextSequenceNumber() + 1);
         deps.persistStorageNow(); deps.renderDeliveriesList(); deps.upsertMarker(newDelivery);
@@ -152,12 +168,23 @@ export function addDeliveryDirect(nome, endereco, telefones, pacotes, notes, ext
         finish(known.lat, known.lng);
         return;
     }
+    const cached = geocodePrefetchCache.get(endereco.trim().toLowerCase());
+    if (cached && Number.isFinite(cached.lat) && Number.isFinite(cached.lng)) {
+        finish(cached.lat, cached.lng);
+        return;
+    }
     deps.showToast("Localizando endereço…");
-    deps.getGeocoder().geocode({ address: endereco }, (res, stat) => {
+    const geocoder = deps.getGeocoder();
+    if (!geocoder) {
+        finish(PORTO_VELHO_CENTER.lat, PORTO_VELHO_CENTER.lng);
+        return;
+    }
+    geocoder.geocode({ address: endereco }, (res, stat) => {
         let lat = PORTO_VELHO_CENTER.lat, lng = PORTO_VELHO_CENTER.lng;
         if (stat === "OK" && res[0]) {
             lat = res[0].geometry.location.lat();
             lng = res[0].geometry.location.lng();
+            geocodePrefetchCache.set(endereco.trim().toLowerCase(), { lat, lng });
         } else {
             deps.showToast("Endereço não encontrado. Usando o centro do mapa", true);
         }
@@ -173,13 +200,6 @@ export function setupAddDeliveryForm() {
         const saveAgenda = document.getElementById("saveToAgendaCheckbox").checked;
         const telefones = [...getTempPhones()];
         const notes = "";
-        const valorRaw = document.getElementById("deliveryValor")?.value;
-        const valorNum = valorRaw !== undefined && String(valorRaw).trim() !== ''
-            ? Number(String(valorRaw).replace(',', '.'))
-            : NaN;
-        const valor = Number.isFinite(valorNum) && valorNum >= 0 ? valorNum : undefined;
-        const janelaInicio = (document.getElementById("janelaInicio")?.value || '').trim() || undefined;
-        const janelaFim = (document.getElementById("janelaFim")?.value || '').trim() || undefined;
         if (!nome || !end) { deps.showToast("Preencha nome e endereço para continuar", true); return; }
         const geocoder = deps.getGeocoder();
         if (!geocoder) { deps.showToast("Aguarde o mapa carregar completamente", true); return; }
@@ -224,9 +244,6 @@ export function setupAddDeliveryForm() {
                 notes: notes,
                 favorito: false
             };
-            if (valor != null) newDelivery.valor = valor;
-            if (janelaInicio) newDelivery.janelaInicio = janelaInicio;
-            if (janelaFim) newDelivery.janelaFim = janelaFim;
             deps.pushDelivery(newDelivery);
             deps.setNextSequenceNumber(deps.getNextSequenceNumber() + 1);
             deps.persistStorageNow(); deps.renderDeliveriesList(); deps.upsertMarker(newDelivery);

@@ -235,6 +235,44 @@
             color: #64748b;
             margin-top: 8px;
         }
+        .invite {
+            display: none;
+            margin-top: 10px;
+            align-items: center;
+            gap: 8px;
+            background: #eff6ff;
+            border: 1px solid #bfdbfe;
+            color: #1e40af;
+            border-radius: 12px;
+            padding: 8px 8px 8px 12px;
+            font-size: 0.82rem;
+            font-weight: 600;
+            line-height: 1.35;
+        }
+        .invite.show { display: flex; }
+        .invite > span { flex: 1; min-width: 0; }
+        .invite-act {
+            border: none;
+            background: #2563eb;
+            color: #fff;
+            font-weight: 800;
+            font-size: 0.78rem;
+            border-radius: 9px;
+            padding: 8px 10px;
+            cursor: pointer;
+            white-space: nowrap;
+            font-family: inherit;
+        }
+        .invite-act:disabled { opacity: 0.6; cursor: wait; }
+        .invite-x {
+            border: none;
+            background: transparent;
+            color: #64748b;
+            font-size: 1.15rem;
+            cursor: pointer;
+            padding: 2px 6px;
+            line-height: 1;
+        }
     </style>
 </head>
 <body>
@@ -265,8 +303,8 @@
                 <div class="gate-hero">
                     <span class="brand-logo" aria-hidden="true"><svg viewBox="0 0 512 512" xmlns="http://www.w3.org/2000/svg"><rect width="512" height="512" rx="104" fill="#0f172a"/><path d="M148 388C148 300 372 330 372 200" fill="none" stroke="#3b82f6" stroke-width="30" stroke-linecap="round" stroke-dasharray="4 46"/><circle cx="148" cy="388" r="46" fill="#22c55e"/><circle cx="372" cy="176" r="46" fill="#ef4444"/></svg></span>
                     <p class="gate-kicker">Rastreio da entrega</p>
-                    <h2>Ative o rastreio</h2>
-                    <p>Instale o atalho e permita as notificações para acompanhar a entrega e receber o aviso na tela bloqueada.</p>
+                    <h2>Ative os avisos</h2>
+                    <p>Permita as notificações para receber o aviso na tela bloqueada quando o motorista estiver chegando. O mapa já está liberado.</p>
                 </div>
                 <div class="gate-step" id="stepInstall">
                     <h3><span class="gate-num">1</span> Instalar o app</h3>
@@ -284,7 +322,10 @@
                         <button type="button" class="gate-btn primary" id="notifyBtn">Permitir notificações</button>
                     </div>
                 </div>
-                <p class="gate-lock" id="gateLock">O mapa libera depois dos dois avisos.</p>
+                <p class="gate-lock" id="gateLock">Opcional — o mapa já está liberado.</p>
+                <div class="gate-actions">
+                    <button type="button" class="gate-btn ghost" id="gateDismiss">Voltar ao mapa</button>
+                </div>
             </div>
         </div>
         <div id="map" hidden></div>
@@ -298,6 +339,11 @@
             <div class="banner" id="nearBanner"><i class="fas fa-bell"></i> O motorista está a cerca de 100 m.</div>
             <div class="banner delivered" id="deliveredBanner"><i class="fas fa-box-open"></i> Sua encomenda foi entregue.</div>
             <div class="banner absent" id="absentBanner"><i class="fas fa-house-user"></i> O motorista registrou ausência no endereço.</div>
+            <div class="invite" id="notifyInvite">
+                <span><i class="fas fa-bell"></i> Receba um aviso quando o motorista estiver chegando.</span>
+                <button type="button" class="invite-act" id="inviteBtn">Ativar avisos</button>
+                <button type="button" class="invite-x" id="inviteDismiss" aria-label="Dispensar">×</button>
+            </div>
         </section>
     </div>
 
@@ -346,6 +392,7 @@
         let deferredInstall = null;
         const installedKey = token ? ('rf_installed_' + token) : '';
         const pushKey = token ? ('rf_push_' + token) : '';
+        const inviteKey = token ? ('rf_invite_off_' + token) : '';
 
         function formatAgo(ts) {
             if (!ts) return '';
@@ -474,6 +521,7 @@
 
         function notifyNearOnce(body) {
             showNearUi();
+            maybeShowInvite(true);
             if (notifiedOnce) return;
             notifiedOnce = true;
             try { localStorage.setItem(notifiedKey, '1'); } catch (e) {}
@@ -711,6 +759,7 @@
             if (data.status === 'entregue') notifyDeliveredOnce();
             if (data.status === 'falhou' && data.failReason === 'ausente') notifyAbsentOnce();
             if (document.hidden && !finished) pinLiveNotification(data);
+            maybeShowInvite(false);
             trackReady = true;
         }
 
@@ -818,15 +867,16 @@
                 installBtn.textContent = deferredInstall ? 'Instalar rastreio' : 'Como instalar';
             }
             if (installedBtn && installed) installedBtn.hidden = true;
+            const needsInstallFirst = !installed && isIos();
             if (notifyBtn) {
-                notifyBtn.disabled = !installed;
-                notifyBtn.textContent = notified ? 'Notificações ativadas' : (installed ? 'Permitir notificações' : 'Primeiro instale o app');
+                notifyBtn.disabled = needsInstallFirst;
+                notifyBtn.textContent = notified ? 'Notificações ativadas' : (needsInstallFirst ? 'Primeiro instale o app' : 'Permitir notificações');
             }
             const lock = document.getElementById('gateLock');
             if (lock) {
                 lock.textContent = notified
-                    ? 'Tudo pronto. Liberando o rastreio…'
-                    : (installed ? 'Agora permita as notificações para abrir o mapa.' : 'O mapa libera depois dos dois avisos.');
+                    ? 'Tudo pronto. Os avisos estão ativados.'
+                    : 'Os avisos são opcionais — o mapa já está liberado.';
             }
         }
 
@@ -862,11 +912,24 @@
             tryUnlockAccess();
         }
 
+        function isInviteDismissed() {
+            try { return !!(inviteKey && localStorage.getItem(inviteKey)); } catch (e) { return false; }
+        }
+
+        function maybeShowInvite(force) {
+            const el = document.getElementById('notifyInvite');
+            if (!el) return;
+            const finished = lastTrackData && isFinishedTrack(lastTrackData);
+            const show = !finished && !isNotifyOk() && (force || !isInviteDismissed());
+            el.classList.toggle('show', !!show);
+        }
+
+        function hideInvite() {
+            const el = document.getElementById('notifyInvite');
+            if (el) el.classList.remove('show');
+        }
+
         function showLive() {
-            if (!isAccessUnlocked()) {
-                showGate();
-                return;
-            }
             document.getElementById('boot').hidden = true;
             document.getElementById('error').hidden = true;
             document.getElementById('gate').hidden = true;
@@ -900,11 +963,7 @@
                     return;
                 }
                 pendingTrackData = data;
-                if (isAccessUnlocked()) {
-                    revealTrack(data);
-                } else {
-                    showGate();
-                }
+                revealTrack(data);
             };
             const trackRef = firebase.firestore().collection('tracks').doc(token);
             trackRef.onSnapshot((snap) => {
@@ -938,6 +997,7 @@
             if (meta && !/avisos ativados/.test(meta.textContent || '')) {
                 meta.textContent = (meta.textContent || '') + ' · avisos ativados';
             }
+            hideInvite();
             paintGate();
             tryUnlockAccess();
         }
@@ -994,34 +1054,58 @@
             } catch (e) {}
         }
 
-        document.getElementById('notifyBtn').addEventListener('click', async () => {
-            const btn = document.getElementById('notifyBtn');
-            if (!isInstalledOk()) {
-                btn.textContent = 'Primeiro instale o app';
+        async function requestNotifyFlow(btn) {
+            if (!isInstalledOk() && isIos()) {
+                showGate();
                 return;
             }
             if (!pushSupported()) {
                 markPushEnabled();
                 return;
             }
-            btn.disabled = true;
-            btn.textContent = 'Ativando avisos…';
+            if (btn) {
+                btn.disabled = true;
+                btn.textContent = 'Ativando avisos…';
+            }
             let perm = Notification.permission;
             if (perm === 'default') {
                 try { perm = await Notification.requestPermission(); } catch (e) {}
             }
             if (perm !== 'granted') {
-                btn.textContent = 'Permissão negada — toque para tentar de novo';
-                btn.disabled = false;
+                if (btn) {
+                    btn.textContent = 'Permissão negada — toque para tentar de novo';
+                    btn.disabled = false;
+                }
+                paintGate();
                 return;
             }
             try {
                 await subscribePush();
             } catch (err) {
                 console.warn('push subscribe', err);
-                btn.disabled = false;
-                btn.textContent = 'Não foi possível ativar. Toque para tentar de novo';
+                if (btn) {
+                    btn.disabled = false;
+                    btn.textContent = 'Não foi possível ativar. Toque para tentar de novo';
+                }
+                paintGate();
             }
+        }
+
+        document.getElementById('notifyBtn').addEventListener('click', () => {
+            requestNotifyFlow(document.getElementById('notifyBtn'));
+        });
+
+        document.getElementById('inviteBtn').addEventListener('click', () => {
+            requestNotifyFlow(document.getElementById('inviteBtn'));
+        });
+
+        document.getElementById('inviteDismiss').addEventListener('click', () => {
+            try { if (inviteKey) localStorage.setItem(inviteKey, '1'); } catch (e) {}
+            hideInvite();
+        });
+
+        document.getElementById('gateDismiss').addEventListener('click', () => {
+            if (pendingTrackData) revealTrack(pendingTrackData);
         });
 
         document.getElementById('installBtn').addEventListener('click', async () => {

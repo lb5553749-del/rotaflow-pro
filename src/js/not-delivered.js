@@ -47,6 +47,22 @@ export function resetVoltarDepoisAlert() {
     voltarDepoisAlertShown = false;
 }
 
+let sharedAudioCtx = null;
+function getSharedAudioContext() {
+    try {
+        if (!sharedAudioCtx) {
+            const Ctx = window.AudioContext || window.webkitAudioContext;
+            if (Ctx) sharedAudioCtx = new Ctx();
+        }
+        if (sharedAudioCtx && sharedAudioCtx.state === 'suspended') {
+            sharedAudioCtx.resume().catch(() => {});
+        }
+        return sharedAudioCtx;
+    } catch (_) {
+        return null;
+    }
+}
+
 export function playDeliveryFeedback() {
     try {
         if (typeof deps.playDeliveryHaptic === 'function') {
@@ -55,22 +71,45 @@ export function playDeliveryFeedback() {
             navigator.vibrate([35, 25, 45]);
         }
     } catch (e) {}
+    try {
+        const panel = document.getElementById('deliveryPanel');
+        if (panel) {
+            panel.classList.remove('delivery-celebrate');
+            // Force reflow for re-triggering animation
+            void panel.offsetWidth;
+            panel.classList.add('delivery-celebrate');
+            setTimeout(() => panel.classList.remove('delivery-celebrate'), 700);
+        }
+    } catch (e) {}
     if (!deps.getFeedbackSoundEnabled()) return;
     try {
-        const Ctx = window.AudioContext || window.webkitAudioContext;
-        if (!Ctx) return;
-        const ctx = new Ctx();
-        const osc = ctx.createOscillator();
-        const gain = ctx.createGain();
-        osc.type = 'sine';
-        osc.frequency.value = 880;
-        gain.gain.value = 0.07;
-        osc.connect(gain);
-        gain.connect(ctx.destination);
-        osc.start();
-        gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.12);
-        osc.stop(ctx.currentTime + 0.13);
-        setTimeout(() => { try { ctx.close(); } catch (e) {} }, 250);
+        const ctx = getSharedAudioContext();
+        if (!ctx) return;
+        const now = ctx.currentTime;
+
+        // Nota 1: E5 (659.25 Hz)
+        const osc1 = ctx.createOscillator();
+        const gain1 = ctx.createGain();
+        osc1.type = 'sine';
+        osc1.frequency.setValueAtTime(659.25, now);
+        gain1.gain.setValueAtTime(0.08, now);
+        gain1.gain.exponentialRampToValueAtTime(0.001, now + 0.12);
+        osc1.connect(gain1);
+        gain1.connect(ctx.destination);
+        osc1.start(now);
+        osc1.stop(now + 0.13);
+
+        // Nota 2: A5 (880.00 Hz) - acorde de entrega concluída
+        const osc2 = ctx.createOscillator();
+        const gain2 = ctx.createGain();
+        osc2.type = 'sine';
+        osc2.frequency.setValueAtTime(880, now + 0.08);
+        gain2.gain.setValueAtTime(0.09, now + 0.08);
+        gain2.gain.exponentialRampToValueAtTime(0.001, now + 0.24);
+        osc2.connect(gain2);
+        gain2.connect(ctx.destination);
+        osc2.start(now + 0.08);
+        osc2.stop(now + 0.25);
     } catch (e) {}
 }
 

@@ -101,9 +101,10 @@ async function main() {
     '/*! Font Awesome Free 6.5.1 (subset) by @fontawesome - https://fontawesome.com',
     ' * License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License)',
     ' * GERADO por scripts/build-icons.js — não editar à mão. */',
-    `@font-face{font-family:"Font Awesome 6 Free";font-style:normal;font-weight:900;font-display:block;src:url("../fonts/fa-solid-900.subset.woff2") format("woff2")}`,
+    // font-display:swap — fontes FA são subset local (APK), sempre disponíveis offline. swap evita FOIT.
+    `@font-face{font-family:"Font Awesome 6 Free";font-style:normal;font-weight:900;font-display:swap;src:url("../fonts/fa-solid-900.subset.woff2") format("woff2")}`,
     brandCps.size
-      ? `@font-face{font-family:"Font Awesome 6 Brands";font-style:normal;font-weight:400;font-display:block;src:url("../fonts/fa-brands-400.subset.woff2") format("woff2")}`
+      ? `@font-face{font-family:"Font Awesome 6 Brands";font-style:normal;font-weight:400;font-display:swap;src:url("../fonts/fa-brands-400.subset.woff2") format("woff2")}`
       : '',
     BASE_CSS,
     used.has('fa-spin') ? SPIN_CSS : '',

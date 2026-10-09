@@ -112,9 +112,19 @@ function paintDeliveryListWindow(container, force) {
 
     deliveryListVirtual.start = range.start;
     deliveryListVirtual.end = range.end;
-    const rowHtmls = filtered.map((d) => buildDeliveryListItemHtml(d, {
-        riskLevel: deps.getRiskLevelForDelivery(d)
-    }));
+    let rowHtmls;
+    if (range.full) {
+        rowHtmls = filtered.map((d) => buildDeliveryListItemHtml(d, {
+            riskLevel: deps.getRiskLevelForDelivery(d)
+        }));
+    } else {
+        rowHtmls = new Array(total);
+        for (let i = range.start; i < range.end; i++) {
+            rowHtmls[i] = buildDeliveryListItemHtml(filtered[i], {
+                riskLevel: deps.getRiskLevelForDelivery(filtered[i])
+            });
+        }
+    }
     container.innerHTML = joinVirtualListHtml(rowHtmls, range, DELIVERY_LIST_ROW_EST);
 }
 

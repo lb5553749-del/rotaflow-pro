@@ -10,8 +10,23 @@
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
     <meta name="apple-mobile-web-app-title" content="RotaFlow Pro">
     <link rel="apple-touch-icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 512 512'%3E%3Crect width='512' height='512' rx='104' fill='%230f172a'/%3E%3Cpath d='M148 388C148 300 372 330 372 200' fill='none' stroke='%233b82f6' stroke-width='30' stroke-linecap='round' stroke-dasharray='4 46'/%3E%3Ccircle cx='148' cy='388' r='46' fill='%2322c55e'/%3E%3Ccircle cx='372' cy='176' r='46' fill='%23ef4444'/%3E%3C/svg%3E">
+    <!-- DNS prefetch / preconnect para CDNs externos (Maps, Firebase, gstatic) -->
+    <link rel="dns-prefetch" href="https://www.gstatic.com">
+    <link rel="preconnect" href="https://www.gstatic.com" crossorigin>
+    <link rel="dns-prefetch" href="https://maps.gstatic.com">
+    <link rel="preconnect" href="https://maps.gstatic.com" crossorigin>
+    <link rel="dns-prefetch" href="https://maps.googleapis.com">
+    <link rel="preconnect" href="https://maps.googleapis.com" crossorigin>
+    <link rel="dns-prefetch" href="https://apis.google.com">
+    <!-- Preload dos ícones FA (subset gerado localmente — sem CDN) -->
+    <link rel="preload" href="./src/fonts/fa-solid-900.subset.woff2" as="font" type="font/woff2" crossorigin>
+    <!-- Preload da fonte Inter (crítica para renderização) -->
+    <link rel="preload" href="./build/fonts/inter-latin.woff2" as="font" type="font/woff2" crossorigin>
     <!-- Gerado por `npm run build` a partir de src/styles/ -->
-    <link rel="stylesheet" href="./build/app.css">
+    <link rel="stylesheet" href="./build/app.css" media="all">
+    <!-- Prefetch de recursos que serão usados após interação -->
+    <link rel="prefetch" href="./build/fonts/inter-latin-ext.woff2" as="font" type="font/woff2" crossorigin>
+    <link rel="prefetch" href="./build/fonts/fa-brands-400.subset.woff2" as="font" type="font/woff2" crossorigin>
 </head>
 <body>
 <div id="loginScreen" class="login-screen" aria-label="Tela de login">
@@ -87,20 +102,7 @@
                             <input type="number" id="pacotes" min="1" value="1">
                         </div>
                     </div>
-                    <div class="form-row-2cols">
-                        <div class="form-group">
-                            <label for="deliveryValor">Valor / receita (R$)</label>
-                            <input type="number" id="deliveryValor" min="0" step="0.01" inputmode="decimal" placeholder="Opcional">
-                        </div>
-                        <div class="form-group">
-                            <label for="janelaInicio">Janela início</label>
-                            <input type="time" id="janelaInicio" title="Horário inicial de recebimento">
-                        </div>
-                        <div class="form-group">
-                            <label for="janelaFim">Entregar até</label>
-                            <input type="time" id="janelaFim" title="Prazo / fim da janela">
-                        </div>
-                    </div>
+
                     <div class="checkbox-group">
                         <input type="checkbox" id="saveToAgendaCheckbox">
                         <label for="saveToAgendaCheckbox">Salvar também na agenda</label>
@@ -128,17 +130,17 @@
                         </div>
                     </div>
                     <div class="route-tools" aria-label="Ações da rota">
-                        <div class="overflow-wrap" id="routeToolsMenuWrap">
-                            <button type="button" class="overflow-trigger" id="routeToolsMenuBtn" aria-label="Mais ações da rota" aria-haspopup="true" aria-expanded="false" title="Mais ações">⋯</button>
-                            <div class="overflow-panel" id="routeToolsMenu" role="menu">
-                                <button type="button" id="backupBtn" role="menuitem" title="Exportar backup JSON com fotos"><i class="fas fa-download"></i> Backup</button>
-                                <button type="button" id="restoreBtn" role="menuitem" title="Importar backup JSON"><i class="fas fa-upload"></i> Restaurar</button>
-                                <button type="button" id="archiveDayBtn" role="menuitem" title="Salvar o dia atual no histórico"><i class="fas fa-box-archive"></i> Arquivar</button>
-                                <button type="button" id="newRouteMenuBtn" role="menuitem" title="Criar outra rota vazia sem alterar a atual"><i class="fas fa-plus"></i> Nova rota</button>
-                            </div>
-                        </div>
                         <div class="route-tools-end">
                             <button type="button" id="optimizeRouteToolBtn" class="route-tool-btn optimize rf-tool-hidden" title="Otimizar rota" aria-label="Otimizar rota" aria-hidden="true"><span class="rt-icon"><i class="fas fa-route"></i></span><span class="rt-label">Otimizar</span></button>
+                            <div class="overflow-wrap" id="routeToolsMenuWrap">
+                                <button type="button" class="overflow-trigger" id="routeToolsMenuBtn" aria-label="Mais ações da rota" aria-haspopup="true" aria-expanded="false" title="Mais ações">⋯</button>
+                                <div class="overflow-panel" id="routeToolsMenu" role="menu">
+                                    <button type="button" id="backupBtn" role="menuitem" title="Exportar rota atual com fotos do dia"><i class="fas fa-download"></i> Exportar rota</button>
+                                    <button type="button" id="restoreBtn" role="menuitem" title="Importar backup JSON"><i class="fas fa-upload"></i> Restaurar</button>
+                                    <button type="button" id="archiveDayBtn" role="menuitem" title="Salvar o dia atual no histórico"><i class="fas fa-box-archive"></i> Arquivar</button>
+                                    <button type="button" id="newRouteMenuBtn" role="menuitem" title="Criar outra rota vazia sem alterar a atual"><i class="fas fa-plus"></i> Nova rota</button>
+                                </div>
+                            </div>
                             <button type="button" id="newRouteBtn" class="route-tool-btn new-route" title="Criar outra rota vazia sem alterar a atual"><span class="rt-icon"><i class="fas fa-plus"></i></span><span>Nova rota</span></button>
                             <button type="button" id="clearRouteBtn" class="route-tool-btn danger" title="Limpar todas as entregas da rota"><span class="rt-icon"><i class="fas fa-trash-alt"></i></span><span>Limpar</span></button>
                         </div>
@@ -170,7 +172,13 @@
     </aside>
     <div class="map-area">
         <div id="map" role="application" aria-label="Mapa das entregas"></div>
-        <div id="mapLoading" class="map-loading">Carregando mapa…</div>
+        <div id="mapLoading" class="map-loading" aria-live="polite">
+            <div class="map-loading-card">
+                <i class="fas fa-location-dot map-loading-icon"></i>
+                <span class="map-loading-text">Carregando mapa…</span>
+                <div class="map-loading-bar"><div class="map-loading-bar-inner"></div></div>
+            </div>
+        </div>
         <button type="button" id="toggleSidebarBtn" class="map-fab-btn btn-menu" aria-label="Abrir ou fechar painel"><i class="fas fa-bars"></i></button>
         <button type="button" id="profileBtn" class="map-fab-btn btn-profile" title="Perfil e configurações" aria-label="Perfil e configurações"><i class="fas fa-user-cog"></i></button>
         <button type="button" id="mapNextChip" class="map-next-chip" hidden aria-label="Focar mapa na parada selecionada">
@@ -261,14 +269,15 @@
     </div>
 </div>
 
-<input type="file" id="importFileInput" accept=".json">
-<input type="file" id="restoreAgendaInput" accept=".json">
+<input type="file" id="importFileInput" accept=".json,.rfpro,application/json">
+<input type="file" id="restoreAgendaInput" accept=".json,.rfpro,application/json">
 <input type="file" id="agendaCameraInput" accept="image/*" capture="environment" style="display:none;" aria-hidden="true">
 <input type="file" id="agendaGalleryInput" accept="image/*" multiple style="display:none;" aria-hidden="true">
 
 <script src="./firebase-config.js"></script>
 <!-- Gerado por `npm run build` a partir de src/js/ (inclui native/bridge.js). Firebase SDK carrega sob demanda;
      Maps JS é injetado por app-boot.js com window.ROTAFLOW_MAPS_KEY. -->
+<link rel="modulepreload" href="./build/app.js">
 <script src="./build/app.js"></script>
 </body>
 </html>

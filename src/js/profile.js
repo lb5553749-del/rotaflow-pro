@@ -104,6 +104,16 @@ export function showProfileModal() {
                 </div>
             </div>
             <div class="form-group">
+                <label>Aparência</label>
+                <div class="pref-toggle-row">
+                    <div>
+                        <span>Modo escuro</span>
+                        <small>Tema escuro para conforto visual à noite</small>
+                    </div>
+                    <input type="checkbox" id="profileDarkMode" ${document.documentElement.classList.contains('dark-theme') ? 'checked' : ''} aria-label="Ativar modo escuro">
+                </div>
+            </div>
+            <div class="form-group">
                 <label>Modo suporte veicular</label>
                 <div class="pref-toggle-row">
                     <div>
@@ -179,6 +189,8 @@ export function showProfileModal() {
             sound: !!document.getElementById('profileSound')?.checked
         });
         deps.setVehicleModeEnabled(!!document.getElementById('profileVehicleMode')?.checked);
+        const darkMode = !!document.getElementById('profileDarkMode')?.checked;
+        applyDarkMode(darkMode);
         deps.saveStorage();
         deps.showToast("Perfil salvo");
         overlay.remove();
@@ -188,4 +200,22 @@ export function showProfileModal() {
         overlay.remove();
         deps.logoutUser();
     };
+}
+
+export function applyDarkMode(enabled) {
+    try {
+        localStorage.setItem('rotaflow_dark_theme', enabled ? '1' : '0');
+    } catch (_) {}
+    document.documentElement.classList.toggle('dark-theme', !!enabled);
+}
+
+export function initDarkModeFromStorage() {
+    try {
+        const pref = localStorage.getItem('rotaflow_dark_theme');
+        if (pref === '1') {
+            document.documentElement.classList.add('dark-theme');
+        } else if (pref === null && window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches) {
+            document.documentElement.classList.add('dark-theme');
+        }
+    } catch (_) {}
 }
