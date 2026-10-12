@@ -475,10 +475,8 @@ function seedIdCounter() {
 
 configurePhotoStore({ getUid: currentUid });
 configureBackupStore({ getUid: currentUid, storageKey, isNativeApp });
-function updateSyncBadge() {
-    const el = document.getElementById('syncBadge');
-    if (el) el.className = 'sync-badge';
-}
+
+// Indicador de sync: src/js/sync-status.js (initSyncStatusUI no boot; eventos ligados em persist.js/backup-ui.js).
 
 // Auth local/sessão/logout: src/js/auth.js (configureAuth no boot).
 // Captura multi-foto nativa/web: src/js/camera.js (configureCamera no boot).
@@ -961,7 +959,6 @@ function configureExtractedModules() {
             renderRouteSwitcher();
             renderAgendaList();
         },
-        updateSyncBadge,
         showToast,
         showConfirmModal
     });

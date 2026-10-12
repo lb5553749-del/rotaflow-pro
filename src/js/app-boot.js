@@ -3,8 +3,9 @@
  * Dependências injetadas via configureAppBoot() — main.js só orquestra.
  */
 import { initDarkModeFromStorage } from './profile.js';
-import { initFiltersUI, updateDistrictsOptions, applyFiltersToDeliveries } from './filters-ui.js';
+import { initFiltersUI } from './filters-ui.js';
 import { advancedFilters } from './advanced-filters.js';
+import { initSyncStatusUI } from './sync-status.js';
 
 let deps = {
     initNameSuggestions: () => {},
@@ -145,6 +146,9 @@ export function setupDomContentLoadedBoot() {
         initAppUi();
         localStorage.removeItem('rotaflow_reminders');
         deps.resetVoltarDepoisAlert();
+
+        // Inicializa indicadores de sincronização
+        initSyncStatusUI();
 
         // Busca simples na rota
         document.getElementById("routeSearchInput").addEventListener("input", deps.debounce((e) => {

@@ -25,6 +25,16 @@ import {
     writeSilentLocalBackup,
     uploadCloudBackup
 } from './backup-store.js';
+import { syncStatus } from './sync-status.js';
+
+/** Atualiza o indicador de sync após um resultado de backup na nuvem. */
+function reportCloudBackup(cloudRes) {
+    if (cloudRes.ok) {
+        syncStatus.markCloudSuccess();
+    } else {
+        syncStatus.markCloudError(cloudRes.error);
+    }
+}
 
 let deps = {
     getDeliveries: () => [],
@@ -248,8 +258,13 @@ export async function runAutoBackup({ reason = 'auto', cloud = true, silent = tr
         const data = buildFullBackupObject();
         const json = JSON.stringify(data);
         const local = await writeSilentLocalBackup(json);
+        if (local.ok) syncStatus.markLocalSave();
         let cloudRes = { ok: false, error: 'skipped' };
-        if (cloud) cloudRes = await uploadCloudBackup(json);
+        if (cloud) {
+            syncStatus.markCloudStart();
+            cloudRes = await uploadCloudBackup(json);
+            reportCloudBackup(cloudRes);
+        }
 
         const patch = {
             lastAutoAt: Date.now(),
@@ -423,7 +438,9 @@ async function backupDataLocal(filename, data) {
     const ok = await downloadJsonFile(filename, data, 'Escolha onde salvar o arquivo da rota');
     if (ok) {
         // Cópia silenciosa continua completa (rota + agenda) — é a rede de segurança local.
-        await writeSilentLocalBackup(JSON.stringify(buildFullBackupObject())).catch(() => {});
+        await writeSilentLocalBackup(JSON.stringify(buildFullBackupObject())).then((res) => {
+            if (res && res.ok) syncStatus.markLocalSave();
+        }).catch(() => {});
         writeBackupMeta({
             lastBackupAt: Date.now(),
             lastDismissAt: Date.now(),
@@ -469,7 +486,10 @@ export async function backupData() {
 
     deps.showToast('A guardar backup…');
     const local = await writeSilentLocalBackup(JSON.stringify(buildFullBackupObject()));
+    if (local.ok) syncStatus.markLocalSave();
+    syncStatus.markCloudStart();
     const cloudRes = await uploadCloudBackup(JSON.stringify(buildFullBackupObject()));
+    reportCloudBackup(cloudRes);
     await downloadJsonFile(filename, data, 'Arquivo da rota pronto para partilhar');
 
     const patch = {

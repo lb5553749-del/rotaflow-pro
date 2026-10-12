@@ -6,7 +6,6 @@ import {
     DELIVERY_LIST_FULL_RENDER_MAX,
     DELIVERY_LIST_ROW_EST,
     DELIVERY_LIST_BUFFER,
-    filterItemsByTextQuery,
     buildDeliveryListItemHtml,
     emptyListStateHtml,
     virtualScrollRange,

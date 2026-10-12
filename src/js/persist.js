@@ -11,6 +11,7 @@ import {
     migrateWhatsAppTemplate,
     ensureProfileEmpresa
 } from '../../lib/persist-helpers.js';
+import { syncStatus } from './sync-status.js';
 
 let deps = {
     getAuthReady: () => false,
@@ -63,6 +64,7 @@ export function isStorageFull() {
 
 export function persistStorageNow() {
     if (!deps.getAuthReady() || !deps.getCurrentUser()) return false;
+    syncStatus.setSaving(true);
     try {
         deps.syncActiveRouteIntoRoutes();
         // Só `routes[]` — o espelho `deliveries` saiu; dados antigos migram em hydrateRoutesFromData.
@@ -81,17 +83,20 @@ export function persistStorageNow() {
             storageFull = false;
             deps.showToast('Espaço liberado. Dados salvos com sucesso');
         }
+        syncStatus.markLocalSave();
         return true;
     } catch (e) {
         if (!storageFull) {
             storageFull = true;
             deps.showToast('Armazenamento insuficiente. Remova dados antigos ou faça um backup', true);
         }
+        syncStatus.markSaveError('Armazenamento cheio');
         return false;
     }
 }
 
 export function saveStorage() {
+    syncStatus.markDirty();
     clearTimeout(saveTimer);
     saveTimer = setTimeout(() => {
         if (typeof requestIdleCallback === 'function') {

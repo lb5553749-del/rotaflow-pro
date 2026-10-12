@@ -31,7 +31,6 @@ let deps = {
     persistStorageNow: () => false,
     maybeAutoBackupOnDayChange: () => {},
     resetAppAfterLogout: () => {},
-    updateSyncBadge: () => {},
     showToast: () => {},
     showConfirmModal: async () => false
 };
@@ -90,7 +89,6 @@ export function updateUserChip() {
         photo.style.display = 'none';
     }
     chip.classList.add('show');
-    deps.updateSyncBadge();
 }
 
 export function hideLoginScreen() {
@@ -136,7 +134,6 @@ export async function logoutUser() {
     authReady = false;
     deps.resetAppAfterLogout();
     document.getElementById('userChip')?.classList.remove('show');
-    deps.updateSyncBadge();
     showLoginScreen();
 }
 
