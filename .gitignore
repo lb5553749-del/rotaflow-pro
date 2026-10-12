@@ -5,6 +5,8 @@ node_modules
 .DS_Store
 www/
 build/
+# Diretório de staging do Hosting: gerado por scripts/prepare-hosting.js, nunca editar.
+public/
 # Ancorados na raiz: native/android/ (plugins Java próprios) precisa ser versionado.
 /android/
 /ios/

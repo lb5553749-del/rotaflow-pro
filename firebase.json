@@ -1,40 +1,21 @@
 {
   "hosting": {
-    "public": ".",
+    "public": "public",
     "ignore": [
       "firebase.json",
       "**/.*",
-      "**/.*/**",
-      "**/node_modules/**",
-      "**/.git/**",
-      "**/package*.json",
-      "**/*.md",
-      "**/_*.js",
-      "firestore.rules",
-      "storage.rules",
-      "firestore.indexes.json",
-      "database.rules.json",
-      "android/**",
-      "www/**",
-      "native/**",
-      "src/**",
-      "lib/**",
-      "test/**",
-      "scripts/**",
-      "dist/**",
-      "signing/**",
-      "functions/**",
-      "estudo-transpetro/**",
-      "docs/**",
-      "ios/**",
-      "build/**/*.map",
-      "track-*-marker.svg",
-      "eslint.config.js",
-      "jsconfig.json",
-      "version.json",
-      "capacitor.config.json"
+      "**/.*/**"
     ],
     "headers": [
+      {
+        "source": "/build/**",
+        "headers": [
+          {
+            "key": "Cache-Control",
+            "value": "public, max-age=31536000, immutable"
+          }
+        ]
+      },
       {
         "source": "**",
         "headers": [

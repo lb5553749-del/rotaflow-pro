@@ -18,9 +18,12 @@
 .fa-box-open::before{content:"\f49e"}
 .fa-camera::before{content:"\f030"}
 .fa-check::before{content:"\f00c"}
+.fa-chevron-down::before{content:"\f078"}
 .fa-chevron-left::before{content:"\f053"}
 .fa-chevron-right::before{content:"\f054"}
+.fa-chevron-up::before{content:"\f077"}
 .fa-circle::before{content:"\f111"}
+.fa-clock::before{content:"\f017"}
 .fa-clock-rotate-left::before{content:"\f1da"}
 .fa-cloud-upload-alt::before{content:"\f0ee"}
 .fa-copy::before{content:"\f0c5"}
@@ -28,10 +31,14 @@
 .fa-edit::before{content:"\f044"}
 .fa-exclamation-circle::before{content:"\f06a"}
 .fa-exclamation-triangle::before{content:"\f071"}
+.fa-filter::before{content:"\f0b0"}
+.fa-hand::before{content:"\f256"}
+.fa-house-user::before{content:"\e1b0"}
 .fa-images::before{content:"\f302"}
 .fa-location-arrow::before{content:"\f124"}
 .fa-location-crosshairs::before{content:"\f601"}
 .fa-location-dot::before{content:"\f3c5"}
+.fa-map-location-dot::before{content:"\f5a0"}
 .fa-map-marker-alt::before{content:"\f3c5"}
 .fa-pen::before{content:"\f304"}
 .fa-phone-alt::before{content:"\f879"}
@@ -41,6 +48,7 @@
 .fa-save::before{content:"\f0c7"}
 .fa-search::before{content:"\f002"}
 .fa-spinner::before{content:"\f110"}
+.fa-star::before{content:"\f005"}
 .fa-times::before{content:"\f00d"}
 .fa-trash::before{content:"\f1f8"}
 .fa-trash-alt::before{content:"\f2ed"}

@@ -6,8 +6,14 @@
   "compilerOptions": {
     "target": "es2020",
     "module": "esnext",
-    "moduleResolution": "node",
+    // TypeScript 7 removeu `node` (node10); `bundler` é o equivalente para
+    // resolução de import com extensão omitida, igual ao esbuild.
+    "moduleResolution": "bundler",
     "checkJs": true,
+    // Sem isso o TS7 não carrega os globais do Node (__dirname, node:test…),
+    // e os arquivos de teste viram uma cascata de TS2591. O app só usa
+    // google.maps em comentários, então não precisa de outros @types.
+    "types": ["node"],
     "strict": false,
     "noEmit": true
   },

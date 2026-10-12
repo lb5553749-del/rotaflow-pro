@@ -1,5 +1,5 @@
 /* RotaFlow Pro — service worker (app shell offline) */
-const CACHE_NAME = 'rotaflow-shell-v90.516cb2c273';
+const CACHE_NAME = 'rotaflow-shell-v90.fc06c08f0f';
 const RUNTIME_CACHE = 'rotaflow-runtime-v1';
 const IMAGE_CACHE = 'rotaflow-images-v1';
 const API_CACHE = 'rotaflow-api-v1';
@@ -12,8 +12,6 @@ const PRECACHE = [
   './firebase-config.js',
   './build/app.css',
   './build/app.js',
-  './build/fonts/inter-latin.woff2',
-  './build/fonts/inter-latin-ext.woff2',
   './build/fonts/fa-solid-900.subset.woff2',
   './build/fonts/fa-brands-400.subset.woff2'
 ];

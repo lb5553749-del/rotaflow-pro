@@ -19,13 +19,10 @@
     <link rel="preconnect" href="https://maps.googleapis.com" crossorigin>
     <link rel="dns-prefetch" href="https://apis.google.com">
     <!-- Preload dos ícones FA (subset gerado localmente — sem CDN) -->
-    <link rel="preload" href="./src/fonts/fa-solid-900.subset.woff2" as="font" type="font/woff2" crossorigin>
-    <!-- Preload da fonte Inter (crítica para renderização) -->
-    <link rel="preload" href="./build/fonts/inter-latin.woff2" as="font" type="font/woff2" crossorigin>
+    <link rel="preload" href="./build/fonts/fa-solid-900.subset.woff2" as="font" type="font/woff2" crossorigin>
     <!-- Gerado por `npm run build` a partir de src/styles/ -->
     <link rel="stylesheet" href="./build/app.css" media="all">
     <!-- Prefetch de recursos que serão usados após interação -->
-    <link rel="prefetch" href="./build/fonts/inter-latin-ext.woff2" as="font" type="font/woff2" crossorigin>
     <link rel="prefetch" href="./build/fonts/fa-brands-400.subset.woff2" as="font" type="font/woff2" crossorigin>
 </head>
 <body>
@@ -55,7 +52,15 @@
                     <span>ID</span>
                     <span class="last-id-value" id="lastIdValue">—</span>
                 </div>
-                <span class="sync-badge" id="syncBadge" title="Status" style="display:none">Nuvem</span>
+                <div class="sync-status" id="syncStatus" title="Status de sincronização">
+                    <div class="sync-indicator" id="syncIndicator">
+                        <i class="fas fa-circle"></i>
+                    </div>
+                    <div class="sync-details" id="syncDetails">
+                        <span class="sync-state" id="syncState">Offline</span>
+                        <span class="sync-timestamp" id="syncTimestamp"></span>
+                    </div>
+                </div>
                 <div class="login-user-chip" id="userChip" title="Conta atual">
                     <img id="userChipPhoto" alt="">
                     <span id="userChipName">Conta</span>

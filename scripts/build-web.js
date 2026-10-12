@@ -27,8 +27,8 @@ const root = path.join(__dirname, '..');
 const outDir = path.join(root, 'build');
 const dev = process.argv.includes('--dev');
 
-/** O código já usa `?.`/`??`; es2020 só impede o minificador de gerar sintaxe mais nova (ex.: `||=`). */
-const TARGET = 'es2020';
+/** O código já usa `?.`/`??`; es2017 (Chrome 55+) só impede o minificador de gerar sintaxe mais nova. */
+const TARGET = 'es2017';
 
 /** Arquivos que o index.html carrega e sem os quais o deploy sobe um app quebrado. */
 const REQUIRED_FOR_DEPLOY = ['build/app.js', 'build/app.css', 'firebase-config.js', 'sw.js', 'index.html'];

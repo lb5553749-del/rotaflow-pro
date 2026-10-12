@@ -1,4 +1,3 @@
 /* Entrada do CSS — esbuild junta e minifica em build/app.css (npm run build). */
-@import "./fonts.css";
 @import "./icons.css";
 @import "./app.css";
