@@ -32,9 +32,12 @@ import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
 import java.text.SimpleDateFormat;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.Date;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
+import java.util.Set;
 import java.util.TimeZone;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -51,6 +54,8 @@ public class BackgroundGpsService extends Service implements LocationListener {
     private static final String TAG = "RotaFlowGps";
     private static final int NOTIF_ID = 71010;
     private static final Object LOCK = new Object();
+    /** Paradas à frente que recebem posição a cada fix; as outras só no "chegando". */
+    private static final int PUBLISH_HEAD = 3;
 
     private static String title = "RotaFlow rastreando";
     private static String text = "GPS ativo para avisar o cliente";
@@ -81,6 +86,8 @@ public class BackgroundGpsService extends Service implements LocationListener {
         String token;
         double lat;
         double lng;
+        /** Posição na rota (1 = próxima). Integer.MAX_VALUE se a rota não foi otimizada. */
+        int routeOrder = Integer.MAX_VALUE;
         boolean nearNotified;
         /** nearNotified já gravado no doc pai (dispara o push na Cloud Function). */
         boolean nearSynced;
@@ -122,6 +129,7 @@ public class BackgroundGpsService extends Service implements LocationListener {
                     if (t.token.isEmpty() || !raw.has("lat") || !raw.has("lng")) continue;
                     t.lat = raw.getDouble("lat");
                     t.lng = raw.getDouble("lng");
+                    t.routeOrder = raw.optInt("routeOrder", Integer.MAX_VALUE);
                     t.nearNotified = raw.optBoolean("nearNotified", false);
                     // O JS grava o nearNotified que ele mesmo detectou.
                     t.nearSynced = t.nearNotified;
@@ -232,6 +240,18 @@ public class BackgroundGpsService extends Service implements LocationListener {
             refresh = refreshToken;
         }
         boolean shouldPublish = snapshot.isEmpty() ? false : shouldPublish(lat, lng);
+        // Só as próximas PUBLISH_HEAD paradas recebem posição a cada fix; as outras
+        // recebem só quando o motorista chega perto. Sem isso, cada fix vira uma
+        // escrita no Firestore por parada ativa — e um cliente 8 paradas atrás vê o
+        // carro se movendo desde o início da rota.
+        Set<String> headTokens = new HashSet<>();
+        if (shouldPublish) {
+            List<Target> ordered = new ArrayList<>(snapshot);
+            Collections.sort(ordered, (a, b) -> Integer.compare(a.routeOrder, b.routeOrder));
+            for (int i = 0; i < Math.min(PUBLISH_HEAD, ordered.size()); i++) {
+                headTokens.add(ordered.get(i).token);
+            }
+        }
         for (Target t : snapshot) {
             float[] out = new float[1];
             Location.distanceBetween(lat, lng, t.lat, t.lng, out);
@@ -242,7 +262,7 @@ public class BackgroundGpsService extends Service implements LocationListener {
                 if (plugin != null) plugin.emitNear(t.token, lat, lng);
                 // Push near: Cloud Function ao ver nearNotified no Firestore (publishTrack).
             }
-            if (becameNear || shouldPublish) {
+            if (becameNear || (shouldPublish && headTokens.contains(t.token))) {
                 publishTrack(pid, key, uid, refresh, t, lat, lng, acc);
             }
         }
@@ -300,6 +320,7 @@ public class BackgroundGpsService extends Service implements LocationListener {
                     o.put("token", t.token);
                     o.put("lat", t.lat);
                     o.put("lng", t.lng);
+                    o.put("routeOrder", t.routeOrder);
                     o.put("nearNotified", t.nearNotified);
                     o.put("nearSynced", t.nearSynced);
                     arr.put(o);
@@ -336,6 +357,7 @@ public class BackgroundGpsService extends Service implements LocationListener {
                         t.token = rawT.optString("token", "");
                         t.lat = rawT.optDouble("lat", Double.NaN);
                         t.lng = rawT.optDouble("lng", Double.NaN);
+                        t.routeOrder = rawT.optInt("routeOrder", Integer.MAX_VALUE);
                         t.nearNotified = rawT.optBoolean("nearNotified", false);
                         t.nearSynced = rawT.optBoolean("nearSynced", t.nearNotified);
                         if (!t.token.isEmpty() && !Double.isNaN(t.lat) && !Double.isNaN(t.lng)) {

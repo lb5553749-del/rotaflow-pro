@@ -11,6 +11,8 @@ const {
   canUseWebGeolocation,
   canUseNativeGeolocation,
   buildActiveTrackTargets,
+  nextActiveTrackTargets,
+  TRACK_PUBLISH_LIMIT,
   positionFromBackgroundLocation
 } = require('../lib/gps-helpers.js');
 
@@ -66,7 +68,52 @@ describe('buildActiveTrackTargets / background location', () => {
       { trackToken: 'c', lat: 5, status: 'pendente' },
       { lat: 6, lng: 7, status: 'pendente' }
     ], (d) => d.status !== 'entregue' && d.status !== 'falhou');
-    assert.deepEqual(targets, [{ token: 'a', lat: 1, lng: 2, nearNotified: true }]);
+    assert.deepEqual(targets, [{ token: 'a', lat: 1, lng: 2, routeOrder: Number.MAX_SAFE_INTEGER, nearNotified: true }]);
+  });
+
+  it('carries routeOrder for the native publish head', () => {
+    const targets = buildActiveTrackTargets([
+      { id: 'a', trackToken: 'a', lat: 1, lng: 2, routeOrder: 4 }
+    ], () => true);
+    assert.equal(targets[0].routeOrder, 4);
+  });
+});
+
+describe('nextActiveTrackTargets', () => {
+  // 0,001 grau de latitude ≈ 111 m: cada parada fica a ~111 m da anterior.
+  const stops = [
+    { id: 's1', trackToken: 't1', routeOrder: 3, lat: 0.003, lng: 0 },
+    { id: 's2', trackToken: 't2', routeOrder: 1, lat: 0.001, lng: 0 },
+    { id: 's3', trackToken: 't3', routeOrder: 2, lat: 0.002, lng: 0 },
+    { id: 's4', trackToken: 't4', routeOrder: 5, lat: 0.005, lng: 0 },
+    { id: 's5', trackToken: 't5', routeOrder: 4, lat: 0.004, lng: 0 },
+    { id: 'done', trackToken: 'td', routeOrder: 0, lat: 0, lng: 0, status: 'entregue' },
+    { id: 'notok', routeOrder: 1, lat: 0, lng: 0 }
+  ];
+  const active = (d) => d.status !== 'entregue';
+
+  it(`limita às próximas ${TRACK_PUBLISH_LIMIT} paradas, na ordem da rota`, () => {
+    assert.deepEqual(
+      nextActiveTrackTargets(stops, active, null).map((d) => d.id),
+      ['s2', 's3', 's1']
+    );
+  });
+
+  it('respeita um limite maior', () => {
+    assert.equal(nextActiveTrackTargets(stops, active, null, 2).length, 2);
+  });
+
+  it('sem posição, não alcança paradas além do limite', () => {
+    const out = nextActiveTrackTargets(stops, active, null);
+    assert.ok(!out.some((d) => d.id === 's4' || d.id === 's5'));
+  });
+
+  it('inclui quem já está perto, mesmo além do limite', () => {
+    // Motorista em cima da s5 (4ª na rota): ela entra sem tirar ninguém do topo.
+    assert.deepEqual(
+      nextActiveTrackTargets(stops, active, { lat: 0.004, lng: 0 }).map((d) => d.id),
+      ['s2', 's3', 's1', 's5']
+    );
   });
 
   it('normalizes BackgroundGps location events', () => {

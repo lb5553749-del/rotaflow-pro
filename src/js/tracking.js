@@ -17,6 +17,7 @@ import {
     TRACK_LIVE_DOC_ID,
     shouldPublishTrack as shouldPublishTrackPure
 } from '../../lib/track-schema.js';
+import { nextActiveTrackTargets } from '../../lib/gps-helpers.js';
 
 let deps = {
     isNativeApp: () => false,
@@ -316,7 +317,8 @@ export function publishDriverGpsFromWatch(position) {
     if (!deps.getGpsEnabled || !deps.getGpsEnabled()) return;
     if (!position || !position.coords) return;
     const pos = { lat: position.coords.latitude, lng: position.coords.longitude };
-    const targets = deps.getDeliveries().filter((d) => d.trackToken && deps.isActiveStop(d));
+    // Só as próximas paradas recebem posição; ver nextActiveTrackTargets.
+    const targets = nextActiveTrackTargets(deps.getDeliveries(), deps.isActiveStop, pos);
     if (!targets.length) return;
     const becomingNear = targets.some((d) => !d.nearNotified && isWithinNearKm(d, pos));
     if (!shouldPublishTrack(pos) && !becomingNear) return;
