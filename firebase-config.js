@@ -14,5 +14,5 @@ window.ROTAFLOW_VAPID_PUBLIC = 'BIiR1NtrIOJXJmUAfA6H2xeuvPU0jKg583x47AqVAaPqss97
 /* Backup na nuvem (Firebase Storage) exige plano Blaze. Mude para true quando o Storage estiver ativo. */
 window.ROTAFLOW_CLOUD_BACKUP_ENABLED = false;
 /* version.json é a fonte da verdade; prepare-www também carimba estes campos em www/. */
-window.ROTAFLOW_APP_VERSION = '1.5.29';
-window.ROTAFLOW_VERSION_CODE = 54;
+window.ROTAFLOW_APP_VERSION = '1.5.30';
+window.ROTAFLOW_VERSION_CODE = 55;
