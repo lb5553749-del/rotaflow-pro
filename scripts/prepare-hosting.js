@@ -40,8 +40,21 @@ const ROOT_FILES = [
   'track-flag-marker.png'
 ];
 
-/** Arquivos de texto que podem referenciar `build/**` e precisam de reescrita. */
-const REFERRERS = ['index.html', 'track.html', 'sw.js', 'track-sw.js', 'build/app.css', 'build/app.js'];
+/**
+ * Arquivos de texto que podem referenciar `build/**` e precisam de reescrita.
+ * Inclui os chunks ESM: `chunks/app.js` referencia seus irmãos por `./chunk-x.js`
+ * e precisa ser reescrito junto, senão o rename quebra o import() em tempo de execução.
+ */
+function discoverReferrers() {
+  const base = ['index.html', 'track.html', 'sw.js', 'track-sw.js', 'build/app.css'];
+  const chunksDir = path.join(root, 'build', 'chunks');
+  if (fs.existsSync(chunksDir)) {
+    for (const name of fs.readdirSync(chunksDir)) {
+      if (name.endsWith('.js')) base.push(path.join('build', 'chunks', name));
+    }
+  }
+  return base;
+}
 
 function copyFile(rel) {
   const src = path.join(root, rel);
@@ -118,16 +131,28 @@ function hashBuildAssets() {
   pairs.sort((a, b) => b[0].length - a[0].length);
 
   // Segundo passo: reescreve as referências. Roda antes de renomear porque
-  // `build/app.css` e `build/app.js` são eles próprios referrers.
-  for (const rel of REFERRERS) {
+  // `build/app.css` e os chunks ESM são eles próprios referrers.
+  for (const rel of discoverReferrers()) {
     const file = path.join(publicDir, rel);
     if (!fs.existsSync(file)) continue;
+    // Diretório do arquivo relativo a `build/`: um chunk em `chunks/` referencia
+    // seus irmãos como `./chunk-x.js`, então a forma sem prefixo também precisa
+    // ser reescrita — o par `chunks/chunk-x.js` sozinho não casa.
+    const dir = path.posix.dirname(rel.replace(/^build\//, ''));
+    const extraForms = (from, to) => dir === '.'
+      ? []
+      : [[`./${path.posix.basename(from)}`, `./${path.posix.basename(to)}`]];
     let text = fs.readFileSync(file, 'utf8');
     for (const [from, to] of pairs) {
       // Borda: separa de identificadores (ex.: `xapp.js`) e de sufixos (`.map`),
       // mas aceita `/` à esquerda (referências relativas como `./fonts/x.woff2`).
       const re = new RegExp(`(?<![-\\w.])${escapeRegExp(from)}(?![-\\w/])`, 'g');
       text = text.replace(re, to);
+      for (const [ef, et] of extraForms(from, to)) {
+        if (ef === et) continue;
+        const er = new RegExp(`(?<![-\\w./])${escapeRegExp(ef)}(?![-\\w/])`, 'g');
+        text = text.replace(er, et);
+      }
     }
     fs.writeFileSync(file, text);
   }

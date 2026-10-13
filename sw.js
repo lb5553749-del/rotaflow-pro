@@ -1,17 +1,18 @@
 /* RotaFlow Pro — service worker (app shell offline) */
-const CACHE_NAME = 'rotaflow-shell-v90.fc06c08f0f';
+const CACHE_NAME = 'rotaflow-shell-v90.69274355e8';
 const RUNTIME_CACHE = 'rotaflow-runtime-v1';
 const IMAGE_CACHE = 'rotaflow-images-v1';
 const API_CACHE = 'rotaflow-api-v1';
 
-/* Shell gerado por `npm run build` (build/). Fontes/ícones são locais: o app abre offline sem CDN. */
+/* Shell gerado por `npm run build` (build/). Fontes/ícones são locais: o app abre offline sem CDN.
+   Chunks lazy (build/chunks/*) são cacheados pelo RUNTIME_CACHE no primeiro import(). */
 const PRECACHE = [
   './',
   './index.html',
   './sw.js',
   './firebase-config.js',
   './build/app.css',
-  './build/app.js',
+  './build/chunks/app.js',
   './build/fonts/fa-solid-900.subset.woff2',
   './build/fonts/fa-brands-400.subset.woff2'
 ];

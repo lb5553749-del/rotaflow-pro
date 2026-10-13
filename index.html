@@ -281,8 +281,8 @@
 
 <script src="./firebase-config.js"></script>
 <!-- Gerado por `npm run build` a partir de src/js/ (inclui native/bridge.js). Firebase SDK carrega sob demanda;
-     Maps JS é injetado por app-boot.js com window.ROTAFLOW_MAPS_KEY. -->
-<link rel="modulepreload" href="./build/app.js">
-<script src="./build/app.js"></script>
+     Maps JS é injetado por app-boot.js com window.ROTAFLOW_MAPS_KEY. ESM: os chunks
+     em build/chunks/ são carregados por import() sob demanda (lazy-modules.js). -->
+<script type="module" src="./build/chunks/app.js"></script>
 </body>
 </html>

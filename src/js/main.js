@@ -245,13 +245,6 @@ import {
     renderAgendaList
 } from './agenda-list.js';
 import {
-    configureEditModals,
-    showEditDeliveryModal,
-    editDeliveryInRoute,
-    showEditAgendaModal,
-    editAgendaItem
-} from './edit-modals.js';
-import {
     configureBackupStore
 } from './backup-store.js';
 import {
@@ -490,6 +483,61 @@ configureBackupStore({ getUid: currentUid, storageKey, isNativeApp });
 
 // ========== PERSISTÊNCIA ==========
 // Implementação em src/js/persist.js (configurePersist no boot).
+
+// ========== EDIT MODALS (lazy) ==========
+// 30 KB só usado quando o motorista edita uma entrega ou parada da agenda.
+// Carregado sob demanda; a configuração das deps acontece na primeira chamada.
+let editModalsReady = false;
+
+async function ensureEditModals() {
+    if (editModalsReady) return;
+    editModalsReady = true;
+    const { configureEditModals } = await import('./edit-modals.js');
+    configureEditModals({
+        showToast,
+        persistStorageNow,
+        saveStorage,
+        getCurrentSelectedDelivery: () => currentSelectedDelivery,
+        refreshPanelPhotos,
+        scheduleDeliveriesListPhotoRefresh,
+        geocodeAddressAndUpdate,
+        getMarker,
+        updateMarkerIcon,
+        rebuildMarkers,
+        updateDeliveryStats,
+        renderDeliveriesList,
+        syncAgendaByDelivery,
+        syncActiveStopNotification,
+        getAgenda: () => agenda,
+        setAgendaItemAt: (idx, item) => { agenda[idx] = item; },
+        getGeocoder: () => geocoder,
+        renderAgendaList
+    });
+}
+
+async function showEditDeliveryModal(delivery, onDone) {
+    await ensureEditModals();
+    const m = await import('./edit-modals.js');
+    return m.showEditDeliveryModal(delivery, onDone);
+}
+
+async function editDeliveryInRoute(delivery, updates) {
+    await ensureEditModals();
+    const m = await import('./edit-modals.js');
+    return m.editDeliveryInRoute(delivery, updates);
+}
+
+async function showEditAgendaModal(item, onDone) {
+    await ensureEditModals();
+    const m = await import('./edit-modals.js');
+    return m.showEditAgendaModal(item, onDone);
+}
+
+async function editAgendaItem(id, updates) {
+    await ensureEditModals();
+    const m = await import('./edit-modals.js');
+    return m.editAgendaItem(id, updates);
+}
 
 function configureExtractedModules() {
     configureWhatsApp({
@@ -788,26 +836,7 @@ function configureExtractedModules() {
         showEditAgendaModal,
         editAgendaItem
     });
-    configureEditModals({
-        showToast,
-        persistStorageNow,
-        saveStorage,
-        getCurrentSelectedDelivery: () => currentSelectedDelivery,
-        refreshPanelPhotos,
-        scheduleDeliveriesListPhotoRefresh,
-        geocodeAddressAndUpdate,
-        getMarker,
-        updateMarkerIcon,
-        rebuildMarkers,
-        updateDeliveryStats,
-        renderDeliveriesList,
-        syncAgendaByDelivery,
-        syncActiveStopNotification,
-        getAgenda: () => agenda,
-        setAgendaItemAt: (idx, item) => { agenda[idx] = item; },
-        getGeocoder: () => geocoder,
-        renderAgendaList
-    });
+    // edit-modals.js é lazy: configurado na primeira chamada (ensureEditModals).
     configureMapPins({
         getPinSizePref: () => pinSizePref,
         countActivePins: () => deliveries.filter((d) => shouldShowOnMap(d) && !isMutedPin(d)).length,
