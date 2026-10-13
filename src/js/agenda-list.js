@@ -33,6 +33,8 @@ let deps = {
     editAgendaItem: () => {}
 };
 
+let agendaListDelegationReady = false;
+
 export function configureAgendaList(opts) {
     deps = { ...deps, ...(opts || {}) };
 }
@@ -54,43 +56,56 @@ export function renderAgendaList() {
         });
     });
     container.innerHTML = html;
-    attachAgendaEvents();
-    document.querySelectorAll('.agenda-photo').forEach((img) => {
-        img.addEventListener('click', async (e) => {
+    ensureAgendaListDelegation(container);
+}
+
+/**
+ * Um listener por container em vez de um listener por botão por item.
+ * Com 200 paradas na agenda, anexar ~6 handlers por item a cada render (e a cada
+ * tecla da busca, que é debounced mas re-renderiza) chega a travar a lista.
+ */
+function ensureAgendaListDelegation(container) {
+    if (agendaListDelegationReady || !container) return;
+    agendaListDelegationReady = true;
+
+    container.addEventListener('click', async (e) => {
+        const photoImg = e.target.closest('.agenda-photo');
+        if (photoImg) {
             e.stopPropagation();
-            const found = deps.getAgenda().find((a) => a.agendaId === parseInt(img.dataset.agendaId, 10));
+            const found = deps.getAgenda().find((a) => a.agendaId === parseInt(photoImg.dataset.agendaId, 10));
             if (!found) return;
             await ensureItemPhotos(found);
             if (found.photos && found.photos.length) openGallery(found.photos, 0);
-        });
-    });
-}
+            return;
+        }
 
-function attachAgendaEvents() {
-    document.querySelectorAll('#agendaList .overflow-trigger').forEach((btn) => {
-        btn.onclick = (e) => {
+        const actionEl = e.target.closest('[data-id]');
+        if (!actionEl) return;
+        const id = parseInt(actionEl.dataset.id, 10);
+        if (!Number.isFinite(id)) return;
+        const item = deps.getAgenda().find((i) => i.agendaId === id);
+        if (!item) return;
+
+        if (actionEl.classList.contains('overflow-trigger')) {
             e.preventDefault();
             e.stopPropagation();
-            const wrap = btn.closest('.overflow-wrap');
+            const wrap = actionEl.closest('.overflow-wrap');
             const wasOpen = wrap && wrap.classList.contains('open');
             deps.closeAllOverflowMenus();
             if (wrap && !wasOpen) deps.openOverflowWrap(wrap);
-        };
-    });
-    document.querySelectorAll('.add-agenda').forEach((btn) => {
-        btn.onclick = () => {
+            return;
+        }
+
+        if (actionEl.classList.contains('add-agenda')) {
             deps.closeAllOverflowMenus();
-            const id = parseInt(btn.dataset.id, 10);
-            const item = deps.getAgenda().find((i) => i.agendaId === id);
-            if (item) deps.addAgendaToRoute(item);
-        };
-    });
-    document.querySelectorAll('.remove-agenda').forEach((btn) => {
-        btn.onclick = async () => {
+            deps.addAgendaToRoute(item);
+            return;
+        }
+
+        if (actionEl.classList.contains('remove-agenda')) {
+            e.preventDefault();
+            e.stopPropagation();
             deps.closeAllOverflowMenus();
-            const id = parseInt(btn.dataset.id, 10);
-            const item = deps.getAgenda().find((i) => i.agendaId === id);
-            if (!item) return;
             const ok = await deps.showConfirmModal({
                 title: 'Remover da agenda',
                 message: `Deseja remover "${item.nome}" da agenda de paradas?`,
@@ -102,99 +117,100 @@ function attachAgendaEvents() {
             deps.saveStorage();
             renderAgendaList();
             deps.showToast('Parada removida da agenda');
-        };
-    });
-    document.querySelectorAll('.edit-agenda').forEach((btn) => {
-        btn.onclick = async () => {
+            return;
+        }
+
+        if (actionEl.classList.contains('edit-agenda')) {
+            e.preventDefault();
+            e.stopPropagation();
             deps.closeAllOverflowMenus();
-            const id = parseInt(btn.dataset.id, 10);
-            const item = deps.getAgenda().find((i) => i.agendaId === id);
-            if (item) {
-                await ensureItemPhotos(item);
-                deps.showEditAgendaModal(item, (updated) => deps.editAgendaItem(id, updated));
-            }
-        };
-    });
-    document.querySelectorAll('.agenda-take-photo').forEach((btn) => {
-        btn.onclick = async (e) => {
+            await ensureItemPhotos(item);
+            deps.showEditAgendaModal(item, (updated) => deps.editAgendaItem(id, updated));
+            return;
+        }
+
+        if (actionEl.classList.contains('agenda-take-photo')) {
             e.stopPropagation();
-            const id = parseInt(btn.dataset.id, 10);
-            const item = deps.getAgenda().find((i) => i.agendaId === id);
-            if (!item) return;
-            const slots = remainingPhotoSlots(item);
-            if (slots <= 0) {
-                deps.showToast(`Limite de ${PHOTO_MAX_PER_ITEM} fotos por item`, true);
-                return;
-            }
-            const cameraInput = document.getElementById('agendaCameraInput');
-            let savedIncremental = 0;
-            const urls = await pickPhotoDataUrls('camera', {
-                fileInput: cameraInput,
-                maxPhotos: slots,
-                pendingTarget: { kind: 'agenda', agendaId: item.agendaId },
-                onPhoto: async (dataUrl, n, total) => {
-                    const photoId = await addPhotoDataUrlToItem(item, dataUrl);
-                    if (!photoId) return;
-                    savedIncremental += 1;
-                    deps.persistStorageNow();
-                    if (total && total > 1) deps.showToast(`A guardar fotos… ${n}/${total}`);
-                }
-            });
-            let batchSaved = 0;
-            if (urls.length) {
-                for (const url of urls) {
-                    try {
-                        const photoId = await addPhotoDataUrlToItem(item, url);
-                        if (photoId) {
-                            batchSaved += 1;
-                            deps.persistStorageNow();
-                        }
-                    } catch (err) {
-                        if (String(err?.message || err) === 'photo-limit') {
-                            deps.showToast(`Limite de ${PHOTO_MAX_PER_ITEM} fotos por item`, true);
-                            break;
-                        }
-                    }
-                }
-            }
-            const totalSaved = savedIncremental + batchSaved;
-            if (totalSaved > 0) {
-                renderAgendaList();
-                deps.showToast(totalSaved > 1 ? `${totalSaved} fotos salvas na agenda` : 'Foto salva na agenda');
-            }
-        };
-    });
-    document.querySelectorAll('.agenda-pick-photo').forEach((btn) => {
-        btn.onclick = async (e) => {
+            await takeAgendaPhoto(item);
+            return;
+        }
+
+        if (actionEl.classList.contains('agenda-pick-photo')) {
             e.stopPropagation();
-            const id = parseInt(btn.dataset.id, 10);
-            const item = deps.getAgenda().find((i) => i.agendaId === id);
-            if (!item) return;
-            const slots = remainingPhotoSlots(item);
-            if (slots <= 0) {
-                deps.showToast(`Limite de ${PHOTO_MAX_PER_ITEM} fotos por item`, true);
-                return;
-            }
-            const galleryInput = document.getElementById('agendaGalleryInput');
-            const urls = await pickPhotoDataUrls('gallery', {
-                fileInput: galleryInput,
-                multiple: true,
-                maxPhotos: slots,
-                pendingTarget: { kind: 'agenda', agendaId: item.agendaId }
-            });
-            if (!urls.length) return;
+            await pickAgendaPhoto(item);
+            return;
+        }
+    });
+}
+
+async function takeAgendaPhoto(item) {
+    const slots = remainingPhotoSlots(item);
+    if (slots <= 0) {
+        deps.showToast(`Limite de ${PHOTO_MAX_PER_ITEM} fotos por item`, true);
+        return;
+    }
+    const cameraInput = document.getElementById('agendaCameraInput');
+    let savedIncremental = 0;
+    const urls = await pickPhotoDataUrls('camera', {
+        fileInput: cameraInput,
+        maxPhotos: slots,
+        pendingTarget: { kind: 'agenda', agendaId: item.agendaId },
+        onPhoto: async (dataUrl, n, total) => {
+            const photoId = await addPhotoDataUrlToItem(item, dataUrl);
+            if (!photoId) return;
+            savedIncremental += 1;
+            deps.persistStorageNow();
+            if (total && total > 1) deps.showToast(`A guardar fotos… ${n}/${total}`);
+        }
+    });
+    let batchSaved = 0;
+    if (urls.length) {
+        for (const url of urls) {
             try {
-                for (const url of urls) await addPhotoDataUrlToItem(item, url);
-                deps.persistStorageNow();
-                renderAgendaList();
-                deps.showToast(urls.length > 1 ? `${urls.length} fotos salvas na agenda` : 'Foto salva na agenda');
+                const photoId = await addPhotoDataUrlToItem(item, url);
+                if (photoId) {
+                    batchSaved += 1;
+                    deps.persistStorageNow();
+                }
             } catch (err) {
                 if (String(err?.message || err) === 'photo-limit') {
                     deps.showToast(`Limite de ${PHOTO_MAX_PER_ITEM} fotos por item`, true);
-                } else {
-                    deps.showToast('Não foi possível salvar a foto', true);
+                    break;
                 }
             }
-        };
+        }
+    }
+    const totalSaved = savedIncremental + batchSaved;
+    if (totalSaved > 0) {
+        renderAgendaList();
+        deps.showToast(totalSaved > 1 ? `${totalSaved} fotos salvas na agenda` : 'Foto salva na agenda');
+    }
+}
+
+async function pickAgendaPhoto(item) {
+    const slots = remainingPhotoSlots(item);
+    if (slots <= 0) {
+        deps.showToast(`Limite de ${PHOTO_MAX_PER_ITEM} fotos por item`, true);
+        return;
+    }
+    const galleryInput = document.getElementById('agendaGalleryInput');
+    const urls = await pickPhotoDataUrls('gallery', {
+        fileInput: galleryInput,
+        multiple: true,
+        maxPhotos: slots,
+        pendingTarget: { kind: 'agenda', agendaId: item.agendaId }
     });
+    if (!urls.length) return;
+    try {
+        for (const url of urls) await addPhotoDataUrlToItem(item, url);
+        deps.persistStorageNow();
+        renderAgendaList();
+        deps.showToast(urls.length > 1 ? `${urls.length} fotos salvas na agenda` : 'Foto salva na agenda');
+    } catch (err) {
+        if (String(err?.message || err) === 'photo-limit') {
+            deps.showToast(`Limite de ${PHOTO_MAX_PER_ITEM} fotos por item`, true);
+        } else {
+            deps.showToast('Não foi possível salvar a foto', true);
+        }
+    }
 }
