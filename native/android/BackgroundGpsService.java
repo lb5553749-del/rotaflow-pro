@@ -72,6 +72,8 @@ public class BackgroundGpsService extends Service implements LocationListener {
     private static final long RETENTION_ACTIVE_MS = 48L * 60 * 60 * 1000;
     private static final List<Target> targets = new ArrayList<>();
     private static Context appCtx;
+    /** Instância viva do service; null quando parado. `configure()` usa para re-registrar updates. */
+    private static BackgroundGpsService serviceInstance;
 
     private LocationManager locationManager;
     private final ExecutorService io = Executors.newSingleThreadExecutor();
@@ -102,11 +104,18 @@ public class BackgroundGpsService extends Service implements LocationListener {
     }
 
     static void configure(com.getcapacitor.PluginCall call) {
+        boolean intervalChanged = false;
         synchronized (LOCK) {
             if (call.getString("notificationTitle") != null) title = call.getString("notificationTitle");
             if (call.getString("notificationText") != null) text = call.getString("notificationText");
-            if (call.getInt("intervalMs") != null) intervalMs = call.getInt("intervalMs");
-            if (call.getFloat("minDistanceM") != null) minDistanceM = call.getFloat("minDistanceM");
+            if (call.getInt("intervalMs") != null && call.getInt("intervalMs") != intervalMs) {
+                intervalMs = call.getInt("intervalMs");
+                intervalChanged = true;
+            }
+            if (call.getFloat("minDistanceM") != null && call.getFloat("minDistanceM") != minDistanceM) {
+                minDistanceM = call.getFloat("minDistanceM");
+                intervalChanged = true;
+            }
             if (call.getFloat("nearMeters") != null) nearMeters = call.getFloat("nearMeters");
             if (call.getString("projectId") != null) projectId = call.getString("projectId");
             if (call.getString("apiKey") != null) apiKey = call.getString("apiKey");
@@ -115,6 +124,15 @@ public class BackgroundGpsService extends Service implements LocationListener {
             setTargets(call.getArray("targets"));
         }
         persistLocked();
+        // Sem isso, o intervalo adaptativo vindo do JS (12s parado / 4s em movimento)
+        // só passa a valer depois de reiniciar o service — o motorista fica preso
+        // no intervalo da primeira configuração até o Android matar e recriar.
+        if (intervalChanged && serviceInstance != null) serviceInstance.restartUpdates();
+    }
+
+    private void restartUpdates() {
+        stopUpdates();
+        startUpdates();
     }
 
     static void setTargets(JSArray array) {
@@ -155,6 +173,7 @@ public class BackgroundGpsService extends Service implements LocationListener {
     public void onCreate() {
         super.onCreate();
         appCtx = getApplicationContext();
+        serviceInstance = this;
         restore();
         ensureChannel();
         Notification notification = buildNotification();
@@ -174,6 +193,7 @@ public class BackgroundGpsService extends Service implements LocationListener {
     @Override
     public void onDestroy() {
         stopUpdates();
+        serviceInstance = null;
         io.shutdownNow();
         super.onDestroy();
     }

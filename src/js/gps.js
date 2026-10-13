@@ -13,7 +13,8 @@ import {
     positionFromBackgroundLocation,
     isGpsStationary,
     adaptiveWatchOptions,
-    nextStationaryState
+    nextStationaryState,
+    suggestedBackgroundIntervalMs
 } from '../../lib/gps-helpers.js';
 import { gpsErrorMessage as gpsErrorMessageOf } from '../../lib/routing-helpers.js';
 import { TRACK_NEAR_METERS } from '../../lib/track-schema.js';
@@ -135,12 +136,13 @@ function resetAdaptiveGpsState() {
 }
 
 /**
- * Re-bind watchPosition with adaptive options when stationary state flips.
- * Skips native BackgroundGps (Java interval stays 4s — see docs/GPS-ADAPTIVO.md).
+ * Re-bind watchPosition with adaptive options when stationary state flips, and
+ * re-configures the native BackgroundGps service so it follows the same interval.
  */
 async function retuneGpsWatchIfNeeded(wantStationary) {
     if (wantStationary === watchStationaryMode) return;
     watchStationaryMode = wantStationary;
+    retuneBackgroundGpsInterval();
     if (!deps.getGpsEnabled()) return;
     const canNative = canUseNativeGeolocation({
         isNative: deps.isNativeApp(),
@@ -184,6 +186,21 @@ export async function stopBackgroundGpsWatch() {
     if (!bg) return;
     try { if (typeof bg.removeAllListeners === 'function') await bg.removeAllListeners(); } catch (_) {}
     try { await bg.stop(); } catch (_) {}
+}
+
+/**
+ * Re-configura o service nativo com o intervalo adaptativo (12s parado / 4s em
+ * movimento). Sem isso, o Java continua no intervalo do primeiro `start()` até
+ * o service ser recriado — GPS quente o dia todo mesmo o motorista parado.
+ */
+async function retuneBackgroundGpsInterval() {
+    const bg = window.RotaFlowCap && window.RotaFlowCap.BackgroundGps;
+    if (!bg || typeof bg.configure !== 'function' || !bgGpsStarted) return;
+    try {
+        await bg.configure({ intervalMs: suggestedBackgroundIntervalMs({ stationary: watchStationaryMode }) });
+    } catch (err) {
+        console.warn('bg gps configure', err);
+    }
 }
 
 export function clearGpsTracking() {
@@ -252,7 +269,7 @@ export async function startBackgroundGpsWatch() {
         await bg.start({
             notificationTitle: 'RotaFlow rastreando',
             notificationText: 'GPS ativo — avisos ao cliente mesmo em segundo plano',
-            intervalMs: 4000,
+            intervalMs: suggestedBackgroundIntervalMs({ stationary: watchStationaryMode }),
             minDistanceM: 12,
             nearMeters: TRACK_NEAR_METERS,
             projectId: fb.projectId || 'rotaflow-83610',

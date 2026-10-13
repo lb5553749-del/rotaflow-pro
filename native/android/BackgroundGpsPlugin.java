@@ -41,6 +41,12 @@ public class BackgroundGpsPlugin extends Plugin {
     }
 
     @PluginMethod
+    public void configure(PluginCall call) {
+        BackgroundGpsService.configure(call);
+        call.resolve();
+    }
+
+    @PluginMethod
     public void updateTargets(PluginCall call) {
         JSArray targets = call.getArray("targets");
         BackgroundGpsService.setTargets(targets);
