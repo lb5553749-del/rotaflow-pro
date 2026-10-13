@@ -18,4 +18,5 @@ jobs:
       - run: npm run lint
       - run: npm run build
       - name: fail if bundle was not generated
-        run: test -f build/app.js && test -f build/app.css && test -f build/track-shared.js
+        # app.js saiu de build/ para build/chunks/ com a migracao para ESM (splitting).
+        run: test -f build/chunks/app.js && test -f build/app.css && test -f build/track-shared.js

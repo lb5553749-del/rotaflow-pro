@@ -6,7 +6,7 @@
   "scripts": {
     "test": "node --test test/*.test.js",
     "test:rules": "firebase emulators:exec --only firestore --project demo-rotaflow-rules \"node --test test/rules/*.test.js\"",
-    "lint": "eslint lib test src/js/gallery.js src/js/track-shared.js src/js/tracking.js src/js/history.js src/js/backup-ui.js src/js/photo-store.js src/js/item-photos.js src/js/deliveries-list.js src/js/agenda-list.js src/js/edit-modals.js src/js/routing.js src/js/modals.js src/js/map-pins.js src/js/gps.js src/js/map-layer.js src/js/delivery-panel.js src/js/map-markers.js src/js/routes.js src/js/persist.js src/js/auth.js src/js/camera.js src/js/whatsapp.js src/js/sidebar.js src/js/profile.js src/js/resume-ui.js src/js/lock-screen.js src/js/form-phones.js src/js/name-suggestions.js src/js/not-delivered.js src/js/undo-snackbar.js src/js/add-delivery-form.js src/js/agenda-route.js src/js/route-ui.js src/js/delivery-status.js src/js/panel-capture.js src/js/panel-edit-actions.js src/js/app-boot.js src/js/risk-areas.js src/js/haptics.js src/js/vehicle-mode.js src/js/sync-status.js",
+    "lint": "eslint lib test src/js",
     "lint:fix": "npm run lint -- --fix",
     "typecheck": "tsc --noEmit -p jsconfig.json",
     "verify": "npm run lint && npm test && npm run build",

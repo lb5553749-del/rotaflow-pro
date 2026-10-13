@@ -5,34 +5,6 @@
 
 import { prefetchOnInteraction } from './lazy-loader.js';
 
-const preloadedResources = new Set();
-
-/**
- * Adiciona um resource hint dinamicamente.
- * @param {string} href - URL do recurso
- * @param {string} as - Tipo do recurso (script, style, font, image)
- * @param {Object} options - Opções adicionais
- */
-function addResourceHint(href, as, options = {}) {
-    if (preloadedResources.has(href)) return;
-
-    const link = document.createElement('link');
-    link.rel = options.preload ? 'preload' : 'prefetch';
-    link.href = href;
-    link.as = as;
-
-    if (options.crossorigin) {
-        link.crossOrigin = options.crossorigin;
-    }
-
-    if (options.type) {
-        link.type = options.type;
-    }
-
-    document.head.appendChild(link);
-    preloadedResources.add(href);
-}
-
 /**
  * Configura prefetch baseado em interação do usuário.
  */
