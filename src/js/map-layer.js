@@ -41,6 +41,50 @@ export const mapStyle = [
     { featureType: 'landscape.man_made', elementType: 'geometry.stroke', stylers: [{ color: '#dadce0' }] }
 ];
 
+// Paleta clássica "night mode" do Google Maps, espelhando os mesmos featureTypes do mapStyle claro
+export const mapStyleDark = [
+    { elementType: 'geometry', stylers: [{ color: '#242f3e' }] },
+    { elementType: 'labels.icon', stylers: [{ visibility: 'off' }] },
+    { elementType: 'labels.text.fill', stylers: [{ color: '#9ca5b3' }] },
+    { elementType: 'labels.text.stroke', stylers: [{ color: '#242f3e' }] },
+    { featureType: 'administrative', elementType: 'geometry', stylers: [{ visibility: 'off' }] },
+    { featureType: 'administrative.land_parcel', stylers: [{ visibility: 'off' }] },
+    { featureType: 'administrative.neighborhood', stylers: [{ visibility: 'off' }] },
+    { featureType: 'poi', stylers: [{ visibility: 'off' }] },
+    { featureType: 'poi.park', elementType: 'geometry', stylers: [{ color: '#263c3f' }] },
+    { featureType: 'poi.park', elementType: 'labels', stylers: [{ visibility: 'off' }] },
+    { featureType: 'road', elementType: 'geometry', stylers: [{ color: '#38414e' }] },
+    { featureType: 'road', elementType: 'geometry.stroke', stylers: [{ color: '#212a37' }] },
+    { featureType: 'road', elementType: 'labels.icon', stylers: [{ visibility: 'off' }] },
+    { featureType: 'road.arterial', elementType: 'geometry', stylers: [{ color: '#38414e' }] },
+    { featureType: 'road.highway', elementType: 'geometry', stylers: [{ color: '#3d4756' }] },
+    { featureType: 'road.highway', elementType: 'geometry.stroke', stylers: [{ color: '#1f2835' }] },
+    { featureType: 'road.local', elementType: 'geometry', stylers: [{ color: '#38414e' }] },
+    { featureType: 'road.local', elementType: 'geometry.stroke', stylers: [{ color: '#2f3948' }] },
+    { featureType: 'transit', stylers: [{ visibility: 'off' }] },
+    { featureType: 'water', elementType: 'geometry', stylers: [{ color: '#17263c' }] },
+    { featureType: 'landscape', elementType: 'geometry', stylers: [{ color: '#242f3e' }] },
+    { featureType: 'landscape.man_made', elementType: 'geometry.stroke', stylers: [{ color: '#2f3948' }] }
+];
+
+export function isDarkMapEnabled() {
+    try {
+        if (localStorage.getItem('rotaflow_dark_map') === '1') return true;
+    } catch (_) {}
+    return document.documentElement.classList.contains('dark-theme');
+}
+
+export function getMapStyle() {
+    return isDarkMapEnabled() ? mapStyleDark : mapStyle;
+}
+
+export function refreshMapTheme() {
+    const map = deps.getMap && deps.getMap();
+    if (map && typeof map.setOptions === 'function') {
+        map.setOptions({ styles: getMapStyle() });
+    }
+}
+
 let deps = {
     isNativeApp: () => false,
     getMap: () => null,
@@ -257,7 +301,7 @@ async function initNativeGoogleMap() {
             disableDefaultUI: true,
             // Maps SDK nativo: rotação/inclinação com dois dedos (360°) como no Google Maps
             heading: 0,
-            styles: mapStyle
+            styles: getMapStyle()
         }
     });
     deps.setNativeMapZoom(12);
@@ -311,7 +355,7 @@ export async function initMap() {
             clickableIcons: false,
             keyboardShortcuts: false,
             disableDoubleClickZoom: false,
-            styles: mapStyle
+            styles: getMapStyle()
         };
         // Mapa vetorial (quando disponível) costuma ser mais fluido no celular
         // e é o que permite girar/inclinar livremente.

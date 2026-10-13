@@ -9,6 +9,7 @@ import {
 } from '../../lib/profile-helpers.js';
 import { EMPRESA_PADRAO } from './auth.js';
 import { readBackupMeta } from './backup-store.js';
+import { refreshMapTheme } from './map-layer.js';
 
 let deps = {
     getUserProfile: () => ({}),
@@ -41,6 +42,8 @@ export function showProfileModal() {
     const feedbackVibrateEnabled = deps.getFeedbackVibrateEnabled();
     const feedbackSoundEnabled = deps.getFeedbackSoundEnabled();
     const vehicleModeEnabled = !!deps.getVehicleModeEnabled();
+    let darkMapPref = false;
+    try { darkMapPref = localStorage.getItem('rotaflow_dark_map') === '1'; } catch (_) {}
     overlay.innerHTML = `
         <div class="modal-container" style="max-width:450px;">
             <h3 class="modal-title">Perfil e preferências</h3>
@@ -111,6 +114,13 @@ export function showProfileModal() {
                         <small>Tema escuro para conforto visual à noite</small>
                     </div>
                     <input type="checkbox" id="profileDarkMode" ${document.documentElement.classList.contains('dark-theme') ? 'checked' : ''} aria-label="Ativar modo escuro">
+                </div>
+                <div class="pref-toggle-row">
+                    <div>
+                        <span>Mapa escuro</span>
+                        <small>Só o mapa noturno, mesmo com app claro</small>
+                    </div>
+                    <input type="checkbox" id="profileDarkMap" ${darkMapPref ? 'checked' : ''} aria-label="Ativar mapa escuro">
                 </div>
             </div>
             <div class="form-group">
@@ -191,6 +201,10 @@ export function showProfileModal() {
         deps.setVehicleModeEnabled(!!document.getElementById('profileVehicleMode')?.checked);
         const darkMode = !!document.getElementById('profileDarkMode')?.checked;
         applyDarkMode(darkMode);
+        try {
+            localStorage.setItem('rotaflow_dark_map', document.getElementById('profileDarkMap')?.checked ? '1' : '0');
+        } catch (_) {}
+        refreshMapTheme();
         deps.saveStorage();
         deps.showToast("Perfil salvo");
         overlay.remove();
@@ -207,6 +221,9 @@ export function applyDarkMode(enabled) {
         localStorage.setItem('rotaflow_dark_theme', enabled ? '1' : '0');
     } catch (_) {}
     document.documentElement.classList.toggle('dark-theme', !!enabled);
+    // Web JS API: reaplica o estilo no mapa já carregado. No nativo o estilo
+    // vale a partir do próximo init (boot já roda initDarkModeFromStorage antes).
+    refreshMapTheme();
 }
 
 export function initDarkModeFromStorage() {

@@ -103,6 +103,25 @@ export function editPhonesPanel() {
     `;
     document.body.appendChild(overlay);
 
+    function persistPhones(message) {
+        currentSelectedDelivery.telefones = phones.filter(p => p && p.numero);
+        deps.saveStorage();
+        const phoneContainer = document.getElementById('panelPhone');
+        if (phoneContainer) {
+            if (currentSelectedDelivery.telefones.length) {
+                phoneContainer.innerHTML = currentSelectedDelivery.telefones.map(p => {
+                    const label = p.label ? p.label + ': ' : '';
+                    return label + formatPhoneShort(p.numero);
+                }).join(', ');
+            } else {
+                phoneContainer.innerText = 'Não informado';
+            }
+        }
+        deps.renderDeliveriesList();
+        deps.syncAgendaByDelivery(currentSelectedDelivery);
+        if (message) deps.showToast(message);
+    }
+
     function refreshPhoneList() {
         const list = overlay.querySelector('#phoneListModal');
         list.innerHTML = phones.map((p, i) =>
@@ -117,6 +136,7 @@ export function editPhonesPanel() {
                 const idx = parseInt(btn.dataset.index);
                 phones.splice(idx, 1);
                 refreshPhoneList();
+                persistPhones("Telefone removido");
             });
         });
         list.querySelectorAll('.edit-phone-label').forEach(inp => {
@@ -144,6 +164,7 @@ export function editPhonesPanel() {
         if (!formatted) return deps.showToast("Número de telefone inválido", true);
         phones.push({ numero: formatted, label: label || '' });
         refreshPhoneList();
+        persistPhones("Telefone salvo");
         labelInput.value = '';
         numInput.value = '';
     });

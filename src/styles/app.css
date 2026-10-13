@@ -369,32 +369,32 @@ html.native-map .map-next-chip {
 .toast-message i { margin-right: 4px; opacity: 0.9; }
 @keyframes slideInTop { from { opacity: 0; transform: translate(-50%, -12px); } to { opacity: 1; transform: translate(-50%, 0); } }
 .name-suggestions { position: absolute; top: calc(100% + 4px); left: 0; right: 0; background: white; border: 1px solid #e2e8f0; border-radius: var(--radius-md); box-shadow: 0 20px 25px -5px rgba(0,0,0,0.1); max-height: 300px; overflow-y: auto; z-index: 1001; display: none; }
-.suggestion-item { padding: 12px 16px; cursor: pointer; border-bottom: 1px solid #f1f5f9; font-size: 0.85rem; display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; }
+.suggestion-item { padding: 16px; cursor: pointer; border-bottom: 1px solid #f1f5f9; font-size: 1rem; display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px; }
 .suggestion-item:last-child { border-bottom: none; }
 .suggestion-item:hover { background: #f8fafc; }
 .suggestion-agenda { background: var(--accent-soft); border-left: 3px solid var(--accent); }
 .suggestion-route { background: #f8fafc; border-left: 3px solid var(--ink); }
-.suggestion-btn-add { background: #10b981; color: white; border: none; border-radius: 30px; padding: 4px 12px; font-size: 0.7rem; cursor: pointer; }
+.suggestion-btn-add { background: #10b981; color: white; border: none; border-radius: 30px; padding: 8px 14px; font-size: 0.85rem; font-weight: 700; cursor: pointer; min-height: 38px; }
 .suggestion-btn-add.disabled { background: #94a3b8; cursor: not-allowed; }
-.suggestion-btn-save { background: #3b82f6; color: white; border: none; border-radius: 30px; padding: 4px 12px; font-size: 0.7rem; cursor: pointer; }
+.suggestion-btn-save { background: #3b82f6; color: white; border: none; border-radius: 30px; padding: 8px 14px; font-size: 0.85rem; font-weight: 700; cursor: pointer; min-height: 38px; }
 .suggestion-btn-save:hover { background: #2563eb; }
 .suggestion-pacotes-control {
     display: flex;
     align-items: center;
-    gap: 6px;
+    gap: 8px;
     background: #f1f5f9;
-    padding: 2px 8px;
+    padding: 3px 10px;
     border-radius: 30px;
     margin: 4px 0;
-    font-size: 0.75rem;
+    font-size: 0.9rem;
 }
 .suggestion-pacotes-control button {
     background: white;
     border: none;
-    width: 22px;
-    height: 22px;
-    border-radius: 22px;
-    font-size: 0.8rem;
+    width: 32px;
+    height: 32px;
+    border-radius: 32px;
+    font-size: 1.1rem;
     cursor: pointer;
     font-weight: bold;
     display: flex;
@@ -405,10 +405,10 @@ html.native-map .map-next-chip {
 }
 .suggestion-pacotes-control button:hover { background: #e2e8f0; }
 .suggestion-pacotes-control span {
-    min-width: 20px;
+    min-width: 24px;
     text-align: center;
     font-weight: 700;
-    font-size: 0.8rem;
+    font-size: 1rem;
 }
 .suggestion-info { flex: 1; min-width: 150px; }
 .suggestion-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
@@ -2009,10 +2009,10 @@ html.dark-theme .pref-toggle-row input[type="checkbox"]:checked {
 .restore-agenda-btn { background: var(--accent); color: white; }
 .restore-agenda-btn:hover { background: #1d4ed8; }
 .suggestion-badge {
-    font-size: 0.65rem;
+    font-size: 0.8rem;
     background: var(--muted);
     color: white;
-    padding: 2px 8px;
+    padding: 4px 10px;
     border-radius: 999px;
     margin-left: 6px;
     font-weight: 600;
