@@ -8,6 +8,8 @@ const {
   isValidTrackToken,
   newTrackToken,
   normalizeTrackToken,
+  trackingPublicBase,
+  trackingUrl,
   readTrackTokenFromLocation,
   publicFirstName,
   trackStatusFor,
@@ -69,6 +71,41 @@ describe('newTrackToken', () => {
     assert.equal(token, 'ab'.repeat(16));
     assert.equal(isValidTrackToken(token), true);
   });
+
+  it('returns 32 hex chars from the given crypto', () => {
+    const token = newTrackToken({
+      getRandomValues(bytes) {
+        for (let i = 0; i < bytes.length; i++) bytes[i] = i;
+      }
+    });
+    assert.equal(token, '000102030405060708090a0b0c0d0e0f');
+    assert.equal(isValidTrackToken(token), true);
+  });
+});
+
+describe('trackingPublicBase / trackingUrl', () => {
+  const hosted = 'https://rotaflow-83610.web.app';
+
+  it('uses the hosting origin when served over https on a real domain', () => {
+    const env = { origin: 'https://app.rotaflow.com.br', hostname: 'app.rotaflow.com.br', protocol: 'https:' };
+    assert.equal(trackingPublicBase(env), 'https://app.rotaflow.com.br');
+    assert.equal(trackingUrl('ab'.repeat(16), env), 'https://app.rotaflow.com.br/r/' + 'ab'.repeat(16));
+  });
+
+  it('falls back to the Firebase host on native app, localhost and preview', () => {
+    assert.equal(trackingPublicBase({ isNativeApp: true, origin: 'https://app.rotaflow.com.br', hostname: 'app.rotaflow.com.br', protocol: 'https:' }), hosted);
+    assert.equal(trackingPublicBase({ origin: 'http://localhost:4173', hostname: 'localhost', protocol: 'http:' }), hosted);
+    assert.equal(trackingPublicBase({ origin: 'http://127.0.0.1:4173', hostname: '127.0.0.1', protocol: 'http:' }), hosted);
+    assert.equal(trackingPublicBase({}), hosted);
+  });
+
+  it('honours a configured hostedBase', () => {
+    assert.equal(trackingPublicBase({ hostedBase: 'https://outro.web.app' }), 'https://outro.web.app');
+  });
+
+  it('ignores origin on non-http(s) protocols', () => {
+    assert.equal(trackingPublicBase({ origin: 'file://', hostname: 'x', protocol: 'file:' }), hosted);
+  });
 });
 
 describe('isValidTrackToken', () => {
@@ -82,18 +119,6 @@ describe('isValidTrackToken', () => {
     assert.equal(isValidTrackToken('abc'), false);
     assert.equal(isValidTrackToken('g'.repeat(32)), false);
     assert.equal(isValidTrackToken(null), false);
-  });
-});
-
-describe('newTrackToken', () => {
-  it('returns 32 hex chars from the given crypto', () => {
-    const token = newTrackToken({
-      getRandomValues(bytes) {
-        for (let i = 0; i < bytes.length; i++) bytes[i] = i;
-      }
-    });
-    assert.equal(token, '000102030405060708090a0b0c0d0e0f');
-    assert.equal(isValidTrackToken(token), true);
   });
 });
 

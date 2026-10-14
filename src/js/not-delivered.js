@@ -11,6 +11,7 @@ import {
     getVoltarDepoisStops as getVoltarDepoisStopsPure,
     shouldNotifyVoltarDepois
 } from '../../lib/not-delivered-helpers.js';
+import { applyDeliveryStatusTransition } from '../../lib/delivery-status-helpers.js';
 
 let deps = {
     getDeliveries: () => [],
@@ -219,9 +220,8 @@ export async function markNotDelivered(id) {
         const normalsBefore = countNormalActiveStops();
 
         if (choice === 'voltar-depois') {
-            d.status = 'pendente';
+            applyDeliveryStatusTransition(d, 'pendente', { failReason: 'voltar-depois' });
             d.voltarDepois = true;
-            d.failReason = 'voltar-depois';
             try { await ensureNotificationPermission(); } catch (_) {}
             try { deps.saveStorage(); } catch (_) {}
             try {
@@ -237,9 +237,7 @@ export async function markNotDelivered(id) {
             return;
         }
 
-        d.status = 'falhou';
-        d.voltarDepois = false;
-        d.failReason = choice;
+        applyDeliveryStatusTransition(d, 'falhou', { failReason: choice });
         try { deps.releaseInMemoryPhotosExcept(d.id); } catch (_) {}
         try { deps.saveStorage(); } catch (_) {}
         try { deps.syncTrackingStatus(d); } catch (_) {}

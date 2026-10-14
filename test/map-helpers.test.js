@@ -15,6 +15,7 @@ const {
   boundsFromPoints,
   pointsForMapFit,
   shortStreetAddress,
+  extractDistrict,
   plainLatLng,
   boundsCorners,
   pacotesFromPinColor,
@@ -100,6 +101,16 @@ describe('nativePinDisplaySize / iconFill / bounds / street', () => {
   it('shortens street addresses', () => {
     assert.equal(shortStreetAddress('Rua A, 10, Centro'), 'Rua A, 10');
     assert.equal(shortStreetAddress(''), '—');
+  });
+
+  it('extracts the district as the last non-numberish part', () => {
+    assert.equal(extractDistrict('Rua A, 10, Centro'), 'Centro');
+    assert.equal(extractDistrict('Rua B, Centro'), 'Centro');
+    assert.equal(extractDistrict('Rua C'), '');
+    assert.equal(extractDistrict('Rua D, 10'), '');
+    assert.equal(extractDistrict('Quadra 12, casa 3'), '');
+    assert.equal(extractDistrict('Rua E, s/n'), '');
+    assert.equal(extractDistrict(null), '');
   });
 
   it('normalizes LatLng and bounds corners for the native facade', () => {

@@ -15,7 +15,10 @@ import {
     splitTrackPayload,
     trackEventSignature,
     TRACK_LIVE_DOC_ID,
-    shouldPublishTrack as shouldPublishTrackPure
+    shouldPublishTrack as shouldPublishTrackPure,
+    newTrackToken as newTrackTokenPure,
+    trackingPublicBase as trackingPublicBasePure,
+    trackingUrl as trackingUrlPure
 } from '../../lib/track-schema.js';
 import { nextActiveTrackTargets } from '../../lib/gps-helpers.js';
 
@@ -81,25 +84,38 @@ export function buildTrackPayload(delivery, extras) {
 }
 
 export function newTrackToken() {
-    const bytes = new Uint8Array(16);
-    const cryptoObj = window.crypto || window.msCrypto;
-    cryptoObj.getRandomValues(bytes);
-    return Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
+    // Entropia e composição da URL vêm de lib/track-schema.js (testado lá).
+    const cryptoObj = (typeof window !== 'undefined' && (window.crypto || window.msCrypto)) || null;
+    return cryptoObj ? newTrackTokenPure(cryptoObj) : '';
 }
 
 export function trackingPublicBase() {
-    const hosted = window.ROTAFLOW_TRACK_HOST || 'https://rotaflow-83610.web.app';
-    try {
-        if (!deps.isNativeApp() && /^https?:$/.test(location.protocol)
-            && location.hostname && location.hostname !== 'localhost' && location.hostname !== '127.0.0.1') {
-            return location.origin;
-        }
-    } catch (e) {}
-    return hosted;
+    return trackingPublicBasePure(trackEnv());
 }
 
 export function trackingUrl(token) {
-    return `${trackingPublicBase()}/r/${token}`;
+    return trackingUrlPure(token, trackEnv());
+}
+
+/** Ambiente de origem pra decisão de base do rastreio (lib puro, sem window). */
+function trackEnv() {
+    let origin = '';
+    let hostname = '';
+    let protocol = '';
+    try {
+        if (typeof location !== 'undefined') {
+            origin = location.origin;
+            hostname = location.hostname;
+            protocol = location.protocol;
+        }
+    } catch (e) {}
+    return {
+        isNativeApp: deps.isNativeApp(),
+        origin,
+        hostname,
+        protocol,
+        hostedBase: (typeof window !== 'undefined' && window.ROTAFLOW_TRACK_HOST) || undefined
+    };
 }
 
 /** Rules exigem request.auth.uid == ownerUid; sem login anônimo nenhum rastreio é publicado. */

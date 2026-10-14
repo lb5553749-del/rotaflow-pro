@@ -11,6 +11,7 @@ import {
     virtualScrollRange,
     joinVirtualListHtml
 } from '../../lib/list-helpers.js';
+import { applyDeliveryStatusTransition } from '../../lib/delivery-status-helpers.js';
 import { advancedFilters } from './advanced-filters.js';
 import { updateFiltersUI, updateDistrictsOptions } from './filters-ui.js';
 
@@ -298,13 +299,7 @@ function ensureDeliveryListDelegation(container) {
         if (!d) return;
         const oldStatus = d.status;
         const normalsBefore = deps.countNormalActiveStops();
-        d.status = sel.value;
-        if (d.status === 'entregue' || d.status === 'falhou') {
-            d.voltarDepois = false;
-            if (d.status === 'entregue') delete d.failReason;
-        }
-        if (d.status !== 'entregue') delete d.deliveredNotified;
-        if (d.status !== 'falhou' || d.failReason !== 'ausente') delete d.absentNotified;
+        applyDeliveryStatusTransition(d, sel.value);
         deps.saveStorage();
         if (oldStatus !== d.status) {
             deps.upsertMarker(d);

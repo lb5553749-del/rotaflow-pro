@@ -1,194 +1,92 @@
 /**
- * Sistema de filtros avançados para lista de entregas
- * Permite filtrar por status, bairro, horário, etc.
+ * Adapter stateful dos filtros avançados da lista de entregas.
+ * A regra de negócio (matching, contagem, presets) vive em
+ * lib/advanced-filters-helpers.js, pura e testada; aqui só fica o estado
+ * ativo + a persistência dos presets no localStorage.
  */
 
-import { filterDeliveriesByText } from '../../lib/search-helpers.js';
+import {
+    defaultActiveFilters,
+    applyAdvancedFilters,
+    availableDistricts,
+    extractDistrict,
+    hasActiveFilters,
+    countActiveFilters,
+    setFilterValue,
+    toggleArrayFilter,
+    cloneFilters,
+    loadSavedFilters,
+    persistSavedFilters
+} from '../../lib/advanced-filters-helpers.js';
+
+const storage = () => {
+    try { return typeof localStorage !== 'undefined' ? localStorage : null; } catch (e) { return null; }
+};
 
 export class AdvancedFilters {
     constructor() {
-        this.activeFilters = {
-            status: [], // ['pendente', 'entregue', 'falhou']
-            search: '', // texto livre
-            district: [], // bairros
-            priority: null, // 'high', 'normal'
-            hasPhotos: null, // true/false/null
-            failReason: [] // motivos de falha
-        };
-        this.savedFilters = this.loadSavedFilters();
+        this.activeFilters = defaultActiveFilters();
+        this.savedFilters = loadSavedFilters(storage());
     }
 
-    /**
-     * Aplica todos os filtros ativos em uma lista de entregas
-     */
+    /** Aplica todos os filtros ativos em uma lista de entregas. */
     applyFilters(deliveries) {
-        let filtered = [...deliveries];
-
-        // Filtro de busca por texto
-        if (this.activeFilters.search) {
-            filtered = filterDeliveriesByText(filtered, this.activeFilters.search);
-        }
-
-        // Filtro por status
-        if (this.activeFilters.status.length > 0) {
-            filtered = filtered.filter(d =>
-                this.activeFilters.status.includes(d.status)
-            );
-        }
-
-        // Filtro por bairro
-        if (this.activeFilters.district.length > 0) {
-            filtered = filtered.filter(d => {
-                const bairro = this.extractDistrict(d.endereco);
-                return this.activeFilters.district.some(f =>
-                    bairro.toLowerCase().includes(f.toLowerCase())
-                );
-            });
-        }
-
-        // Filtro por prioridade
-        if (this.activeFilters.priority) {
-            filtered = filtered.filter(d => {
-                if (this.activeFilters.priority === 'high') {
-                    return d.priority === true;
-                }
-                return !d.priority;
-            });
-        }
-
-        // Filtro por fotos
-        if (this.activeFilters.hasPhotos !== null) {
-            filtered = filtered.filter(d => {
-                const hasPhotos = (d.photos?.length || 0) > 0;
-                return hasPhotos === this.activeFilters.hasPhotos;
-            });
-        }
-
-        // Filtro por motivo de falha
-        if (this.activeFilters.failReason.length > 0) {
-            filtered = filtered.filter(d =>
-                d.status === 'falhou' &&
-                this.activeFilters.failReason.includes(d.failReason)
-            );
-        }
-
-        return filtered;
+        return applyAdvancedFilters(deliveries, this.activeFilters);
     }
 
-    /**
-     * Extrai o bairro de um endereço
-     */
+    /** Extrai o bairro de um endereço. */
     extractDistrict(address) {
-        if (!address) return '';
-        const parts = address.split(',');
-        // Geralmente o bairro é a penúltima parte
-        if (parts.length >= 2) {
-            return parts[parts.length - 2].trim();
-        }
-        return '';
+        return extractDistrict(address);
     }
 
-    /**
-     * Retorna lista única de bairros nas entregas
-     */
+    /** Retorna lista única de bairros nas entregas. */
     getAvailableDistricts(deliveries) {
-        const districts = new Set();
-        deliveries.forEach(d => {
-            const district = this.extractDistrict(d.endereco);
-            if (district) districts.add(district);
-        });
-        return Array.from(districts).sort();
+        return availableDistricts(deliveries);
     }
 
-    /**
-     * Define um filtro
-     */
+    /** Define um filtro. */
     setFilter(key, value) {
-        if (key in this.activeFilters) {
-            this.activeFilters[key] = value;
-        }
+        setFilterValue(this.activeFilters, key, value);
     }
 
-    /**
-     * Toggle de um valor em filtro array
-     */
+    /** Toggle de um valor em filtro array. */
     toggleArrayFilter(key, value) {
-        if (!Array.isArray(this.activeFilters[key])) return;
-
-        const idx = this.activeFilters[key].indexOf(value);
-        if (idx >= 0) {
-            this.activeFilters[key].splice(idx, 1);
-        } else {
-            this.activeFilters[key].push(value);
-        }
+        toggleArrayFilter(this.activeFilters, key, value);
     }
 
-    /**
-     * Limpa todos os filtros
-     */
+    /** Limpa todos os filtros. */
     clearAll() {
-        this.activeFilters = {
-            status: [],
-            search: '',
-            district: [],
-            priority: null,
-            hasPhotos: null,
-            failReason: []
-        };
+        this.activeFilters = defaultActiveFilters();
     }
 
-    /**
-     * Retorna se há algum filtro ativo
-     */
+    /** Retorna se há algum filtro ativo. */
     hasActiveFilters() {
-        return (
-            this.activeFilters.search !== '' ||
-            this.activeFilters.status.length > 0 ||
-            this.activeFilters.district.length > 0 ||
-            this.activeFilters.priority !== null ||
-            this.activeFilters.hasPhotos !== null ||
-            this.activeFilters.failReason.length > 0
-        );
+        return hasActiveFilters(this.activeFilters);
     }
 
-    /**
-     * Conta quantos filtros estão ativos
-     */
+    /** Conta quantos filtros estão ativos. */
     countActiveFilters() {
-        let count = 0;
-        if (this.activeFilters.search) count++;
-        if (this.activeFilters.status.length > 0) count++;
-        if (this.activeFilters.district.length > 0) count++;
-        if (this.activeFilters.priority !== null) count++;
-        if (this.activeFilters.hasPhotos !== null) count++;
-        if (this.activeFilters.failReason.length > 0) count++;
-        return count;
+        return countActiveFilters(this.activeFilters);
     }
 
-    /**
-     * Salva filtro atual como favorito
-     */
+    /** Salva filtro atual como favorito. */
     saveCurrentAsPreset(name) {
         if (!name) return false;
-        this.savedFilters[name] = JSON.parse(JSON.stringify(this.activeFilters));
+        this.savedFilters[name] = cloneFilters(this.activeFilters);
         this.persistSavedFilters();
         return true;
     }
 
-    /**
-     * Carrega um filtro salvo
-     */
+    /** Carrega um filtro salvo. */
     loadPreset(name) {
         if (name in this.savedFilters) {
-            this.activeFilters = JSON.parse(JSON.stringify(this.savedFilters[name]));
+            this.activeFilters = cloneFilters(this.savedFilters[name]);
             return true;
         }
         return false;
     }
 
-    /**
-     * Remove um filtro salvo
-     */
+    /** Remove um filtro salvo. */
     deletePreset(name) {
         if (name in this.savedFilters) {
             delete this.savedFilters[name];
@@ -198,49 +96,29 @@ export class AdvancedFilters {
         return false;
     }
 
-    /**
-     * Lista filtros salvos
-     */
+    /** Lista filtros salvos. */
     getPresets() {
         return Object.keys(this.savedFilters);
     }
 
-    /**
-     * Carrega filtros salvos do localStorage
-     */
+    /** Carrega filtros salvos do localStorage. */
     loadSavedFilters() {
-        try {
-            const saved = localStorage.getItem('rotaflow_saved_filters');
-            return saved ? JSON.parse(saved) : {};
-        } catch (e) {
-            console.error('Erro ao carregar filtros salvos:', e);
-            return {};
-        }
+        return loadSavedFilters(storage());
     }
 
-    /**
-     * Persiste filtros salvos no localStorage
-     */
+    /** Persiste filtros salvos no localStorage. */
     persistSavedFilters() {
-        try {
-            localStorage.setItem('rotaflow_saved_filters', JSON.stringify(this.savedFilters));
-        } catch (e) {
-            console.error('Erro ao salvar filtros:', e);
-        }
+        persistSavedFilters(storage(), this.savedFilters);
     }
 
-    /**
-     * Exporta estado atual dos filtros
-     */
+    /** Exporta estado atual dos filtros. */
     exportState() {
-        return JSON.parse(JSON.stringify(this.activeFilters));
+        return cloneFilters(this.activeFilters);
     }
 
-    /**
-     * Importa estado dos filtros
-     */
+    /** Importa estado dos filtros. */
     importState(state) {
-        this.activeFilters = JSON.parse(JSON.stringify(state));
+        this.activeFilters = cloneFilters(state);
     }
 }
 

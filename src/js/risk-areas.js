@@ -10,6 +10,7 @@ import {
     riskLevelBadgeLabel,
     RISK_LEVELS
 } from '../../lib/risk-area-helpers.js';
+import { extractDistrict as extractDistrictFromAddress } from '../../lib/map-helpers.js';
 
 let deps = {
     getStorage: () => (typeof localStorage !== 'undefined' ? localStorage : null),
@@ -71,9 +72,9 @@ export function setRiskLevelFromList(delivery, level) {
         deps.showToast('Endereço vazio — não dá para marcar área', true);
         return null;
     }
-    // Prefer last comma segment / neighborhood-ish token as label seed.
-    const parts = endereco.split(',').map((s) => s.trim()).filter(Boolean);
-    let label = parts.length >= 2 ? parts[parts.length - 2] || parts[0] : parts[0];
+    // Label seed = bairro do endereço (parser único em lib/map-helpers.js).
+    const district = extractDistrictFromAddress(endereco);
+    let label = district || endereco.split(',')[0].trim();
     // If still long, take first 3 words of street.
     if (label && label.length > 40) {
         label = label.split(/\s+/).slice(0, 3).join(' ');

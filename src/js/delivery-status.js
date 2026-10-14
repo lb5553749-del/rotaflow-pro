@@ -1,6 +1,8 @@
 /**
  * Transições de status da entrega: marcar entregue, desfazer e geocode ao editar endereço.
  */
+import { applyDeliveryStatusTransition } from '../../lib/delivery-status-helpers.js';
+
 let deps = {
     getDeliveries: () => [],
     getCurrentSelectedDelivery: () => null,
@@ -66,9 +68,7 @@ export async function markDelivered(id, { advance = false } = {}) {
         const d = deps.getDeliveries().find(x => x.id === id);
         if (!d || d.status === 'entregue') return;
         const normalsBefore = deps.countNormalActiveStops();
-        d.status = 'entregue';
-        d.voltarDepois = false;
-        delete d.failReason;
+        applyDeliveryStatusTransition(d, 'entregue');
         // Libera JPEGs em memória de outras paradas — o backup/auto e o avanço no painel matavam o WebView.
         try { deps.releaseInMemoryPhotosExcept(d.id); } catch (_) {}
         try { deps.saveStorage(); } catch (_) {}
@@ -104,11 +104,7 @@ export function undoDeliveryStatus(id, { keepPanel = false, keepMinimized = fals
     const d = deps.getDeliveries().find(x => x.id === id);
     if (!d) return;
     if (d.status !== 'entregue' && d.status !== 'falhou') return;
-    d.status = 'pendente';
-    d.voltarDepois = false;
-    delete d.failReason;
-    delete d.deliveredNotified;
-    delete d.absentNotified;
+    applyDeliveryStatusTransition(d, 'pendente');
     deps.saveStorage();
     deps.syncTrackingStatus(d);
     deps.upsertMarker(d);
