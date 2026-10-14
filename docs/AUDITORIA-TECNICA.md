@@ -1,10 +1,53 @@
-# Auditoria técnica — RotaFlow Pro v1.5.29
+# Auditoria técnica — RotaFlow Pro v1.5.30
 
 Auditoria de código feita por leitura direta do repositório em `main`. Todos os achados abaixo
 têm arquivo e número de linha. Nada aqui é especulação sobre o que o código "provavelmente faz":
 cada afirmação foi conferida no fonte.
 
-`npm test` foi executado durante a auditoria: **20 testes, 10 suítes, 20 passando, 0 falhando, 552 ms**.
+**Atualização de 2026-10-14 (rev. 2):** a estrutura do projeto mudou bastante desde a v1.5.29 —
+o `main.js` foi quebrado em 49 módulos ESM (`src/js/`) + 31 módulos puros (`lib/`), o que
+invalidou a maior parte da seção 3.3 original e das contagens de linha. Esta revisão reescreve
+essas seções e adiciona a **seção 0** com o status do roteiro da v1.5.29 — 7 dos 9 itens da Onda A
+e a refatoração da Onda B já foram executados. As seções 2 (segurança), 3.1 (confiabilidade) e
+3.2 (custo) permanecem como registro da v1.5.29; onde o achado foi resolvido, a seção 0 aponta.
+
+`npm test` em 2026-10-14: **308 testes, 139 suítes, 308 passando, 0 falhando, ~1,1 s**
+(20 testes na auditoria original).
+
+---
+
+## 0. Status do roteiro v1.5.29 → v1.5.30
+
+### Onda A — correções urgentes
+
+| Item | Status | Evidência |
+|---|---|---|
+| **A1.** Fechar a escrita pública no `tracks` | ✅ Feito | `firestore.rules:11-23` exige `ownerUid == request.auth.uid`; `ensureAnonUser()` (`src/js/firebase-loader.js:60-71`); regras testadas em `test/rules/firestore.rules.test.js` |
+| **A2.** Separar a chave do Google Maps em duas | ⛔ Em aberto | `firebase-config.js` ainda tem uma chave |
+| **A3.** Inverter a lógica do Hosting numa allowlist | ✅ Feito | `scripts/prepare-hosting.js` publica só `ROOT_FILES` + `build/` renomeado com hash |
+| **A4.** TTL e minimização em `tracks` | 🟡 Parcial | `expiresAt`/`trackExpiresAtMs` (`lib/track-schema.js`) + rules; a política de TTL no console do Firestore é ação manual, não verificável no repo |
+| **A5.** Publicar só para as próximas paradas | ✅ Feito | `nextActiveTrackTargets` (`lib/gps-helpers.js:205`) com `TRACK_PUBLISH_LIMIT` |
+| **A6.** Validar e escapar a restauração de backup | ✅ Feito | `lib/backup-schema.js` (sanitizadores por tipo) + `escapeHtml` em `lib/list-helpers.js` |
+| **A7.** Corrigir o cache do service worker | ✅ Feito | `scripts/build-web.js` carimba `CACHE_NAME` do `sw.js` com o hash do bundle; anchors de hostname revisados |
+| **A8.** CI mínima | ✅ Feito | `.github/workflows/ci.yml` (roda `npm ci`, testes, lint, build) |
+| **A9.** Remover 85 KB de fonte não usada | ✅ Feito | `build/fonts/` hoje tem só `fa-solid-900.subset.woff2` e `fa-brands-400.subset.woff2` |
+
+### Onda B — refatoração estrutural
+
+| Item | Status | Evidência |
+|---|---|---|
+| **B1.** Quebrar `main.js` em módulos | ✅ Feito | `src/js/main.js` caiu de 7.859 para 1.241 linhas; 49 módulos ESM em `src/js/` (injeção de deps via `configureX`) + 31 módulos puros e testados em `lib/`; code splitting no build |
+
+### O que ainda está em aberto
+
+1. **A2 — chaves do Maps**: único item da Onda A não tocado. Continua valendo o S3 original.
+2. **Custo do Directions sem cache** (seção 3.2): `refreshRouteKeepOrder` ainda recalcula a rota
+   inteira a cada entrega concluída; `track.html` ainda chama Directions no celular de cada cliente.
+3. **Backup sem fotos** (seção 3.1): o JSON de backup continua sem as fotos de comprovação —
+   `buildFullBackupObject` clona as listas sem elas. Trocar de celular continua significando perder
+   o histórico visual.
+4. **GPS offline sem fila** (seção 3.1): `BackgroundGpsService.java` continua descartando o resultado
+   da escrita em `catch (Exception ignored)`, sem retry nem persistência.
 
 ---
 
@@ -13,26 +56,33 @@ cada afirmação foi conferida no fonte.
 O RotaFlow Pro é um app de gestão de entregas para um entregador individual. Ele roda em três
 superfícies que compartilham o mesmo projeto Firebase:
 
-1. **App do motorista** — `index.html` (260 linhas de markup estático) mais um bundle único gerado
-   por esbuild a partir de `src/js/main.js` (7.859 linhas). Funciona como PWA (`sw.js`) e como app
-   Android empacotado via Capacitor 8 (`capacitor.config.json`, `native/bridge.js`, quatro plugins
-   Java próprios em `native/android/`).
-2. **Página pública de rastreio** — `track.html` (1.087 linhas, HTML + CSS + JavaScript tudo inline,
+1. **App do motorista** — `index.html` (288 linhas de markup estático) mais um bundle esbuild com
+   **code splitting** (`build/chunks/app.js` + 16 chunks), gerado a partir de `src/js/main.js`
+   (1.241 linhas), que orquestra **49 módulos ESM em `src/js/`** sobre **31 módulos puros em `lib/`**
+   (CommonJS, 4.726 linhas, testados). Funciona como PWA (`sw.js`) e como app Android empacotado via
+   Capacitor 8 (`capacitor.config.json`, `native/bridge.js`, quatro plugins Java próprios em
+   `native/android/`).
+2. **Página pública de rastreio** — `track.html` (52,7 KB, HTML + CSS + JavaScript tudo inline,
    fora do pipeline de build) servida em `/r/<token>` por uma rewrite do Hosting
-   (`firebase.json:70-72`), com `track-sw.js` para push e notificação persistente.
+   (`firebase.json:70-72`), com `track-sw.js` para push e notificação persistente. O serviço-portal
+   de rastreio importa `build/track-shared.js` (IIFE gerada pelo build) — a única ponte de código
+   entre o app e a página do cliente.
 3. **Backend mínimo** — uma Cloud Function (`functions/index.js`, 75 linhas) que observa a coleção
    `tracks` no Firestore e dispara Web Push para o cliente.
 
 O ponto mais importante da arquitetura atual, e que não fica óbvio à primeira vista: **não existe
-autenticação de usuário**. O `initAuthUi` (`src/js/main.js:1389-1409`) sempre cai em
-`continueLocally()`, que fabrica um identificador local (`main.js:1344-1357`) e segue adiante. As
-regras `match /users/{userId}` em `firestore.rules:6-8` e em `storage.rules:6-29` nunca são
-exercitadas pelo app, porque nenhum usuário autenticado existe. Toda a rota, a agenda, o histórico
-de 30 dias e o perfil moram em `localStorage`; as fotos moram em IndexedDB. O backup na nuvem está
-desligado por flag (`firebase-config.js:15`).
+autenticação de usuário**. O app fabrica um identificador local (`rotaflow_local_uid`,
+`lib/auth-helpers.js`) e segue adiante; as regras `match /users/{userId}` em `firestore.rules` e em
+`storage.rules` nunca são exercitadas pelo app, porque nenhum usuário autenticado existe. Toda a
+rota, a agenda, o histórico de 30 dias e o perfil moram em `localStorage`; as fotos moram em
+IndexedDB (`rotaflow_photos_v1`, Blobs comprimidos, chaves por `uid::photoId`). O backup na nuvem
+está desligado por flag (`firebase-config.js`, `ROTAFLOW_CLOUD_BACKUP_ENABLED = false` — exige
+plano Blaze).
 
-Consequência prática: **o único dado que sai do aparelho é a coleção `tracks` no Firestore, e ela é
-escrita e lida sem nenhuma autenticação.**
+Consequência prática: **o único dado que sai do aparelho é a coleção `tracks` no Firestore.**
+Desde a v1.5.30 a escrita exige autenticação anônima e `ownerUid == request.auth.uid`
+(`firestore.rules:11-23`) — o achado S1 original está resolvido; a leitura continua pública por
+token.
 
 ### Diagrama textual do fluxo de dados
 
@@ -367,119 +417,120 @@ ano por motorista, e cada um deles continua sendo um alvo válido de leitura pú
 
 ### 3.3 Arquitetura e manutenibilidade
 
-**O monolito.** `src/js/main.js` tem 7.859 linhas num único escopo de módulo, com cerca de quarenta
-variáveis mutáveis declaradas no topo (`main.js:63-74` e `main.js:380-408`) que qualquer uma das
-~250 funções do arquivo pode ler e escrever. Não existe camada de dados: a persistência
-(`persistStorageNow`, `main.js:2374-2396`) é chamada de dezenas de pontos diferentes, geralmente
-logo depois de uma mutação direta num objeto de `deliveries`. Não há tipos, nem JSDoc sistemático, e
-`buildPersistPayload` é o único ponto onde a forma dos dados está formalizada — e isso está em
-`lib/persist-helpers.js`, que é justamente a parte testada.
+> **rev. 2 (2026-10-14):** a seção original descrevia o monolito de 7.859 linhas em `main.js`. A
+> Onda B (B1) foi executada — o texto abaixo é o estado atual. O original está preservado no
+> histórico do git.
 
-O arquivo tem fronteiras internas razoavelmente claras, marcadas por comentários de seção
-(`// ========== RASTREIO DO CLIENTE`, `// ========== MIGRAÇÃO E PERSISTÊNCIA`, e assim por diante).
-Isso é uma boa notícia para refatoração: os módulos lógicos já existem, só não estão em arquivos
-separados. Os candidatos naturais a extração, pela ordem de menor acoplamento:
-rastreio (`main.js:850-1256`), histórico de dias (`main.js:2402-2627`), galeria
-(`main.js:3319-3431`), backup (`main.js:5459-5860`) e otimização de rota (`main.js:6386-7070`).
+**O monolito foi desmembrado.** `src/js/main.js` tem hoje 1.241 linhas e é puramente bootstrap: nem
+exporta nada. A lógica vive em **49 módulos ESM em `src/js/`** (12.643 linhas no total) e em **31
+módulos puros em `lib/`** (4.726 linhas, CommonJS, testáveis). A injeção de dependência é uniforme —
+todos os módulos seguem o padrão `let deps = {...}` + `export function configureX(opts)`, chamado só
+por `main.js` no boot:
 
-**Duplicação entre o app do motorista e a página de rastreio.** `track.html` reimplementa de zero
-coisas que já existem em `main.js`:
+```js
+// src/js/deliveries-list.js
+let deps = { getDeliveries: () => [], /* ...mais de 30 no-ops... */ };
+export function configureDeliveriesList(opts) { deps = { ...deps, ...opts }; }
+```
+
+Isso tornou a maior parte do app testável: regra de domínio nova vai para `lib/` e ganha suite em
+`test/`. O custo restante é que `src/js` **não é importável pelo Node** (`"type": "commonjs"` no
+`package.json` com sintaxe ESM em arquivos `.js`), então a cobertura dos adapters depende de extrair
+a regra para `lib/` — é o que fez a onda de extração de 2026-10-14 (`delivery-status-helpers`,
+`advanced-filters-helpers`, `trackingPublicBase`/`trackingUrl`, `extractDistrict` em `map-helpers`).
+
+**Duplicação entre o app do motorista e a página de rastreio.** `track.html` ainda reimplementa
+coisas que existem em `src/js`/`lib/`, mas a ponte `build/track-shared.js` (gerada pelo esbuild a
+partir de `lib/track-shared.js`) já elimina a triplicação com o service worker:
 
 | Função | App do motorista | Página do cliente | Service worker do rastreio |
 |---|---|---|---|
-| Haversine | `main.js:839-848` | `track.html:339-347` | `track-sw.js:28-35` |
-| Formatar distância | — | `track.html:349-353` | `track-sw.js:37-41` |
-| Formatar duração | `main.js:6427-6431` | `track.html:355-360` | — |
-| Ler/validar token | `main.js:860-864` | `track.html:332-337` | `track-sw.js:172` |
-| Forma do documento `tracks` | `main.js:916-949` | `track.html:647-727` | `track-sw.js:120-137` |
+| Haversine | `lib/track-schema.js` | `track.html` (inline) | ✅ via `track-shared.js` |
+| Formatar distância/duração | `lib/track-schema.js` | `track.html` (inline) | ✅ via `track-shared.js` |
+| Ler/validar token | `lib/track-schema.js` | `track.html` (inline) | ✅ via `track-shared.js` |
+| Forma do documento `tracks` | `lib/track-schema.js` | `track.html` (inline) | ✅ via `track-shared.js` |
 
-A forma do documento `tracks` está definida independentemente em **quatro** lugares, contando
-`firestore.rules:48-73`. Os comentários em `main.js:1017-1021` e `main.js:1005-1011`
-(`stripTrackEtaFields`, com o fallback "rules antigas sem etaSeconds/stopsAhead") são evidência direta
-do custo disso: o código do cliente carrega lógica de compatibilidade para o caso de as regras estarem
-dessincronizadas do app.
+A página `track.html` em si (52,7 KB, 100% inline) continua sem compartilhar uma linha com `src/` —
+o próximo passo natural é fazê-la importar `build/track-shared.js` no browser e eliminar a terceira
+cópia.
 
-**`track.html` está fora do pipeline de build.** São 1.087 linhas de HTML, CSS e JavaScript inline,
-sem minificação, sem bundling, sem compartilhar uma linha de código com `src/`. É publicado com
-`Cache-Control: no-cache` (`firebase.json:42-47`), então os 49 KB são baixados a cada acesso.
+**`track.html` está fora do pipeline de build.** São ~1.090 linhas de HTML, CSS e JavaScript inline,
+sem minificação, sem bundling. É publicado com `Cache-Control: no-cache` (`firebase.json`), então
+os KB são baixados a cada acesso.
 
 **O patch em `node_modules`.** `scripts/patch-google-maps-android.js` edita
 `node_modules/@capacitor/google-maps/android/src/main/java/.../CapacitorGoogleMap.kt`
 (linha 15). Esse patch some em qualquer `npm ci` ou atualização de dependência, e a detecção é por
 `indexOf` de strings literais de código Kotlin (`linhas 39-41`, `73-77`), com `process.exit(1)` se a
 âncora não for encontrada (`linha 29`, `linha 45`). Uma atualização de patch do plugin quebra o build
-do Android. O mesmo vale, em menor grau, para `patch-screen-events-android.js` (222 linhas) e para a
+do Android. O mesmo vale, em menor grau, para `patch-screen-events-android.js` (324 linhas) e para a
 edição do `AndroidManifest.xml` e do `build.gradle` feita por scripts Python inline dentro de
-`scripts/android-release.sh:17-49`.
+`scripts/android-release.sh`.
+
+**Versão espalhada.** `version.json` (1.5.30 / code 55) é a fonte da verdade e carimba
+`firebase-config.js` e o `build.gradle` no release, mas o campo `"version"` do `package.json` ainda
+diz **1.5.29** (stale).
 
 ### 3.4 Performance
 
-Medidas reais do build atual:
+Medidas reais do build atual (2026-10-14, code splitting):
 
 | Artefato | Bruto | Gzip |
 |---|---|---|
-| `build/app.js` | 266 KB | 77 KB |
-| `build/app.css` | 60 KB | 12 KB |
-| `index.html` | 19 KB | 5 KB |
+| `build/chunks/app.js` (bundle crítico) | 275,9 KB | 77,8 KB |
+| `build/chunks/chunk-H3PG7VYD.js` (maior chunk lazy) | 38,8 KB | 13,4 KB |
+| `build/chunks/edit-modals-AN2UBPGI.js` (lazy) | 20,8 KB | 5,0 KB |
+| `build/chunks/web-52L5OOMR.js` (lazy, câmera web) | 32,3 KB | 10,7 KB |
+| `build/app.css` | 71,4 KB | 14,1 KB |
+| `index.html` | 21,6 KB | 5,1 KB |
 | `track.html` | 49 KB | 12 KB |
-| `build/fonts/inter-latin.woff2` | 48 KB | — |
-| `build/fonts/inter-latin-ext.woff2` | 85 KB | — |
-| `build/fonts/fa-solid-900.subset.woff2` | 4 KB | — |
+| `build/fonts/fa-solid-900.subset.woff2` | 3,9 KB | — |
+| `build/fonts/fa-brands-400.subset.woff2` | 0,7 KB | — |
 
-O bundle de 77 KB gzipado é razoável para o que o app faz. O que pesa de verdade é o que vem depois:
-o Maps JS API, carregado de forma bloqueante no `index.html:258`, e o SDK compat do Firebase
-(`firebase-loader.js:6`, versão 11.6.0) que o rastreio baixa sob demanda — o pacote
+O bundle crítico encolheu com code splitting ESM: módulos pesados (backup, edit-modals, câmera web)
+são importados sob demanda via `lazy-loader.js`. As fontes `inter-latin-ext.woff2` (85 KB) saíram
+(A9); só os subsets do Font Awesome sobreviveram. O `prepare-hosting.js` renomeia os assets de
+`build/` com hash sha1 e os serve com cache imutável, resolvendo a invalidação do service worker.
+
+O que ainda pesa é o que vem depois: o Maps JS API, carregado de forma bloqueante no `index.html`, e
+o SDK compat do Firebase (`firebase-loader.js`) que o rastreio baixa sob demanda — o pacote
 `firebase-firestore-compat.js` sozinho passa de 300 KB.
 
-Três coisas se resolvem rápido:
+Pendências de performance que continuam válidas:
 
-- `inter-latin-ext.woff2` (85 KB) carrega caracteres latinos estendidos — polonês, tcheco, turco,
-  húngaro. Nenhum acento do português está fora do subset `latin` básico. São 85 KB que podem sair
-  do precache (`sw.js:12`) e do build sem nenhum efeito visível.
-- `track.html` é servido sem minificação e com `no-cache`. Para uma página que o cliente abre no 4G
-  do bairro, isso é o pior dos dois mundos.
-- Não há `Cache-Control` configurado para `/build/**` no `firebase.json`, e os arquivos não têm hash
-  no nome. O padrão do Firebase Hosting para esses arquivos é cache curto, o que desperdiça banda em
-  cada abertura; usar `app.<hash>.js` com cache imutável de um ano resolveria isso e o problema de
-  invalidação do service worker de uma vez só.
-
-Na renderização, `renderDeliveriesListNow` (`main.js:4390-4426`) reconstrói o `innerHTML` do container
-inteiro a cada mudança de estado. Há virtualização (`paintDeliveryListWindow`, `main.js:4355-4388`),
-mas só acima de 40 itens (`DELIVERY_LIST_FULL_RENDER_MAX`, `main.js:4267`) — abaixo disso, marcar uma
-entrega como concluída descarta e recria o DOM de todas as outras. Com `innerHTML` em 48 lugares do
-arquivo e delegação de eventos já implementada (`ensureDeliveryListDelegation`, `main.js:4429`), o
-caminho natural é atualizar apenas o nó da entrega que mudou.
+- **`track.html` sem minificação e com `no-cache`.** Para uma página que o cliente abre no 4G do
+  bairro, é o pior dos dois mundos (e ela não entra no fluxo de assets com hash do `prepare-hosting.js`).
+- **Directions sem cache** (seção 3.2).
+- **Re-render da lista.** `renderDeliveriesListNow` reconstrói o `innerHTML` do container inteiro a
+  cada mudança de estado. Há virtualização (`paintDeliveryListWindow`, `src/js/deliveries-list.js`,
+  acima de `DELIVERY_LIST_FULL_RENDER_MAX = 40`), mas abaixo disso marcar uma entrega como concluída
+  descarta e recria o DOM de todas as outras.
 
 ### 3.5 Qualidade e processo
 
-**Cobertura de testes.** As duas suítes existentes (`test/persist-helpers.test.js`, 173 linhas, e
-`test/photo-helpers.test.js`, 69 linhas) são de boa qualidade — testam migração de schema legado,
-round-trip de persistência e o invariante de que fotos nunca entram no payload. Mas elas cobrem
-apenas `lib/persist-helpers.js` (123 linhas) e `lib/photo-helpers.js` (88 linhas), ou seja, **211 das
-cerca de 10.900 linhas de JavaScript do projeto**. As 7.859 linhas de `main.js` não têm nenhum teste,
-e não há teste nenhum das regras do Firestore (o emulador do Firebase permite isso e seria o único
-jeito de garantir que uma mudança nas regras não reabre o S1).
+**Cobertura de testes.** `npm test` roda **308 testes em 139 suítes** (~1,1 s, `node --test` nativo,
+zero dependências). A cobertura cobre hoje todos os `lib/` (~96% de statement via
+`node --test --experimental-test-coverage`), inclusive as últimas extrações
+(`delivery-status-helpers`, `advanced-filters-helpers`, `trackingPublicBase`/`trackingUrl`,
+`extractDistrict`), e as regras do Firestore têm suite no emulador
+(`test/rules/firestore.rules.test.js`, `npm run test:rules`). `src/js` continua sem teste direto
+(bloqueio ESM acima); a estratégia adotada é extrair regra de domínio para `lib/`.
 
-**Sem CI.** Não existe `.github/` no repositório. Os testes passam, mas ninguém é avisado quando
-param de passar, e nada impede um deploy com o build quebrado — o que, como mostra o
-`.firebase/hosting..cache`, já aconteceu.
+**CI.** `.github/workflows/ci.yml` roda `npm ci`, lint, testes e build a cada push/PR.
 
-**Sem lint nem formatter.** Não há ESLint, Prettier, nem `editorconfig`. O estilo é consistente
-(4 espaços, aspas simples), o que sugere disciplina manual, mas não há nada que pegue variável não
-usada, `await` esquecido ou `catch` vazio — e existem muitos `catch (_) {}` silenciosos
-(194 ocorrências de `catch` em `main.js`).
+**Lint.** ESLint 9 (flat config) cobrindo `lib/`, `test/` e **todo `src/js`**. `npm run verify` =
+lint + testes + build; `npm run typecheck` existe mas não roda no verify.
 
-**Versionamento manual em três lugares.** `version.json` é a fonte da verdade declarada, mas
-`firebase-config.js:17-18` tem a versão duplicada em texto (reescrita por `prepare-www.js:30-36`
-somente na cópia de `www/`), `sw.js:2` tem o `CACHE_NAME` que precisa bater com `version.json:4`, e
-`android/app/build.gradle` é reescrito por um script Python dentro de `android-release.sh:17-32`.
-Três pontos de dessincronização.
+**Versionamento.** `version.json` é a fonte da verdade e carimba `firebase-config.js` e o
+`build.gradle` automaticamente no release; o `CACHE_NAME` do `sw.js` é carimbado pelo build com o
+hash do bundle. O campo `"version"` do `package.json` _continua_ 1.5.29 (stale) — único ponto de
+dessincronização restante.
 
-**Release Android é uma sequência manual.** `scripts/android-release.sh` depende de `JAVA_HOME`
-apontando para um JBR específico da máquina do Lucas (`linha 8`), do Android SDK em
-`~/Library/Android/sdk` (`linha 9`), de Python 3 no PATH para dois heredocs (`linhas 17` e `34`), e
-de `android/app/google-services.json` que não está no repositório (`.gitignore:18`) e cuja ausência
-só gera um aviso (`linhas 52-59`). Não é reproduzível em outra máquina sem configuração prévia.
+**Release Android.** `scripts/android-release.sh` empacota APK assinado em `dist/`
+(`npm run android:release`): seta `JAVA_HOME`/`ANDROID_HOME`, faz `cap:sync`, carimba
+versionCode/versionName, garante `POST_NOTIFICATIONS` no manifest, avisa se
+`google-services.json` (Crashlytics) estiver ausente e roda `assembleRelease`. Continua dependendo
+da configuração prévia da máquina (JBR, SDK, keystore) — não é reproduzível do zero.
 
 ---
 
