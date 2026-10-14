@@ -304,6 +304,7 @@ import {
     configurePanelCapture,
     scheduleDeliveriesListPhotoRefresh,
     capturePhotoForSelectedDelivery,
+    capturePhotoForDelivery,
     setupPanelPhotoCapture
 } from './panel-capture.js';
 import {
@@ -760,7 +761,11 @@ function configureExtractedModules() {
         showOptimisticPanelPhoto,
         updatePanelMiniPhotoUi,
         renderDeliveriesList,
-        saveDeliveryPhotoToAgenda
+        saveDeliveryPhotoToAgenda,
+        panelShowsDelivery: (delivery) => {
+            const selected = currentSelectedDelivery;
+            return !!(selected && delivery && selected.id === delivery.id);
+        }
     });
     configurePanelEditActions({
         getCurrentSelectedDelivery: () => currentSelectedDelivery,
@@ -805,6 +810,7 @@ function configureExtractedModules() {
         showToast,
         sendWhatsApp,
         shareTrackingLink,
+        captureDeliveryPhoto: (delivery, mode, triggerBtn) => capturePhotoForDelivery(delivery, mode, triggerBtn),
         showEditDeliveryModal,
         editDeliveryInRoute,
         clearRouteOverlay,

@@ -30,6 +30,7 @@ let deps = {
     showToast: () => {},
     sendWhatsApp: () => {},
     shareTrackingLink: () => {},
+    captureDeliveryPhoto: async () => 0,
     showEditDeliveryModal: () => {},
     editDeliveryInRoute: () => {},
     clearRouteOverlay: () => {},
@@ -211,6 +212,11 @@ function ensureDeliveryListDelegation(container) {
         }
         if (action === 'track') {
             deps.shareTrackingLink(delivery);
+            return;
+        }
+        if (action === 'camera') {
+            // Atalho de câmera da lista: captura desta entrega, painel não precisa estar aberto.
+            await deps.captureDeliveryPhoto(delivery, 'camera', actionEl);
             return;
         }
         if (action === 'edit') {

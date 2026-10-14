@@ -110,7 +110,22 @@ describe('build list item html', () => {
     assert.match(html, /data-id="1"/);
     assert.match(html, /&lt;x&gt;/);
     assert.match(html, /data-action="track"/);
+    assert.match(html, /data-action="camera"/);
     assert.doesNotMatch(html, /data-action="whatsapp"/);
+  });
+
+  it('shows the quick camera button regardless of phone or photos', () => {
+    const html = buildDeliveryListItemHtml({
+      id: 9,
+      sequentialId: 'C9',
+      nome: 'Sem telefone',
+      endereco: 'Rua 9',
+      status: 'pendente',
+      telefones: []
+    });
+    // o atalho de câmera não depende do painel nem de ter telefone
+    assert.match(html, /class="camera-quick" data-action="camera" data-id="9"/);
+    assert.match(html, /aria-label="Tirar foto desta entrega"/);
   });
 
   it('shows risk badge and overflow actions', () => {

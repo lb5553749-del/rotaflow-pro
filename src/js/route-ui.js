@@ -5,6 +5,7 @@
 import { hasMapCoords } from '../../lib/routing-helpers.js';
 import { shortStreetAddress } from '../../lib/map-helpers.js';
 import { routeDayStats } from '../../lib/history-helpers.js';
+import { dayProgressBar } from '../../lib/panel-helpers.js';
 import { haversineDistance as haversineDistanceShared } from '../../lib/track-schema.js';
 
 let deps = {
@@ -143,9 +144,10 @@ export function updateMapNextChip() {
 }
 
 export function updateDaySummary() {
+    const deliveries = deps.getDeliveries();
+    updateDayProgressBar(deliveries);
     const root = document.getElementById('daySummary');
     if (!root) return;
-    const deliveries = deps.getDeliveries();
     const stats = routeDayStats(deliveries);
     const elE = document.getElementById('daySumEntregue');
     const elF = document.getElementById('daySumFalhou');
@@ -169,6 +171,28 @@ export function updateDaySummary() {
 
     root.hidden = deliveries.length === 0;
     deps.renderRouteSwitcher();
+}
+
+/**
+ * Barra de progresso do dia (aba Rota): "8 de 15 entregas" + %.
+ * Atualizada junto com o resumo do dia — todos os callers de
+ * updateDeliveryStats()/updateProgressAndEstimates() já a refrescam.
+ */
+function updateDayProgressBar(deliveries) {
+    const root = document.getElementById('dayProgress');
+    if (!root) return;
+    const bar = dayProgressBar(routeDayStats(deliveries));
+    const label = document.getElementById('dayProgressLabel');
+    const pctEl = document.getElementById('dayProgressPct');
+    const fill = document.getElementById('dayProgressFill');
+    if (label) label.textContent = bar.label;
+    if (pctEl) pctEl.textContent = `${bar.pct}%`;
+    if (fill) {
+        fill.style.width = `${bar.pct}%`;
+        fill.classList.toggle('complete', bar.total > 0 && bar.done === bar.total);
+    }
+    root.setAttribute('aria-valuenow', String(bar.pct));
+    root.hidden = bar.total === 0;
 }
 
 export function updateProgressAndEstimates() {

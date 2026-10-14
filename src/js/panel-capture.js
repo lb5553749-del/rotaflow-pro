@@ -14,7 +14,9 @@ let deps = {
     showOptimisticPanelPhoto: () => null,
     updatePanelMiniPhotoUi: () => {},
     renderDeliveriesList: () => {},
-    saveDeliveryPhotoToAgenda: async () => false
+    saveDeliveryPhotoToAgenda: async () => false,
+    /** True quando o painel está aberto sobre esta entrega (pto de vista do adapter). */
+    panelShowsDelivery: () => false
 };
 
 export function configurePanelCapture(opts) {
@@ -32,6 +34,15 @@ export function scheduleDeliveriesListPhotoRefresh() {
     else setTimeout(run, 120);
 }
 
+/**
+ * Re-renderiza as fotos do painel só se ele estiver aberto nesta entrega.
+ * Capturas vindas da lista lateral podem ocorrer com o painel noutra entrega —
+ * refresh cego faria o painel exibir as fotos da entrega errada.
+ */
+function refreshPanelPhotosIfOpen(delivery) {
+    if (deps.panelShowsDelivery(delivery)) deps.refreshPanelPhotos(delivery);
+}
+
 export async function addPhotoDataUrlsToDelivery(delivery, dataUrls, opts = {}) {
     if (!delivery || !dataUrls || !dataUrls.length) return 0;
     const { hadOptimistic = false, silent = false } = opts;
@@ -43,7 +54,7 @@ export async function addPhotoDataUrlsToDelivery(delivery, dataUrls, opts = {}) 
             saved += 1;
             // Persistência por foto: sobrevive a kill/troca de cliente a meio do lote.
             deps.persistStorageNow();
-            deps.refreshPanelPhotos(delivery);
+            refreshPanelPhotosIfOpen(delivery);
         }
         if (saved) {
             scheduleDeliveriesListPhotoRefresh();
@@ -51,11 +62,11 @@ export async function addPhotoDataUrlsToDelivery(delivery, dataUrls, opts = {}) 
                 deps.showToast(saved > 1 ? `${saved} fotos salvas nesta entrega` : 'Foto salva nesta entrega');
             }
         } else if (hadOptimistic && !silent) {
-            deps.refreshPanelPhotos(delivery);
+            refreshPanelPhotosIfOpen(delivery);
         }
         return saved;
     } catch (e) {
-        if (hadOptimistic || saved) deps.refreshPanelPhotos(delivery);
+        if (hadOptimistic || saved) refreshPanelPhotosIfOpen(delivery);
         if (saved) {
             scheduleDeliveriesListPhotoRefresh();
             if (!silent) deps.showToast(`${saved} foto(s) salvas; algumas falharam`, true);
@@ -84,17 +95,57 @@ export async function capturePhotoForSelectedDelivery(mode = 'camera') {
     }
     capturingNow = true;
     try {
-        return await runCaptureForSelectedDelivery(delivery, mode, slots);
+        return await runCaptureForDelivery(delivery, mode, slots, {
+            fileInput: document.getElementById(mode === 'gallery' ? 'panelGalleryInput' : 'panelCameraInput'),
+            triggerBtn: document.getElementById(mode === 'gallery' ? 'panelGalleryBtn' : 'panelCameraBtn'),
+            panelOpen: true
+        });
     } finally {
         capturingNow = false;
     }
 }
 
-async function runCaptureForSelectedDelivery(delivery, mode, slots) {
-    const cameraInput = document.getElementById('panelCameraInput');
-    const galleryInput = document.getElementById('panelGalleryInput');
-    const fileInput = mode === 'gallery' ? galleryInput : cameraInput;
-    const triggerBtn = document.getElementById(mode === 'gallery' ? 'panelGalleryBtn' : 'panelCameraBtn');
+/**
+ * Atalho de câmera direto da lista lateral: captura para a entrega passada,
+ * não depende do painel. Só mexe no painel se ele estiver aberto nesta entrega;
+ * o feedback visual fica no próprio botão da lista (busy) + toast.
+ * @param {object} delivery entrega alvo (não precisa ser a selecionada)
+ * @param {'camera'|'gallery'} mode
+ * @param {HTMLButtonElement|null} triggerBtn botão da lista (feedback busy)
+ * @returns {Promise<number>} quantas fotos foram salvas
+ */
+export async function capturePhotoForDelivery(delivery, mode = 'camera', triggerBtn = null) {
+    if (capturingNow) return 0;
+    if (!delivery) return 0;
+    const slots = deps.remainingPhotoSlots(delivery);
+    if (slots <= 0) {
+        deps.showToast(`Limite de ${PHOTO_MAX_PER_ITEM} fotos por entrega`, true);
+        return 0;
+    }
+    capturingNow = true;
+    try {
+        return await runCaptureForDelivery(delivery, mode, slots, {
+            // Inputs próprios da lista: o listener `change` do input do painel
+            // pode estar pendente de uma captura cancelada e processaria a entrega errada.
+            fileInput: document.getElementById(mode === 'gallery' ? 'deliveryListGalleryInput' : 'deliveryListCameraInput'),
+            triggerBtn,
+            panelOpen: deps.panelShowsDelivery(delivery)
+        });
+    } finally {
+        capturingNow = false;
+    }
+}
+
+/**
+ * Core de captura para uma entrega. opts.panelOpen indica se a UI do painel
+ * acompanha esta entrega (otimista + refresh) — false quando vem da lista com o
+ * painel fechado ou noutra entrega.
+ * @returns {Promise<number>} total de fotos salvas
+ */
+async function runCaptureForDelivery(delivery, mode, slots, opts = {}) {
+    const fileInput = opts.fileInput || null;
+    const triggerBtn = opts.triggerBtn || null;
+    const panelOpen = opts.panelOpen === true;
     let optimisticEl = null;
     let optimisticUrl = null;
     let savedIncremental = 0;
@@ -109,7 +160,7 @@ async function runCaptureForSelectedDelivery(delivery, mode, slots) {
         maxPhotos: slots,
         pendingTarget: { kind: 'delivery', sequentialId: delivery.sequentialId },
         onPreview: (previewUrl) => {
-            if (!previewUrl || optimisticEl) return;
+            if (!previewUrl || optimisticEl || !panelOpen) return;
             optimisticUrl = previewUrl;
             optimisticEl = deps.showOptimisticPanelPhoto(delivery, previewUrl);
         },
@@ -123,7 +174,7 @@ async function runCaptureForSelectedDelivery(delivery, mode, slots) {
                     try { optimisticEl.remove(); } catch (_) {}
                     optimisticEl = null;
                 }
-                deps.refreshPanelPhotos(delivery);
+                refreshPanelPhotosIfOpen(delivery);
                 if (total && total > 1) {
                     deps.showToast(`A guardar fotos… ${n}/${total}`);
                 }
@@ -166,6 +217,7 @@ async function runCaptureForSelectedDelivery(delivery, mode, slots) {
         triggerBtn.classList.remove('busy');
         triggerBtn.disabled = false;
     }
+    return totalSaved;
 }
 
 export function setupPanelPhotoCapture() {

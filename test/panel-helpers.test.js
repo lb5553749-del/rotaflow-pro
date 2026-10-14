@@ -7,6 +7,7 @@ const {
   isPreferredNextStop,
   findNextInSequence,
   deliveryProgressInfo,
+  dayProgressBar,
   deliveryPhotoCount,
   shouldKeepPanelMinimized,
   adjacentIndexResult,
@@ -47,6 +48,35 @@ describe('findNextInSequence / adjacentIndexResult', () => {
     assert.deepEqual(adjacentIndexResult(2, 1, 3), { ok: false, reason: 'last' });
     assert.deepEqual(adjacentIndexResult(1, 1, 3), { ok: true, next: 2 });
     assert.deepEqual(adjacentIndexResult(0, 1, 0), { ok: false, reason: 'empty' });
+  });
+});
+
+describe('dayProgressBar', () => {
+  it('counts only delivered stops as done', () => {
+    assert.deepEqual(dayProgressBar({ total: 15, entregue: 8, falhou: 2, pendente: 5 }), {
+      done: 8, total: 15, pct: 53, label: '8 de 15 entregas'
+    });
+  });
+
+  it('ignores failures in the percentage', () => {
+    // 8 entregues + 7 falhas: a barra não trata falha como entrega concluída
+    assert.equal(dayProgressBar({ total: 15, entregue: 8, falhou: 7, pendente: 0 }).pct, 53);
+  });
+
+  it('clamps at 100% and marks a complete route', () => {
+    assert.equal(dayProgressBar({ total: 4, entregue: 4, falhou: 0, pendente: 0 }).pct, 100);
+  });
+
+  it('pluralizes the label for a single-delivery route', () => {
+    assert.equal(dayProgressBar({ total: 1, entregue: 0, falhou: 0, pendente: 1 }).label, '0 de 1 entrega');
+  });
+
+  it('handles empty and malformed stats', () => {
+    assert.deepEqual(dayProgressBar({ total: 0, entregue: 0, falhou: 0, pendente: 0 }), {
+      done: 0, total: 0, pct: 0, label: '0 de 0 entregas'
+    });
+    assert.deepEqual(dayProgressBar(null), { done: 0, total: 0, pct: 0, label: '0 de 0 entregas' });
+    assert.deepEqual(dayProgressBar(undefined), { done: 0, total: 0, pct: 0, label: '0 de 0 entregas' });
   });
 });
 

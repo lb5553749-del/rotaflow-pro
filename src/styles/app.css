@@ -346,6 +346,24 @@ html.native-map .map-next-chip {
 .icon-btn.disabled:hover, .icon-btn:disabled:hover { background: none; color: #94a3b8; }
 .whatsapp-link { background: #25D366; color: white; padding: 4px 10px; border-radius: var(--radius-sm); font-size: 0.68rem; font-weight: 600; display: inline-flex; align-items: center; gap: 6px; text-decoration: none; }
 .track-link { background: var(--accent-soft); color: var(--accent); padding: 4px 10px; border-radius: var(--radius-sm); font-size: 0.68rem; font-weight: 600; display: inline-flex; align-items: center; gap: 6px; text-decoration: none; }
+/* Atalho de câmera direto do item da lista — poupa um toque por parada. */
+.camera-quick {
+    background: #f1f5f9;
+    color: var(--accent);
+    border: none;
+    padding: 5px 12px;
+    border-radius: var(--radius-sm);
+    font-size: 0.68rem;
+    font-weight: 700;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    cursor: pointer;
+    -webkit-tap-highlight-color: transparent;
+}
+.camera-quick:active { transform: scale(0.96); }
+.camera-quick.busy, .camera-quick:disabled { opacity: 0.55; pointer-events: none; }
+html.dark-theme .camera-quick { background: #1e293b; color: #93c5fd; }
 .search-box { display: flex; align-items: center; background: #f8fafc; border-radius: var(--radius-md); padding: 8px 14px; margin-bottom: 16px; border: 1px solid var(--line); }
 .search-box input { border: none; flex: 1; outline: none; background: transparent; font-size: 0.85rem; }
 .toast-message {
@@ -1127,6 +1145,36 @@ html.native-map .map-next-chip {
 .day-summary-item.ok { background: #ecfdf5; color: #047857; }
 .day-summary-item.warn { background: #fff7ed; color: #c2410c; }
 .day-summary-item.km { background: #f0f9ff; color: #0369a1; }
+.day-progress { margin: 0 0 10px; }
+.day-progress[hidden] { display: none !important; }
+.day-progress-head {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    font-size: 0.72rem;
+    font-weight: 700;
+    color: var(--muted);
+    margin-bottom: 5px;
+    font-variant-numeric: tabular-nums;
+}
+.day-progress-pct { color: var(--accent); }
+.day-progress-bar {
+    height: 8px;
+    border-radius: 999px;
+    background: #f1f5f9;
+    overflow: hidden;
+}
+.day-progress-fill {
+    height: 100%;
+    width: 0%;
+    border-radius: 999px;
+    background: linear-gradient(90deg, var(--accent), #60a5fa);
+    transition: width 0.35s ease;
+}
+.day-progress-fill.complete {
+    background: linear-gradient(90deg, var(--ok), #4ade80);
+}
+html.dark-theme .day-progress-bar { background: #0f172a; }
 .backup-reminder {
     display: none;
     align-items: flex-start;

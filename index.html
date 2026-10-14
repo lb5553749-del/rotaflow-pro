@@ -118,6 +118,15 @@
             <section class="sidebar-panel" data-panel="rota" id="panelRota">
                 <div class="section-card">
                     <div class="section-title">Rota atual</div>
+                    <div class="day-progress" id="dayProgress" hidden>
+                        <div class="day-progress-head">
+                            <span class="day-progress-label" id="dayProgressLabel">0 de 0 entregas</span>
+                            <span class="day-progress-pct" id="dayProgressPct">0%</span>
+                        </div>
+                        <div class="day-progress-bar" id="dayProgressBar" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" aria-label="Progresso de entregas do dia">
+                            <div class="day-progress-fill" id="dayProgressFill"></div>
+                        </div>
+                    </div>
                     <div class="route-switcher" id="routeSwitcher" role="tablist" aria-label="Trocar de rota" hidden></div>
                     <div class="day-summary" id="daySummary" aria-live="polite">
                         <span class="day-summary-item ok"><span id="daySumEntregue">0</span> entregues</span>
@@ -278,6 +287,8 @@
 <input type="file" id="restoreAgendaInput" accept=".json,.rfpro,application/json">
 <input type="file" id="agendaCameraInput" accept="image/*" capture="environment" style="display:none;" aria-hidden="true">
 <input type="file" id="agendaGalleryInput" accept="image/*" multiple style="display:none;" aria-hidden="true">
+<input type="file" id="deliveryListCameraInput" accept="image/*" capture="environment" style="display:none;" aria-hidden="true">
+<input type="file" id="deliveryListGalleryInput" accept="image/*" multiple style="display:none;" aria-hidden="true">
 
 <script src="./firebase-config.js"></script>
 <!-- Gerado por `npm run build` a partir de src/js/ (inclui native/bridge.js). Firebase SDK carrega sob demanda;
