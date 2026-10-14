@@ -178,6 +178,7 @@ html.native-map .map-next-chip {
     align-items: center;
     gap: var(--fab-gap);
     pointer-events: none;
+    transition: bottom 0.2s ease;
 }
 .map-fab-rail .map-fab-btn {
     position: static;
@@ -314,7 +315,8 @@ html.native-map .map-next-chip {
 .delivery-item, .agenda-item { background: white; border-radius: 14px; padding: 14px; margin-bottom: 10px; border: 1px solid var(--line); transition: border-color 0.15s ease, box-shadow 0.15s ease; contain: layout style; }
 .delivery-item { content-visibility: auto; contain-intrinsic-size: auto 168px; }
 /* content-visibility aplica paint containment — o painel ⋯ sairia cortado/invisível */
-.delivery-item.menu-open {
+.delivery-item.menu-open,
+.agenda-item.menu-open {
     content-visibility: visible;
     position: relative;
     z-index: 70;
@@ -414,7 +416,7 @@ html.native-map .map-next-chip {
 .suggestion-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .form-row-2cols { display: flex; gap: 12px; }
 .form-row-2cols .form-group { flex: 1; }
-@media (max-width: 780px) { .sidebar { position: absolute; left: 0; height: 100%; z-index: 200; transform: translateX(0); transition: transform 0.28s cubic-bezier(0.25, 1, 0.5, 1); width: 85%; max-width: 320px; will-change: transform; } .app-container.sidebar-hidden .sidebar { transform: translateX(-100%); } }
+@media (max-width: 780px) { .sidebar { position: absolute; left: 0; height: 100%; z-index: 200; transform: translateX(0); transition: transform 0.28s cubic-bezier(0.25, 1, 0.5, 1); width: 85%; max-width: 320px; will-change: transform; } .app-container.sidebar-hidden .sidebar { transform: translateX(-100%); } .app-container:not(.sidebar-hidden) .map-fab-rail { display: none; } }
 .modal-overlay {
     position: fixed; inset: 0; z-index: 2000;
     display: flex; align-items: center; justify-content: center;
@@ -1002,6 +1004,11 @@ html.native-map .map-next-chip {
     z-index: 80;
 }
 .overflow-wrap.open > .overflow-panel { display: block; }
+/* Painel invertido pra cima quando não couber abaixo do trigger */
+.overflow-wrap.open > .overflow-panel.open-up {
+    top: auto;
+    bottom: calc(100% + 6px);
+}
 .overflow-panel button {
     width: 100%;
     display: flex;

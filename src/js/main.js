@@ -125,7 +125,9 @@ import {
     updatePanelMiniPhotoUi,
     showOptimisticPanelPhoto,
     goToAdjacentDelivery,
-    focusDeliveryInPanel
+    focusDeliveryInPanel,
+    renderDeliveryPanelActions,
+    setupFabRailClearance
 } from './delivery-panel.js';
 import {
     configureRouting,
@@ -506,6 +508,7 @@ async function ensureEditModals() {
         rebuildMarkers,
         updateDeliveryStats,
         renderDeliveriesList,
+        renderDeliveryPanelActions,
         syncAgendaByDelivery,
         syncActiveStopNotification,
         getAgenda: () => agenda,
@@ -767,6 +770,7 @@ function configureExtractedModules() {
         getMarker,
         updateMarkerIcon,
         renderDeliveriesList,
+        renderDeliveryPanelActions,
         syncActiveStopNotification,
         syncAgendaByDelivery
     });
@@ -1190,6 +1194,7 @@ configureAppBoot({
     editObservation,
     editPhonesPanel,
     setupPanelSwipe,
+    setupFabRailClearance,
     setupPanelPhotoCapture,
     setupUndoSnackbar,
     setupHistoryListDelegation,

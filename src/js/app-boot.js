@@ -17,6 +17,7 @@ let deps = {
     editObservation: () => {},
     editPhonesPanel: () => {},
     setupPanelSwipe: () => {},
+    setupFabRailClearance: () => {},
     setupPanelPhotoCapture: () => {},
     setupUndoSnackbar: () => {},
     setupHistoryListDelegation: () => {},
@@ -80,6 +81,7 @@ export function initAppUi() {
     document.getElementById('editObsBtn').addEventListener('click', deps.editObservation);
     document.getElementById('editPhoneBtn').addEventListener('click', deps.editPhonesPanel);
     deps.setupPanelSwipe();
+    deps.setupFabRailClearance();
     deps.setupPanelPhotoCapture();
     deps.setupUndoSnackbar();
     deps.setupHistoryListDelegation();

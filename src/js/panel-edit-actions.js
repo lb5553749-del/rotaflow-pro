@@ -15,6 +15,7 @@ let deps = {
     getMarker: () => null,
     updateMarkerIcon: () => {},
     renderDeliveriesList: () => {},
+    renderDeliveryPanelActions: () => {},
     syncActiveStopNotification: () => {},
     syncAgendaByDelivery: () => {}
 };
@@ -118,6 +119,7 @@ export function editPhonesPanel() {
             }
         }
         deps.renderDeliveriesList();
+        deps.renderDeliveryPanelActions(currentSelectedDelivery);
         deps.syncAgendaByDelivery(currentSelectedDelivery);
         if (message) deps.showToast(message);
     }
@@ -195,6 +197,7 @@ export function editPhonesPanel() {
             phoneContainer.innerText = 'Não informado';
         }
         deps.renderDeliveriesList();
+        deps.renderDeliveryPanelActions(currentSelectedDelivery);
         deps.syncAgendaByDelivery(currentSelectedDelivery);
         deps.showToast("Telefones atualizados");
         overlay.remove();

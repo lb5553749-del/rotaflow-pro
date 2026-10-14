@@ -39,6 +39,7 @@ let deps = {
     rebuildMarkers: () => {},
     updateDeliveryStats: () => {},
     renderDeliveriesList: () => {},
+    renderDeliveryPanelActions: () => {},
     syncAgendaByDelivery: () => {},
     syncActiveStopNotification: () => {},
     getAgenda: () => [],
@@ -337,12 +338,21 @@ export function showEditDeliveryModal(delivery, onSave) {
 
 export function editDeliveryInRoute(delivery, updatedData) {
     const { oldAddress, addressChanged } = applyDeliveryUpdatedFields(delivery, updatedData);
+    // Re-renderiza os botoes do painel (WhatsApp, navegar) quando ele esta aberto
+    // sobre esta entrega — os telefones podem ter mudado.
+    const refreshPanelActions = () => {
+        const selected = deps.getCurrentSelectedDelivery();
+        if (selected && selected.id === delivery.id) {
+            deps.renderDeliveryPanelActions(delivery);
+        }
+    };
     if (addressChanged) {
         deps.geocodeAddressAndUpdate(delivery, updatedData.endereco, (success) => {
             if (!success) { delivery.endereco = oldAddress; deps.saveStorage(); deps.renderDeliveriesList(); }
             else if (deps.getCurrentSelectedDelivery() && deps.getCurrentSelectedDelivery().id === delivery.id) {
                 deps.syncActiveStopNotification(delivery);
             }
+            refreshPanelActions();
         });
     } else {
         deps.saveStorage();
@@ -355,6 +365,7 @@ export function editDeliveryInRoute(delivery, updatedData) {
         if (deps.getCurrentSelectedDelivery() && deps.getCurrentSelectedDelivery().id === delivery.id) {
             deps.syncActiveStopNotification(delivery);
         }
+        refreshPanelActions();
         deps.showToast(`Entrega ${delivery.sequentialId} atualizada`);
     }
 }

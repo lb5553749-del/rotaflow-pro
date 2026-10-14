@@ -3,6 +3,8 @@
  * Permite filtrar por status, bairro, horário, etc.
  */
 
+import { filterDeliveriesByText } from '../../lib/search-helpers.js';
+
 export class AdvancedFilters {
     constructor() {
         this.activeFilters = {
@@ -24,17 +26,7 @@ export class AdvancedFilters {
 
         // Filtro de busca por texto
         if (this.activeFilters.search) {
-            const query = this.activeFilters.search.toLowerCase();
-            filtered = filtered.filter(d => {
-                const searchStr = [
-                    d.customerName,
-                    d.address,
-                    d.bairro,
-                    d.id,
-                    ...(d.phones?.map(p => p.number) || [])
-                ].join(' ').toLowerCase();
-                return searchStr.includes(query);
-            });
+            filtered = filterDeliveriesByText(filtered, this.activeFilters.search);
         }
 
         // Filtro por status
@@ -47,7 +39,7 @@ export class AdvancedFilters {
         // Filtro por bairro
         if (this.activeFilters.district.length > 0) {
             filtered = filtered.filter(d => {
-                const bairro = this.extractDistrict(d.address);
+                const bairro = this.extractDistrict(d.endereco);
                 return this.activeFilters.district.some(f =>
                     bairro.toLowerCase().includes(f.toLowerCase())
                 );
@@ -102,7 +94,7 @@ export class AdvancedFilters {
     getAvailableDistricts(deliveries) {
         const districts = new Set();
         deliveries.forEach(d => {
-            const district = this.extractDistrict(d.address);
+            const district = this.extractDistrict(d.endereco);
             if (district) districts.add(district);
         });
         return Array.from(districts).sort();

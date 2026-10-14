@@ -55,6 +55,40 @@ let deps = {
 
 let panelSwipeConsumedUntil = 0;
 
+let fabClearanceObserver = null;
+
+/**
+ * Mede a altura real do painel aberto e repassa para --panel-mini-h, usada para
+ * afastar a rail de FABs (GPS / otimizar rota). Sem isso a rail fica presa a uma
+ * constante de 112px e o mini-painel (que não tem altura definida) cresce por
+ * baixo dos botões — GPS branco sobre cartão branco parece ter sumido.
+ */
+function syncFabRailClearance() {
+    const panel = document.getElementById('deliveryPanel');
+    if (!panel) return;
+    const root = document.documentElement;
+    if (!panel.classList.contains('open')) {
+        root.style.setProperty('--panel-mini-h', '0px');
+        return;
+    }
+    const target = panel.classList.contains('minimized')
+        ? panel.querySelector('.panel-mini')
+        : panel;
+    const height = target ? target.getBoundingClientRect().height : 0;
+    root.style.setProperty('--panel-mini-h', `${Math.ceil(height)}px`);
+}
+
+export function setupFabRailClearance() {
+    const panel = document.getElementById('deliveryPanel');
+    if (!panel) return;
+    if (typeof ResizeObserver !== 'undefined') {
+        if (fabClearanceObserver) fabClearanceObserver.disconnect();
+        fabClearanceObserver = new ResizeObserver(() => syncFabRailClearance());
+        fabClearanceObserver.observe(panel);
+    }
+    syncFabRailClearance();
+}
+
 export function configureDeliveryPanel(opts) {
     deps = { ...deps, ...(opts || {}) };
 }
@@ -107,12 +141,14 @@ export function minimizeDeliveryPanel() {
     const panel = document.getElementById('deliveryPanel');
     if (!panel || !panel.classList.contains('open')) return;
     panel.classList.add('minimized');
+    syncFabRailClearance();
 }
 
 export function expandDeliveryPanel() {
     const panel = document.getElementById('deliveryPanel');
     if (!panel || !panel.classList.contains('open')) return;
     panel.classList.remove('minimized');
+    syncFabRailClearance();
     const d = deps.getCurrentSelected();
     if (!d) return;
     // Se abriu em modo mini sem hidratar fotos, completa ao expandir.
@@ -138,6 +174,7 @@ export function closeDeliveryPanelShell() {
     deps.setCurrentSelected(null);
     deps.resetHighlightedMarker();
     deps.hideMapSelectedChip();
+    syncFabRailClearance();
 }
 
 export function closeDeliveryPanel() {
@@ -157,6 +194,7 @@ export function applyDeliveryPanelOpenClasses(delivery, stayMini = false) {
     panel.classList.toggle('open', plan.open);
     panel.classList.toggle('minimized', plan.minimized);
     panel.classList.toggle('red-bg', plan.redBg);
+    syncFabRailClearance();
     return panel;
 }
 

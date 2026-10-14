@@ -41,6 +41,31 @@ export function openOverflowWrap(wrap) {
     if (trigger) trigger.setAttribute('aria-expanded', 'true');
     const row = wrap.closest('.delivery-item, .agenda-item');
     if (row) row.classList.add('menu-open');
+    // O painel é absolute dentro de .sidebar-panel (overflow-y: auto) e não escapa
+    // da scrollport: rola o item pra a área visível e inverte o painel se faltar espaço.
+    requestAnimationFrame(() => positionOverflowPanel(wrap, row));
+}
+
+function positionOverflowPanel(wrap, row) {
+    const panel = wrap.querySelector('.overflow-panel');
+    if (!panel) return;
+    const scroller = (row || wrap).closest('.sidebar-panel');
+    panel.classList.remove('open-up');
+    if (!scroller) return;
+    const scrollerRect = scroller.getBoundingClientRect();
+    const panelRect = panel.getBoundingClientRect();
+    const belowSpace = scrollerRect.bottom - panelRect.bottom;
+    if (belowSpace < 0) {
+        // Não cabe embaixo: tenta inverter pra cima se houver mais espaço acima.
+        const triggerRect = (row || wrap).getBoundingClientRect();
+        const aboveSpace = triggerRect.top - scrollerRect.top;
+        if (aboveSpace > panelRect.height + 12) {
+            panel.classList.add('open-up');
+            return;
+        }
+        // Sem espaço dos dois lados: rola até que o item fique visível.
+        if (row) row.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+    }
 }
 
 export function setupOverflowMenus() {

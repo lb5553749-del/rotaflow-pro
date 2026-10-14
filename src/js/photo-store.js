@@ -46,7 +46,13 @@ export function openPhotoDb() {
             photoDbPromise = null;
             reject(req.error);
         };
+        // Sem onblocked a promise nunca settle e TODO o save de foto trava para sempre.
+        req.onblocked = () => {
+            photoDbPromise = null;
+            reject(new Error('photo-db-blocked'));
+        };
     });
+    photoDbPromise.catch(() => { photoDbPromise = null; });
     return photoDbPromise;
 }
 export function photoDbKey(photoId) {

@@ -21,6 +21,10 @@ export function configurePanelCapture(opts) {
     deps = { ...deps, ...(opts || {}) };
 }
 
+// Lock global: MultiCamera.open registra o callback por nome no plugin nativo,
+// então duas capturas concorrentes deixam a primeira promise órfã (nunca resolve).
+let capturingNow = false;
+
 /** Atualiza só a lista de entregas depois (badge de fotos) sem travar o thumb. */
 export function scheduleDeliveriesListPhotoRefresh() {
     const run = () => deps.renderDeliveriesList();
@@ -67,6 +71,7 @@ export async function addPhotoDataUrlsToDelivery(delivery, dataUrls, opts = {}) 
 }
 
 export async function capturePhotoForSelectedDelivery(mode = 'camera') {
+    if (capturingNow) return;
     const delivery = deps.getCurrentSelectedDelivery();
     if (!delivery) {
         deps.showToast('Selecione uma entrega no mapa', true);
@@ -77,13 +82,27 @@ export async function capturePhotoForSelectedDelivery(mode = 'camera') {
         deps.showToast(`Limite de ${PHOTO_MAX_PER_ITEM} fotos por entrega`, true);
         return;
     }
+    capturingNow = true;
+    try {
+        return await runCaptureForSelectedDelivery(delivery, mode, slots);
+    } finally {
+        capturingNow = false;
+    }
+}
+
+async function runCaptureForSelectedDelivery(delivery, mode, slots) {
     const cameraInput = document.getElementById('panelCameraInput');
     const galleryInput = document.getElementById('panelGalleryInput');
     const fileInput = mode === 'gallery' ? galleryInput : cameraInput;
+    const triggerBtn = document.getElementById(mode === 'gallery' ? 'panelGalleryBtn' : 'panelCameraBtn');
     let optimisticEl = null;
     let optimisticUrl = null;
     let savedIncremental = 0;
     let lastErr = null;
+    if (triggerBtn) {
+        triggerBtn.classList.add('busy');
+        triggerBtn.disabled = true;
+    }
     const urls = await deps.pickPhotoDataUrls(mode, {
         fileInput,
         multiple: mode === 'gallery',
@@ -132,12 +151,20 @@ export async function capturePhotoForSelectedDelivery(mode = 'camera') {
     } else if (optimisticEl) {
         optimisticEl.remove();
         deps.updatePanelMiniPhotoUi(delivery);
-        if (lastErr && String(lastErr?.message || lastErr) === 'photo-limit') {
-            deps.showToast(`Limite de ${PHOTO_MAX_PER_ITEM} fotos por entrega`, true);
-        }
+    }
+    // Nada salvo + erro (não cancelamento): avisa o motorista em vez de falhar em silêncio.
+    if (totalSaved === 0 && lastErr) {
+        const msg = String(lastErr?.message || lastErr);
+        deps.showToast(msg === 'photo-limit'
+            ? `Limite de ${PHOTO_MAX_PER_ITEM} fotos por entrega`
+            : 'Não foi possível salvar a foto. Tente novamente.', true);
     }
     if (optimisticUrl && String(optimisticUrl).startsWith('blob:')) {
         try { URL.revokeObjectURL(optimisticUrl); } catch (_) {}
+    }
+    if (triggerBtn) {
+        triggerBtn.classList.remove('busy');
+        triggerBtn.disabled = false;
     }
 }
 
