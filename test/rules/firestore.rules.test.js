@@ -3,7 +3,7 @@
 /**
  * Rules de tracks/{token} contra o emulador do Firestore:
  *   npm run test:rules
- * (firebase emulators:exec --only firestore; precisa de Java.)
+ * (firebase emulators:exec --only firestore,storage; precisa de Java.)
  */
 const { describe, it, before, after, beforeEach } = require('node:test');
 const fs = require('fs');
@@ -172,6 +172,12 @@ describe('tracks/{token} — retenção (expiresAt)', () => {
 
   it('recusa expiresAt além de 7 dias', async () => {
     await assertFails(setDoc(doc(driver(), 'tracks', TOKEN), eventDoc('driver-uid', { expiresAt: expiresIn(30 * 24 * HOUR) })));
+  });
+
+  it('recusa create com expiresAt no passado (track já nasceria expirado)', async () => {
+    await assertFails(setDoc(doc(driver(), 'tracks', TOKEN), eventDoc('driver-uid', { expiresAt: expiresIn(-HOUR) })));
+    await seed(`tracks/${TOKEN}`, eventDoc('driver-uid'));
+    await assertFails(setDoc(doc(driver(), 'tracks', OTHER, 'live', 'pos'), liveDoc('driver-uid', { expiresAt: expiresIn(-HOUR) })));
   });
 });
 

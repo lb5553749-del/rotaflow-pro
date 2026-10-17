@@ -1,11 +1,11 @@
 {
   "name": "rotaflow-pro",
-  "version": "1.5.29",
+  "version": "1.5.31",
   "description": "RotaFlow Pro — gestão de entregas",
   "main": "index.js",
   "scripts": {
     "test": "node --test test/*.test.js",
-    "test:rules": "firebase emulators:exec --only firestore --project demo-rotaflow-rules \"node --test test/rules/*.test.js\"",
+    "test:rules": "firebase emulators:exec --only firestore,storage --project demo-rotaflow-rules \"node --test test/rules/*.test.js\"",
     "lint": "eslint lib test src/js",
     "lint:fix": "npm run lint -- --fix",
     "typecheck": "tsc --noEmit -p jsconfig.json",

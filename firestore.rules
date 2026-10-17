@@ -16,7 +16,8 @@ service cloud.firestore {
       allow create: if token.matches('^[a-f0-9]{32}$')
         && request.auth != null
         && request.resource.data.ownerUid == request.auth.uid
-        && isValidTrack(request.resource.data);
+        && isValidTrack(request.resource.data)
+        && request.resource.data.expiresAt > request.time;
 
       allow update: if token.matches('^[a-f0-9]{32}$')
         && request.auth != null
@@ -42,7 +43,8 @@ service cloud.firestore {
           && request.auth != null
           && request.resource.data.ownerUid == request.auth.uid
           && getAfter(/databases/$(database)/documents/tracks/$(token)).data.ownerUid == request.auth.uid
-          && isValidTrackLive(request.resource.data);
+          && isValidTrackLive(request.resource.data)
+          && request.resource.data.expiresAt > request.time;
 
         allow update: if token.matches('^[a-f0-9]{32}$') && liveId == 'pos'
           && request.auth != null
