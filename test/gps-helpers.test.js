@@ -19,8 +19,12 @@ const {
 function memoryStorage(seed = {}) {
   const data = { ...seed };
   return {
+    get length() { return Object.keys(data).length; },
     getItem(k) { return Object.prototype.hasOwnProperty.call(data, k) ? data[k] : null; },
     setItem(k, v) { data[k] = String(v); },
+    removeItem(k) { delete data[k]; },
+    clear() { Object.keys(data).forEach((k) => delete data[k]); },
+    key(i) { return Object.keys(data)[i] ?? null; },
     _data: data
   };
 }

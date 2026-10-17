@@ -6,7 +6,10 @@ const { migrateTelefones, migrateFavorito } = require('../lib/migrate-helpers.js
 
 describe('migrateTelefones', () => {
   it('converts string[] telefones and legacy telefone field', () => {
-    const obj = { telefones: ['69999999999'], telefone: '69888888888' };
+    const obj = /** @type {{ telefones: Array<*>, telefone?: string }} */ ({
+      telefones: ['69999999999'],
+      telefone: '69888888888'
+    });
     migrateTelefones(obj);
     assert.equal(obj.telefone, undefined);
     assert.ok(Array.isArray(obj.telefones));
