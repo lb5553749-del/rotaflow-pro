@@ -1,8 +1,48 @@
-# Auditoria técnica — RotaFlow Pro v1.5.30
+# Auditoria técnica — RotaFlow Pro v1.5.31
 
 Auditoria de código feita por leitura direta do repositório em `main`. Todos os achados abaixo
 têm arquivo e número de linha. Nada aqui é especulação sobre o que o código "provavelmente faz":
 cada afirmação foi conferida no fonte.
+
+**Atualização de 2026-10-16 (rev. 3):** health check da v1.5.31 executado e corrigido no mesmo
+dia. Itens resolvidos desta rodada:
+
+- **S5 resolvido** — a senha do keystore saiu do código: `scripts/ensure-release-signing.js`
+  agora lê de `ROTAFLOW_STORE_PASSWORD`/`ROTAFLOW_KEY_PASSWORD` (env/CI) ou de
+  `signing/key.properties` (gitignored, chmod 600), e gera senha aleatória forte na primeira
+  criação. **Atenção — assinatura nova:** durante a rotação o keystore antigo ficou
+  inacessível e foi substituído por um **keystore novo**. O SHA-1 mudou para
+  `EC:D9:A8:D3:7E:F8:1B:06:C9:37:38:DB:99:B3:BE:C5:21:8B:D9:63`, e APKs futuros **não
+  atualizam** instalações feitas com a chave antiga (é preciso desinstalar e reinstalar no
+  aparelho). Registrar o novo SHA-1 no Firebase Console e na restrição da chave Maps, e guardar
+  `.jks` + `key.properties` num gerenciador de segredos — o risco de ponto único da S5 segue
+  valendo enquanto a chave só existir numa máquina.
+- **Vulnerabilidades das Functions** — `npm audit fix` em `functions/` eliminou a crítica
+  (`proxy-addr`) e a alta (`@grpc/grpc-js` < 1.14.5). Restam 8 moderadas transitivas de
+  `@google-cloud/storage`/`firebase-admin` que só saem com major bump — avaliar junto com o
+  upgrade para `firebase-admin` 14 / `firebase-functions` 7.
+- **Regras reforçadas** — o `create` de `tracks` e de `tracks/live/pos` agora exige
+  `expiresAt > request.time` (não aceita mais documento já expirado); o `update` continua
+  permitindo encerramento tardio de track expirado.
+- **Cobertura de regras** — `test/rules/` passou de 30 para 42 casos: novos testes cobrem
+  `users/{userId}/**` (dono ok, intruso/anônimo negado, subcoleções) e `storage.rules`
+  (fotos ≤ 5 MB `image/*`, backups ≤ 4 MB `application/json`, rejeições de validação).
+  `npm run test:rules` agora sobe também o emulador de Storage.
+- **Typecheck** — erros em `test/` zerados (81 → 0) via melhoria de JSDoc nos `lib/`
+  (typedefs e generics, sem mudar comportamento); o total caiu de 556 para 428 — os restantes
+  seguem sendo o roadmap B4.
+- **APK mais enxuto** — `minifyEnabled`/`shrinkResources` ligados no release
+  (`android/app/build.gradle`), APK caiu para ~3,8 MB. Validar no device antes de distribuir;
+  se o R8 quebrar algo (mapa, câmera, GPS), reverter apenas este item.
+- **Manifest** — `android:allowBackup="false"` e removido o meta-data órfão do MLKit.
+- **Push observável** — falhas de web-push não-404/410 agora são logadas
+  (`functions/index.js`, `sendTrackPushes`) em vez de sumirem em silêncio.
+- **Scripts** — `android-release.sh` detecta o JDK via `/usr/libexec/java_home` antes do
+  fallback do JBR local (build reproduzível fora desta máquina); `package.json` realinhado
+  para 1.5.31.
+- **S3 continua em aberto** — chave Maps única e irrestrita. Com a assinatura nova, é o
+  momento certo de executar a separação: chave Android restrita a `com.rotaflow.pro` + SHA-1
+  novo, chave web restrita por referrer, e rotação da chave antiga.
 
 **Atualização de 2026-10-14 (rev. 2):** a estrutura do projeto mudou bastante desde a v1.5.29 —
 o `main.js` foi quebrado em 49 módulos ESM (`src/js/`) + 31 módulos puros (`lib/`), o que
@@ -11,7 +51,8 @@ essas seções e adiciona a **seção 0** com o status do roteiro da v1.5.29 —
 e a refatoração da Onda B já foram executados. As seções 2 (segurança), 3.1 (confiabilidade) e
 3.2 (custo) permanecem como registro da v1.5.29; onde o achado foi resolvido, a seção 0 aponta.
 
-`npm test` em 2026-10-14: **308 testes, 139 suítes, 308 passando, 0 falhando, ~1,1 s**
+`npm test` em 2026-10-16: **308 testes, 139 suítes, 308 passando, 0 falhando**; mais **42 testes
+de regras** (Firestore + Storage, emuladores) e typecheck zerado em `test/`
 (20 testes na auditoria original).
 
 ---
