@@ -5,9 +5,19 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
-export JAVA_HOME="${JAVA_HOME:-$HOME/Library/Java/JavaVirtualMachines/jbr-21.0.11/Contents/Home}"
+# JDK: env > java_home (21) > JBR local. Sem hardcode de versão de patch.
+if [[ -z "${JAVA_HOME:-}" && -x /usr/libexec/java_home ]]; then
+  export JAVA_HOME="$(/usr/libexec/java_home -v 21 2>/dev/null || true)"
+fi
+if [[ -z "${JAVA_HOME:-}" && -d "$HOME/Library/Java/JavaVirtualMachines/jbr-21.0.11/Contents/Home" ]]; then
+  export JAVA_HOME="$HOME/Library/Java/JavaVirtualMachines/jbr-21.0.11/Contents/Home"
+fi
 export ANDROID_HOME="${ANDROID_HOME:-$HOME/Library/Android/sdk}"
-export PATH="$JAVA_HOME/bin:$ANDROID_HOME/platform-tools:$PATH"
+if [[ -n "${JAVA_HOME:-}" ]]; then
+  export PATH="$JAVA_HOME/bin:$ANDROID_HOME/platform-tools:$PATH"
+else
+  export PATH="$ANDROID_HOME/platform-tools:$PATH"
+fi
 
 npm run cap:sync
 node scripts/patch-screen-events-android.js

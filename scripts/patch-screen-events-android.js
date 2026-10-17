@@ -186,6 +186,14 @@ if (fs.existsSync(gradlePath)) {
       changed = true;
     }
   }
+  // Release enxuto: R8 + shrinkResources (idempotente — android/ é regenerável).
+  if (/minifyEnabled\s+false/.test(gradle)) {
+    gradle = gradle.replace(
+      /minifyEnabled\s+false/,
+      'minifyEnabled true\n            shrinkResources true'
+    );
+    changed = true;
+  }
   if (changed) fs.writeFileSync(gradlePath, gradle);
 }
 
@@ -318,6 +326,13 @@ if (fs.existsSync(manifestPath)) {
       `$1\n\n${rfproFilters}`
     );
   }
+  // Sem MLKit: meta-data órfão de plugin já removido.
+  manifest = manifest.replace(
+    /\s*<meta-data\s+android:name="com\.google\.mlkit\.vision\.DEPENDENCIES"[\s\S]*?\/>\n?/,
+    '\n'
+  );
+  // Dados de rota não vão para backups automáticos de terceiros.
+  manifest = manifest.replace('android:allowBackup="true"', 'android:allowBackup="false"');
   fs.writeFileSync(manifestPath, manifest);
 }
 
