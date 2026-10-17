@@ -135,6 +135,12 @@ async function sendTrackPushes(event, token, extra) {
       const code = err && (err.statusCode || err.status);
       if (code === 404 || code === 410) {
         await doc.ref.delete().catch(() => {});
+      } else {
+        console.error('sendTrackPushes: envio falhou', {
+          code,
+          message: err && err.message,
+          endpoint: d.endpoint
+        });
       }
     }
   }));
