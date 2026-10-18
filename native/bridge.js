@@ -193,8 +193,9 @@ window.RotaFlowCap = {
   CameraResultType,
   CameraSource,
   Crashlytics: FirebaseCrashlytics,
-  /** Fonte única: window.ROTAFLOW_MAPS_KEY (firebase-config.js, carregado antes do bundle). */
+  /** Android nativo usa a chave restrita por pacote+SHA-1; web/track usam a chave de referrer. */
   get MAPS_API_KEY() {
+    if (this.isNative()) return window.ROTAFLOW_MAPS_ANDROID_KEY || window.ROTAFLOW_MAPS_KEY || '';
     return window.ROTAFLOW_MAPS_KEY || '';
   },
   isNative() {

@@ -333,6 +333,11 @@ if (fs.existsSync(manifestPath)) {
   );
   // Dados de rota não vão para backups automáticos de terceiros.
   manifest = manifest.replace('android:allowBackup="true"', 'android:allowBackup="false"');
+  // Maps SDK nativo usa a chave restrita a com.rotaflow.pro + SHA-1 de release (S3).
+  manifest = manifest.replace(
+    /(android:name="com\.google\.android\.geo\.API_KEY"\s+android:value=")[^"]*(")/,
+    '$1AIzaSyCKOJs51TAPJm2gIOcFplxb8HxzN4knfTg$2'
+  );
   fs.writeFileSync(manifestPath, manifest);
 }
 

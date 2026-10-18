@@ -9,7 +9,10 @@ window.ROTAFLOW_FIREBASE = {
     measurementId: 'G-KDQMNRPE8Q'
 };
 window.ROTAFLOW_TRACK_HOST = 'https://rotaflow-83610.web.app';
+/* Chave web (Maps JS API/Directions/Geocoding/Places) — restringir por referrer no GCP. */
 window.ROTAFLOW_MAPS_KEY = 'AIzaSyCRcCeryXHln-E84STTLlAl-oGrPh4mP8g';
+/* Chave Android (Maps SDK nativo) — restrita a com.rotaflow.pro + SHA-1 de release no GCP. */
+window.ROTAFLOW_MAPS_ANDROID_KEY = 'AIzaSyCKOJs51TAPJm2gIOcFplxb8HxzN4knfTg';
 window.ROTAFLOW_VAPID_PUBLIC = 'BIiR1NtrIOJXJmUAfA6H2xeuvPU0jKg583x47AqVAaPqss97NGc8XplQV-mf1uWzMvvTrmMgHtZXbKTxUFzLvWY';
 /* Backup na nuvem (Firebase Storage) exige plano Blaze. Mude para true quando o Storage estiver ativo. */
 window.ROTAFLOW_CLOUD_BACKUP_ENABLED = false;
