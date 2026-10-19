@@ -45,11 +45,11 @@ dia. Itens resolvidos desta rodada:
   `com.rotaflow.pro` + SHA-1 de release novo e limitada ao Maps SDK for Android; o
   `native/bridge.js` escolhe a chave conforme a plataforma e o
   `scripts/patch-screen-events-android.js` grava a chave Android no manifest no build. A chave
-  antiga (`ROTAFLOW_MAPS_KEY`) teve a lista de APIs enxugada de 55 para as 5 usadas (Maps
-  JavaScript, Directions, Geocoding, Places, Maps SDK for Android). **Pendente de propósito:**
-  a restrição por referrer da chave web só pode ser ligada depois que o APK novo estiver
-  instalado nos aparelhos (o WebView/Android antigo ainda depende dela); nesse passo, remover
-  também o Maps SDK for Android da lista dela.
+  antiga (`ROTAFLOW_MAPS_KEY`) ficou só com as 4 APIs web (Maps JavaScript, Directions,
+  Geocoding, Places) e restrita por referrer a `rotaflow-83610.web.app/*`,
+  `rotaflow-83610.firebaseapp.com/*` e `localhost/*`. **Atenção:** com isso, APKs antigos que
+  ainda usam a chave antiga no Android param de abrir o mapa — instalar o APK novo (exige
+  desinstalar o antigo, pois a assinatura mudou).
 
 **Atualização de 2026-10-14 (rev. 2):** a estrutura do projeto mudou bastante desde a v1.5.29 —
 o `main.js` foi quebrado em 49 módulos ESM (`src/js/`) + 31 módulos puros (`lib/`), o que
@@ -71,7 +71,7 @@ de regras** (Firestore + Storage, emuladores) e typecheck zerado em `test/`
 | Item | Status | Evidência |
 |---|---|---|
 | **A1.** Fechar a escrita pública no `tracks` | ✅ Feito | `firestore.rules:11-23` exige `ownerUid == request.auth.uid`; `ensureAnonUser()` (`src/js/firebase-loader.js:60-71`); regras testadas em `test/rules/firestore.rules.test.js` |
-| **A2.** Separar a chave do Google Maps em duas | ✅ Feito | Chave Android restrita (pacote+SHA-1, só Maps SDK) e chave web com 5 APIs; referrer da web pendente até o rollout do APK novo |
+| **A2.** Separar a chave do Google Maps em duas | ✅ Feito | Chave Android restrita (pacote+SHA-1, só Maps SDK) e chave web restrita por referrer com 4 APIs |
 | **A3.** Inverter a lógica do Hosting numa allowlist | ✅ Feito | `scripts/prepare-hosting.js` publica só `ROOT_FILES` + `build/` renomeado com hash |
 | **A4.** TTL e minimização em `tracks` | 🟡 Parcial | `expiresAt`/`trackExpiresAtMs` (`lib/track-schema.js`) + rules; a política de TTL no console do Firestore é ação manual, não verificável no repo |
 | **A5.** Publicar só para as próximas paradas | ✅ Feito | `nextActiveTrackTargets` (`lib/gps-helpers.js:205`) com `TRACK_PUBLISH_LIMIT` |
@@ -88,8 +88,8 @@ de regras** (Firestore + Storage, emuladores) e typecheck zerado em `test/`
 
 ### O que ainda está em aberto
 
-1. ~~**A2 — chaves do Maps**~~ ✅ Feito na rev. 3 (ver S3). Pendente apenas a restrição por
-   referrer da chave web, que depende do rollout do APK novo.
+1. ~~**A2 — chaves do Maps**~~ ✅ Feito na rev. 3 (ver S3), incluindo a restrição por referrer
+   da chave web.
 2. **Custo do Directions sem cache** (seção 3.2): `refreshRouteKeepOrder` ainda recalcula a rota
    inteira a cada entrega concluída; `track.html` ainda chama Directions no celular de cada cliente.
 3. **Backup sem fotos** (seção 3.1): o JSON de backup continua sem as fotos de comprovação —
@@ -191,7 +191,7 @@ serviço Java nativo) e lido por um terceiro cliente não confiável (o navegado
 |---|------|----------|---------|
 | S1 | `firestore.rules:14-28` | Quem tem o link de rastreio pode **escrever** no documento | Cliente falsifica status de entrega e posição do motorista |
 | S2 | `firestore.rules:16-17` | `allow create` só exige o formato do token | Criação ilimitada de documentos por qualquer pessoa na internet |
-| S3 | `firebase-config.js:12-15`, `native/bridge.js:196` | ~~Mesma chave Maps em web e Android~~ **Resolvido na rev. 3** — chaves separadas; referrer da web pendente até rollout do APK novo | Conta de faturamento parcialmente protegida; fechar com referrer após o rollout |
+| S3 | `firebase-config.js:12-15`, `native/bridge.js:196` | ~~Mesma chave Maps em web e Android~~ **Resolvido na rev. 3** — chaves separadas e ambas restritas (Android: pacote+SHA-1; web: referrer) | Resolvido |
 | S4 | `firestore.rules:29` | `allow delete: if false` e nenhuma política de retenção | Dados pessoais do cliente públicos para sempre (LGPD) |
 | S5 | `scripts/ensure-release-signing.js:16-18` | Senha do keystore de release em texto claro no repositório | Assinatura de APK falsificável; perda do `.jks` trava a Play Store |
 | S6 | `firebase.json:4-27` e `.firebase/hosting..cache` | `estudo-transpetro/index.html` publicado em produção | Conteúdo não relacionado servido no domínio do produto |
@@ -224,9 +224,9 @@ milhões de documentos na coleção `tracks` da conta do Lucas, e como `allow de
 
 ### S3 — a chave do Google Maps é necessariamente irrestrita
 
-> **rev. 3 (2026-10-17): resolvido.** Chaves separadas em duas (ver a nota no topo do documento).
-> O texto abaixo fica como registro do achado original. Falta apenas ligar a restrição por
-> referrer da chave web, que depende do APK novo estar instalado nos aparelhos.
+> **rev. 3 (2026-10-17): resolvido.** Chaves separadas em duas (ver a nota no topo do documento),
+> incluindo a restrição por referrer da chave web. O texto abaixo fica como registro do achado
+> original.
 
 A mesma chave `AIzaSyCRcC…` aparece em quatro lugares:
 
