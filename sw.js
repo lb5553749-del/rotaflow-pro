@@ -1,11 +1,10 @@
 /* RotaFlow Pro — service worker (app shell offline) */
-const CACHE_NAME = 'rotaflow-shell-v91.7a3badace1';
+const CACHE_NAME = 'rotaflow-shell-v91.1f7984d9e8';
 const RUNTIME_CACHE = 'rotaflow-runtime-v1';
 const IMAGE_CACHE = 'rotaflow-images-v1';
 const API_CACHE = 'rotaflow-api-v1';
 
-/* Shell gerado por `npm run build` (build/). Fontes/ícones são locais: o app abre offline sem CDN.
-   Chunks lazy (build/chunks/*) são cacheados pelo RUNTIME_CACHE no primeiro import(). */
+/* Shell gerado por `npm run build` (build/). Fontes/ícones são locais: o app abre offline sem CDN. */
 const PRECACHE = [
   './',
   './index.html',
@@ -17,6 +16,42 @@ const PRECACHE = [
   './build/fonts/fa-brands-400.subset.woff2'
 ];
 
+/* JS do app que vai para o precache (além do PRECACHE acima): o grafo de boot inteiro +
+   as telas que o motorista usa sem rede (backup, histórico, edição, perfil, sugestões,
+   agenda). Preenchido por `npm run build` a partir do metafile do esbuild
+   (lib/sw-manifest.js) — não editar à mão.
+   Sem a parte do boot, "instalar e abrir offline" quebrava no próprio boot; sem as telas,
+   o primeiro uso na rua falhava no import(). Plugins nativos ficam de fora de propósito. */
+const PRECACHE_JS = [
+  './build/chunks/agenda-route-PKYRFTC4.js',
+  './build/chunks/app.js',
+  './build/chunks/backup-ui-SP3SB7LU.js',
+  './build/chunks/chunk-2DJRFQWG.js',
+  './build/chunks/chunk-2ZLV5RPF.js',
+  './build/chunks/chunk-4VEU6F5P.js',
+  './build/chunks/chunk-4XSU32MQ.js',
+  './build/chunks/chunk-5H3YXSQH.js',
+  './build/chunks/chunk-5O6JUYTR.js',
+  './build/chunks/chunk-AM7GZWVJ.js',
+  './build/chunks/chunk-DIKJWGPI.js',
+  './build/chunks/chunk-EARBPBVG.js',
+  './build/chunks/chunk-FKTRBSTE.js',
+  './build/chunks/chunk-FVHPOIYF.js',
+  './build/chunks/chunk-GEJMUU35.js',
+  './build/chunks/chunk-GK6NHKGD.js',
+  './build/chunks/chunk-HD7QIZYP.js',
+  './build/chunks/chunk-L243JO4Y.js',
+  './build/chunks/chunk-MRZ7II3V.js',
+  './build/chunks/chunk-QXBMFZ2D.js',
+  './build/chunks/chunk-TKPLL3WH.js',
+  './build/chunks/chunk-VKXBX6VR.js',
+  './build/chunks/chunk-XOUKIOFE.js',
+  './build/chunks/edit-modals-HQGOK2AI.js',
+  './build/chunks/history-3XTUVZSM.js',
+  './build/chunks/name-suggestions-NRA3RCBS.js',
+  './build/chunks/profile-6DP3KAPV.js'
+];
+
 // TTL dos caches em milissegundos
 const CACHE_TTL = {
   runtime: 24 * 60 * 60 * 1000, // 24 horas
@@ -24,9 +59,23 @@ const CACHE_TTL = {
   api: 5 * 60 * 1000 // 5 minutos
 };
 
+/**
+ * Precacha o JS do app tolerando falha individual: um add() que falha não pode
+ * derrubar o install (o `cache.addAll` do PRECACHE é atômico de propósito; estes não).
+ */
+function precacheJs(cache) {
+  return Promise.allSettled(
+    PRECACHE_JS.map((url) =>
+      cache.match(url).then((ja) => ja || cache.add(url))
+    )
+  );
+}
+
 self.addEventListener('install', (event) => {
   event.waitUntil(
-    caches.open(CACHE_NAME).then((cache) => cache.addAll(PRECACHE)).then(() => self.skipWaiting())
+    caches.open(CACHE_NAME)
+      .then((cache) => cache.addAll(PRECACHE).then(() => precacheJs(cache)))
+      .then(() => self.skipWaiting())
   );
 });
 

@@ -375,7 +375,7 @@ async function ensureHistoryUi() {
 
 /** Chamado pela aba Histórico: carrega a UI, configura e renderiza. */
 function openHistoryTab() {
-    ensureHistoryUi().catch(() => {});
+    ensureHistoryUi().catch(avisoModuloIndisponivel);
 }
 
 /** Wrapper injetado no persist.js — barato no boot, renderiza se a aba já abriu. */
@@ -642,6 +642,20 @@ function cancelScheduledIdle(handle) {
 /** Primeiro carregamento de módulo pesado no boot espera este tempo. */
 const IDLE_BOOT_DELAY_MS = 5000;
 
+/**
+ * Um `import()` sob demanda pode falhar quando o aparelho está sem rede e o chunk
+ * nunca foi baixado. Antes isso virava erro silencioso (promise rejeitada sem dono);
+ * agora o motorista vê o motivo. O service worker já precacheia as telas críticas
+ * (backup, histórico, edição), então este aviso é o caso raro.
+ */
+function avisoModuloIndisponivel(err) {
+    console.warn('módulo sob demanda indisponível', err);
+    try {
+        showToast('Sem conexão: este recurso ainda não foi baixado no aparelho', true);
+    } catch (_) {}
+}
+
+
 // ---------- PERFIL ----------
 let profileModulePromise = null;
 
@@ -673,8 +687,12 @@ function ensureProfile() {
 
 /** Abre o modal de perfil (carrega o módulo na primeira vez). */
 async function showProfileModal() {
-    const mod = await ensureProfile();
-    return mod.showProfileModal();
+    try {
+        const mod = await ensureProfile();
+        return mod.showProfileModal();
+    } catch (err) {
+        avisoModuloIndisponivel(err);
+    }
 }
 
 // ---------- SUGESTÕES DE NOME ----------
@@ -796,7 +814,9 @@ function backupCall(metodo, args = [], opts = {}) {
         return backupModulePromise.then((mod) => mod[metodo](...args)).catch(() => {});
     }
     if (opts.now) {
-        return startBackupLoad().then((mod) => mod[metodo](...args)).catch(() => {});
+        return startBackupLoad()
+            .then((mod) => mod[metodo](...args))
+            .catch(avisoModuloIndisponivel);
     }
     // Dedupe: o boot chama o lembrete a cada render; repetir a mesma chamada
     // na fila não muda nada e só faria trabalho dobrado no flush.

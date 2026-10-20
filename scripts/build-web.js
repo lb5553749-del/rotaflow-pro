@@ -22,6 +22,7 @@ const {
   stampServiceWorkerCache,
   stampAppVersion
 } = require('../lib/version-stamp');
+const { precacheJsFiles, stampPrecacheJs } = require('../lib/sw-manifest');
 
 const root = path.join(__dirname, '..');
 const outDir = path.join(root, 'build');
@@ -94,7 +95,7 @@ async function main() {
     assetNames: 'fonts/[name]'
   });
 
-  await esbuild.build({
+  const appBuild = await esbuild.build({
     ...common,
     entryPoints: [path.join(root, 'src/js/main.js')],
     outdir: path.join(outDir, 'chunks'),
@@ -104,7 +105,10 @@ async function main() {
     // Chunks nomeados (chunk-xxxx.js) são carregados por import() sob demanda.
     // O bundle critico cai de ~401 KB para ~270-290 KB raw (-25% gzip).
     entryNames: 'app',
-    chunkNames: '[name]-[hash]'
+    chunkNames: '[name]-[hash]',
+    // Metafile: usado para descobrir os chunks dos módulos lazy que precisam
+    // funcionar offline (lib/sw-manifest.js). Não vira arquivo no build.
+    metafile: true
   });
 
   await esbuild.build({
@@ -127,7 +131,9 @@ async function main() {
 
   const swPath = path.join(root, 'sw.js');
   const cacheName = shellCacheName(version.swCache, files);
-  const swChanged = writeIfChanged(swPath, stampServiceWorkerCache(fs.readFileSync(swPath, 'utf8'), cacheName));
+  const precacheJs = precacheJsFiles(appBuild.metafile);
+  const swSource = stampPrecacheJs(fs.readFileSync(swPath, 'utf8'), precacheJs);
+  const swChanged = writeIfChanged(swPath, stampServiceWorkerCache(swSource, cacheName));
 
   const cfgPath = path.join(root, 'firebase-config.js');
   writeIfChanged(cfgPath, stampAppVersion(fs.readFileSync(cfgPath, 'utf8'), version));
@@ -137,6 +143,7 @@ async function main() {
   files.push(path.join(root, 'index.html'));
   console.log(files.map(sizeLine).join('\n'));
   console.log(`v${version.versionName} (${version.versionCode})  shell cache: ${cacheName}${swChanged ? '  [atualizado]' : ''}`);
+  console.log(`offline: ${precacheJs.length} arquivo(s) de JS no precache do service worker`);
 }
 
 main().catch((err) => {
