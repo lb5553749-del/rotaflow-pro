@@ -150,6 +150,9 @@ function renderDeliveriesListNow() {
     if (panelRota) {
         deps.updateFiltersUI(panelRota);
         deps.updateDistrictsOptions(panelRota, deliveries);
+        // Patch 10: rota de verdade vazia (não "filtro sem resultado") esconde
+        // busca, filtros e "Limpar" — ver .is-empty-route em app.css.
+        panelRota.classList.toggle('is-empty-route', deliveries.length === 0);
     }
 
     if (filtered.length === 0) {

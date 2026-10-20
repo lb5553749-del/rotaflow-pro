@@ -298,9 +298,12 @@ html.native-map .map-next-chip {
   box-shadow: 0 1px 3px rgba(0,0,0,0.02);
   contain: layout style;
 }
-.section-title { font-size: 1rem; font-weight: 700; margin-bottom: 1.2rem; display: flex; align-items: center; gap: 8px; color: var(--ink); border-left: 3px solid var(--accent); padding-left: 12px; }
+.section-title { font-size: 1rem; font-weight: 700; margin-bottom: 0.85rem; display: flex; align-items: center; gap: 8px; color: var(--ink); border-left: 3px solid var(--accent); padding-left: 12px; }
 .form-group { margin-bottom: 16px; position: relative; }
-.form-group label { display: block; font-size: 0.85rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; color: var(--muted); margin-bottom: 6px; }
+.form-group label { display: block; font-size: 0.85rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; color: #475569; margin-bottom: 6px; }
+/* Patch 10: sem regra de placeholder valia o cinza padrão do WebView, que varia
+   por aparelho e fica claro demais sob o sol. #64748b ≈ 4,6:1 sobre branco. */
+::placeholder { color: #64748b; opacity: 1; }
 .form-group input, .form-group select { width: 100%; padding: 16px; font-size: 1rem; border-radius: var(--radius-md); border: 1.5px solid #e2e8f0; background: white; transition: border-color 0.18s ease, box-shadow 0.18s ease; -webkit-appearance: none; }
 .form-group input:focus, .form-group select:focus { border-color: var(--accent); outline: none; box-shadow: 0 0 0 3.5px rgba(37,99,235,0.10); }
 .btn-primary { background: var(--ink); color: white; border: none; border-radius: var(--radius-md); padding: 18px 0; min-height: 52px; width: 100%; cursor: pointer; font-weight: 700; display: flex; align-items: center; justify-content: center; gap: 8px; font-size: 1.05rem; transition: transform 0.22s cubic-bezier(0.22, 1, 0.36, 1), background 0.22s ease, filter 0.22s ease; }
@@ -364,8 +367,9 @@ html.native-map .map-next-chip {
 .camera-quick:active { transform: scale(0.96); }
 .camera-quick.busy, .camera-quick:disabled { opacity: 0.55; pointer-events: none; }
 html.dark-theme .camera-quick { background: #1e293b; color: #93c5fd; }
-.search-box { display: flex; align-items: center; background: #f8fafc; border-radius: var(--radius-md); padding: 8px 14px; margin-bottom: 16px; border: 1px solid var(--line); }
-.search-box input { border: none; flex: 1; outline: none; background: transparent; font-size: 0.85rem; }
+.search-box { display: flex; align-items: center; gap: 8px; background: #f8fafc; border-radius: var(--radius-md); padding: 10px 14px; margin-bottom: 16px; border: 1px solid var(--line); }
+.search-box > i { flex-shrink: 0; color: #94a3b8; }
+.search-box input { border: none; flex: 1; min-width: 0; outline: none; background: transparent; font-size: 0.9rem; }
 .toast-message {
     position: fixed;
     top: calc(16px + var(--safe-t, 0px));
@@ -476,11 +480,12 @@ html.dark-theme .camera-quick { background: #1e293b; color: #93c5fd; }
 .modal-form-group > label,
 .modal-field-label {
     display: block;
-    font-size: 0.68rem;
+    /* Patch 10: 10,9px -> 11,5px. */
+    font-size: 0.72rem;
     font-weight: 600;
     text-transform: uppercase;
     letter-spacing: 0.45px;
-    color: var(--muted);
+    color: #475569;
     margin-bottom: 6px;
 }
 .modal-phone-list {
@@ -709,7 +714,7 @@ html.dark-theme .camera-quick { background: #1e293b; color: #93c5fd; }
   background: transparent;
   padding: 2px 0;
   border-radius: 0;
-  font-size: 0.65rem;
+  font-size: 0.7rem;
   font-weight: 500;
   gap: 6px;
   color: #94a3b8;
@@ -1685,8 +1690,9 @@ html.dark-theme .pref-toggle-row input[type="checkbox"]:checked {
 .close-panel-btn {
     background: #f1f5f9;
     border: none;
-    width: 34px;
-    height: 34px;
+    /* Patch 10: 34px -> 40px (alvo de toque). */
+    width: 40px;
+    height: 40px;
     border-radius: 10px;
     font-size: 1rem;
     cursor: pointer;
@@ -1717,8 +1723,9 @@ html.dark-theme .pref-toggle-row input[type="checkbox"]:checked {
 .panel-pacotes-control button {
     background: #fff;
     border: 1px solid #e2e8f0;
-    width: 30px;
-    height: 30px;
+    /* Patch 10: 30px -> 36px. Errar aqui muda a contagem de pacotes do dia. */
+    width: 36px;
+    height: 36px;
     border-radius: 9px;
     font-size: 1.05rem;
     cursor: pointer;
@@ -1758,8 +1765,9 @@ html.dark-theme .pref-toggle-row input[type="checkbox"]:checked {
     color: #2563eb;
     cursor: pointer;
     font-size: 0.75rem;
-    width: 28px;
-    height: 28px;
+    /* Patch 10: 28px -> 34px (era o menor alvo do app). */
+    width: 34px;
+    height: 34px;
     border-radius: 8px;
     display: inline-flex;
     align-items: center;
@@ -1789,8 +1797,9 @@ html.dark-theme .pref-toggle-row input[type="checkbox"]:checked {
     color: #2563eb;
     cursor: pointer;
     font-size: 0.8rem;
-    width: 30px;
-    height: 30px;
+    /* Patch 10: 30px -> 34px. */
+    width: 34px;
+    height: 34px;
     border-radius: 8px;
     display: inline-flex;
     align-items: center;
@@ -2012,6 +2021,15 @@ html.dark-theme .pref-toggle-row input[type="checkbox"]:checked {
 .add-phone-row button:hover {
     background: #1e293b;
 }
+/* Patch 10: no tema escuro --ink é claro, então o botão ficava branco com ícone
+   branco (invisível). */
+html.dark-theme .add-phone-row button {
+    background: #1d4ed8;
+    color: #fff;
+}
+html.dark-theme .add-phone-row button:hover {
+    background: #1e40af;
+}
 .fav-btn {
     background: none;
     border: none;
@@ -2177,9 +2195,11 @@ body {
   background: #cbd5e1;
   color: var(--ink);
   border-radius: 999px;
-  min-width: 16px;
-  height: 16px;
-  font-size: 0.6rem;
+  min-width: 18px;
+  height: 18px;
+  /* Patch 10: contador era 9,6px — ilegível sob o sol. */
+  font-size: 0.68rem;
+  font-variant-numeric: tabular-nums;
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -2205,23 +2225,25 @@ body {
 .delivery-list-spacer { width: 100%; pointer-events: none; flex-shrink: 0; }
 .empty-state {
   text-align: center;
-  padding: 40px 20px 32px;
+  /* Patch 10: era 40px de padding no topo empurrando o CTA para fora da área do
+     polegar. */
+  padding: 26px 16px 22px;
   color: var(--muted);
   font-size: 0.84rem;
   line-height: 1.5;
 }
 .empty-state i { display: block; font-size: 1.2rem; margin-bottom: 10px; color: #94a3b8; }
 .empty-state-mark {
-  width: 48px;
-  height: 48px;
-  margin: 0 auto 14px;
-  border-radius: 13px;
+  width: 56px;
+  height: 56px;
+  margin: 0 auto 12px;
+  border-radius: 16px;
   display: block;
   background: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 512 512'%3E%3Crect width='512' height='512' rx='104' fill='%230f172a'/%3E%3Cpath d='M148 388C148 300 372 330 372 200' fill='none' stroke='%233b82f6' stroke-width='30' stroke-linecap='round' stroke-dasharray='4 46'/%3E%3Ccircle cx='148' cy='388' r='46' fill='%2322c55e'/%3E%3Ccircle cx='372' cy='176' r='46' fill='%23ef4444'/%3E%3C/svg%3E") center / cover no-repeat;
   box-shadow: 0 8px 20px rgba(15, 23, 42, 0.12);
 }
-.empty-state-title { display: block; font-weight: 800; color: var(--ink); margin-bottom: 4px; letter-spacing: -0.02em; font-size: 0.95rem; }
-.empty-state-msg { display: block; margin-bottom: 16px; color: #64748b; }
+.empty-state-title { display: block; font-weight: 800; color: var(--ink); margin-bottom: 4px; letter-spacing: -0.02em; font-size: 1.02rem; }
+.empty-state-msg { display: block; margin-bottom: 14px; color: #64748b; }
 .empty-state-cta {
   display: inline-flex;
   align-items: center;
@@ -2231,12 +2253,24 @@ body {
   background: #eff6ff;
   color: var(--accent);
   border-radius: var(--radius-md);
-  padding: 9px 14px;
+  min-height: 44px;
+  padding: 0 18px;
   font-size: 0.8rem;
   font-weight: 700;
   cursor: pointer;
 }
 .empty-state-cta:hover { background: #dbeafe; }
+
+/* Patch 10: com a rota vazia, "Buscar", "Filtros" e o "Limpar" (vermelho, em
+   destaque) não têm o que operar — sobram como ruído ao lado do estado vazio.
+   A classe é alternada no render (deliveries-list.js) a partir de
+   deliveries.length === 0, não de `filtered`, para não sumir com os controles
+   quando o motorista apenas filtrou tudo. */
+.sidebar-panel.is-empty-route .search-box,
+.sidebar-panel.is-empty-route .filters-panel,
+.sidebar-panel.is-empty-route #clearRouteBtn {
+  display: none;
+}
 .map-area { height: 100dvh; }
 #map { background: #cbd5e1; }
 .map-fab-btn:focus-visible, button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-visible {
@@ -2550,7 +2584,9 @@ html.tem-sessao-morta .login-screen { display: flex; }
   .btn-menu { left: 10px; }
   .stats { gap: 10px; }
   .stat span { font-size: 1rem; }
-  .sidebar-tabs button { font-size: 0.64rem; padding: 8px 2px; }
+  /* Patch 10: 32px de altura e 10,2px de fonte medidos na triagem. Alvo mínimo é
+     44px; 42px com o padding da barra chega perto sem estourar a largura. */
+  .sidebar-tabs button { font-size: 0.72rem; padding: 8px 4px; min-height: 42px; }
   .sidebar-tabs button i { display: none; }
 }
 
@@ -2988,6 +3024,12 @@ html.dark-theme .backup-reminder-title {
   font-weight: 600;
 }
 
+/* O contador nasce com o atributo `hidden` (0 filtros ativos). `display:inline-flex`
+   acima vence o `[hidden]` padrão do navegador e sobrava uma bolinha azul vazia. */
+.filter-count[hidden] {
+  display: none;
+}
+
 .filters-actions {
   display: flex;
   align-items: center;
@@ -3296,9 +3338,33 @@ html.dark-theme .backup-reminder-title {
     padding: 4px 8px;
   }
   
+  /* Patch 10: aqui o texto era escondido e sobrava um ponto colorido sem
+     legenda ("Salvo no aparelho"/"Offline" ficavam invisíveis). Volta como
+     etiqueta; o timestamp continua oculto por falta de espaço. */
   .sync-details {
-    display: none; /* Esconde texto em telas pequenas, só mostra bolinha */
+    display: flex;
+    flex-direction: row;
+    align-items: center;
+    gap: 6px;
   }
+  .sync-status {
+    padding: 5px 9px;
+    border-radius: 999px;
+    background: #f1f5f9;
+    border: 1px solid var(--line);
+  }
+  /* "Salvo no aparelho" + "agora mesmo" não cabem ao lado da marca: o
+     timestamp sai (a informação útil é o estado) e o texto ganha ellipsis. */
+  .sync-state { font-size: 0.7rem; font-weight: 700; }
+  .sync-timestamp { display: none; }
+  /* A etiqueta de sync + conta não cabem ao lado da marca em 360px: viram uma
+     segunda linha, alinhada à esquerda, em vez de disputar espaço com o logo. */
+  .sidebar-header { flex-wrap: wrap; row-gap: 6px; }
+  .sidebar-header-meta { width: 100%; justify-content: flex-start; gap: 6px; }
+  /* A etiqueta de sync é clara por padrão: no tema escuro ela tem que escurecer,
+     senão o texto branco fica sobre fundo claro. */
+  html.dark-theme .sync-status { background: #1e293b; border-color: #334155; }
+  html.dark-theme .sync-state { color: #e2e8f0; }
   
   .sync-indicator {
     width: 24px;
