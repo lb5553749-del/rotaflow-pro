@@ -3863,15 +3863,18 @@ html.dark-theme .add-phone-row button { background: var(--accent-soft); color: v
   /* cabeçalho da folha fica mais compacto: o mapa precisa de espaço */
   .sidebar-header { padding: 4px 16px 6px; }
 
-  /* as ações flutuantes do mapa sobem para cima da folha */
-  .app-container:not(.sidebar-hidden) .map-fab-rail {
+  /* Ações flutuantes do mapa: coluna no canto SUPERIOR direito, logo abaixo
+     do perfil. Antes ficavam no canto inferior direito — exatamente onde o
+     Google Maps desenha os controles (zoom/street view) e, com a folha aberta,
+     encostavam nos botões da lista: o FAB ficava por cima, quase sem alvo. */
+  .app-container .map-fab-rail {
     display: flex;
-    bottom: calc(58dvh + 12px + var(--safe-b));
+    top: calc(12px + var(--safe-t) + 52px);
+    bottom: auto;
+    right: 12px;
   }
   /* expandida, a folha cobre o mapa: os FABs saem de cena */
   .app-container.sheet-expanded .map-fab-rail { display: none; }
-  /* folha recolhida: o mapa é a tela inteira, os FABs descem para o canto */
-  .app-container.sidebar-hidden .map-fab-rail { bottom: calc(16px + var(--safe-b)); }
 
   /* O mapa ocupa só a faixa visível (e não a tela toda por baixo da folha):
      mantém o logo/atribuição do Google visíveis (exigência do Maps) e evita

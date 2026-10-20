@@ -101,3 +101,18 @@ describe('app.css — folha inferior no celular', () => {
         assert.match(css, /prefers-reduced-motion: reduce\)\s*\{[^}]*\.sidebar\s*\{[^}]*transition:\s*none/);
     });
 });
+
+describe('app.css — FABs do mapa', () => {
+    const mobile = blocoMobile(ler('src/styles/app.css'));
+
+    it('ficam ancorados pelo topo, não pelo rodapé', () => {
+        // regressão: no canto inferior direito o rail caía em cima dos controles
+        // do Google Maps (zoom/street view) e dos botões no topo da folha
+        assert.match(mobile, /\.map-fab-rail\s*\{[^}]*top:\s*calc\(/s);
+        assert.doesNotMatch(mobile, /\.map-fab-rail\s*\{[^}]*bottom:\s*calc\(58dvh/s);
+    });
+
+    it('somem quando a folha está expandida', () => {
+        assert.match(mobile, /\.sheet-expanded\s+\.map-fab-rail\s*\{\s*display:\s*none/);
+    });
+});
