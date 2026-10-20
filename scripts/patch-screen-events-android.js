@@ -7,7 +7,12 @@
  */
 const fs = require('fs');
 const path = require('path');
-const { injectAbiFilters } = require('../lib/android-gradle.js');
+const {
+  injectAbiFilters,
+  hardenRelease,
+  injectResConfigs,
+  mergeProguardRules,
+} = require('../lib/android-gradle.js');
 
 const root = path.join(__dirname, '..');
 const javaDir = path.join(root, 'android/app/src/main/java/com/rotaflow/pro');
@@ -187,13 +192,21 @@ if (fs.existsSync(gradlePath)) {
       changed = true;
     }
   }
-  // Release enxuto: R8 + shrinkResources (idempotente — android/ é regenerável).
-  if (/minifyEnabled\s+false/.test(gradle)) {
-    gradle = gradle.replace(
-      /minifyEnabled\s+false/,
-      'minifyEnabled true\n            shrinkResources true'
-    );
+  // Release enxuto: R8 + shrinkResources + regras ProGuard (idempotente).
+  // Escape hatch: ROTAFLOW_NO_MINIFY=1 desliga tudo (se algum plugin quebrar).
+  const semMinify = process.env.ROTAFLOW_NO_MINIFY === '1';
+  const hard = hardenRelease(gradle, { minify: !semMinify });
+  if (hard.changed) {
+    gradle = hard.gradle;
     changed = true;
+    console.log(`android/app/build.gradle: ${hard.changes.join(', ')}`);
+  }
+  // Idiomas: o app só fala português. Corta os ~80 locales que vêm dos AARs.
+  const res = injectResConfigs(gradle);
+  if (res.changed) {
+    gradle = res.gradle;
+    changed = true;
+    console.log('android/app/build.gradle: resConfigs (pt, pt-rBR)');
   }
   // ABIs: só arm64-v8a + armeabi-v7a. Sem isso o APK leva as .so de x86/x86_64,
   // que nenhum celular usa (~1,5 MB). Para testar em emulador: ROTAFLOW_ALLOW_X86=1.
@@ -204,6 +217,16 @@ if (fs.existsSync(gradlePath)) {
     console.log('android/app/build.gradle: abiFilters (arm64-v8a, armeabi-v7a)');
   }
   if (changed) fs.writeFileSync(gradlePath, gradle);
+
+  // Regras ProGuard próprias: sem elas o R8 remove classes usadas por reflexão
+  // (plugins do Capacitor, bridge do WebView) e o app morre em runtime.
+  const proguardPath = path.join(root, 'android/app/proguard-rules.pro');
+  const atual = fs.existsSync(proguardPath) ? fs.readFileSync(proguardPath, 'utf8') : '';
+  const merged = mergeProguardRules(atual);
+  if (merged.changed) {
+    fs.writeFileSync(proguardPath, merged.text);
+    console.log('android/app/proguard-rules.pro: regras gerenciadas');
+  }
 }
 
 // Root build.gradle: classpath Crashlytics
