@@ -291,7 +291,8 @@ async function initNativeGoogleMap() {
 
     await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
 
-    const nativeGoogleMap = await cap.GoogleMap.create({
+    const { GoogleMap } = await cap.ensureGoogleMapsModule();
+    const nativeGoogleMap = await GoogleMap.create({
         id: 'rotaflow',
         element: el,
         apiKey: cap.MAPS_API_KEY,

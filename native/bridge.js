@@ -1,5 +1,4 @@
 import { Capacitor, registerPlugin } from '@capacitor/core';
-import { GoogleMap, LatLngBounds } from '@capacitor/google-maps';
 import { Geolocation } from '@capacitor/geolocation';
 import { StatusBar, Style } from '@capacitor/status-bar';
 import { App } from '@capacitor/app';
@@ -7,11 +6,31 @@ import { AppLauncher } from '@capacitor/app-launcher';
 import { Filesystem, Directory, Encoding } from '@capacitor/filesystem';
 import { Share } from '@capacitor/share';
 import { LocalNotifications } from '@capacitor/local-notifications';
-import { Camera, CameraResultType, CameraSource } from '@capacitor/camera';
 import { FirebaseCrashlytics } from '@capacitor-firebase/crashlytics';
 
 const ScreenEvents = registerPlugin('ScreenEvents');
 const BackgroundGps = registerPlugin('BackgroundGps');
+/**
+ * Plugins nativos usados só em fluxos assíncronos (abrir mapa nativo, tirar foto).
+ * Carregá-los no topo colocava ~20 KB deles no bundle de boot, que é o mesmo caminho
+ * crítico do parse do app — e ninguém tira foto antes da primeira pintura.
+ * `import()` aqui é resolvido uma única vez e memoizado.
+ */
+let googleMapsModulePromise = null;
+let cameraModulePromise = null;
+
+export function ensureGoogleMapsModule() {
+  if (!googleMapsModulePromise) googleMapsModulePromise = import('@capacitor/google-maps');
+  return googleMapsModulePromise;
+}
+
+export function ensureCameraModule() {
+  if (!cameraModulePromise) cameraModulePromise = import('@capacitor/camera');
+  return cameraModulePromise;
+}
+
+import { compressBlobToJpegDataUrl as compressWithOffscreen } from '../src/js/photo-store.js';
+
 const MultiCamera = registerPlugin('MultiCamera');
 
 /**
@@ -45,6 +64,9 @@ function canvasToJpegDataUrl(canvas, quality) {
 }
 
 async function compressBlobWithBitmap(blob, maxSide, quality) {
+  // Fonte da verdade: photo-store.js (OffscreenCanvas + convertToBlob, fora da main thread).
+  const fast = await compressWithOffscreen(blob, maxSide, quality);
+  if (fast) return fast;
   if (typeof createImageBitmap !== 'function') return null;
   let bitmap = null;
   try {
@@ -159,6 +181,7 @@ async function photoResultToDataUrl(photo, opts = {}) {
 }
 
 async function capturePhotoResult(source = 'camera') {
+  const { Camera, CameraResultType, CameraSource } = await ensureCameraModule();
   return Camera.getPhoto({
     quality: PHOTO_CAPTURE_QUALITY,
     width: PHOTO_CAPTURE_MAX,
@@ -174,8 +197,6 @@ async function capturePhotoResult(source = 'camera') {
 /** Exposed as window.RotaFlowCap; bundled first into build/app.js (src/js/main.js imports it). */
 window.RotaFlowCap = {
   Capacitor,
-  GoogleMap,
-  LatLngBounds,
   Geolocation,
   StatusBar,
   Style,
@@ -189,9 +210,8 @@ window.RotaFlowCap = {
   ScreenEvents,
   BackgroundGps,
   MultiCamera,
-  Camera,
-  CameraResultType,
-  CameraSource,
+  ensureGoogleMapsModule,
+  ensureCameraModule,
   Crashlytics: FirebaseCrashlytics,
   /** Android nativo usa a chave restrita por pacote+SHA-1; web/track usam a chave de referrer. */
   get MAPS_API_KEY() {

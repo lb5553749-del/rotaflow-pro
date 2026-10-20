@@ -62,7 +62,14 @@ export function canUseInAppMultiCamera() {
 }
 
 async function ensureNativeCameraPermission() {
-    const Cam = window.RotaFlowCap && window.RotaFlowCap.Camera;
+    const cap = window.RotaFlowCap;
+    if (!cap || typeof cap.ensureCameraModule !== 'function') return true;
+    let Cam = null;
+    try {
+        ({ Camera: Cam } = await cap.ensureCameraModule());
+    } catch (_) {
+        return true;
+    }
     if (!Cam || typeof Cam.requestPermissions !== 'function') return true;
     try {
         const cur = typeof Cam.checkPermissions === 'function' ? await Cam.checkPermissions() : null;
