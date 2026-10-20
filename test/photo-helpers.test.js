@@ -22,7 +22,8 @@ const {
   isDuplicatePhotoSaveInMap,
   markPhotoSavedInMap,
   itemNeedsPhotoHydrate,
-  hasLegacyDataUrlPhotos
+  hasLegacyDataUrlPhotos,
+  photoResizeTarget
 } = require('../lib/photo-helpers.js');
 
 describe('remainingPhotoSlots / canAddPhoto', () => {
@@ -169,4 +170,30 @@ describe('itemNeedsPhotoHydrate / hasLegacyDataUrlPhotos', () => {
     assert.equal(hasLegacyDataUrlPhotos({ photos: ['blob:1'] }), false);
     assert.equal(hasLegacyDataUrlPhotos(null), false);
   });
+});
+
+// --- photoResizeTarget (pipeline de compressão: OffscreenCanvas) ---
+describe('photoResizeTarget', () => {
+it('reduz o maior lado para maxSide mantendo proporção', () => {
+  assert.deepEqual(photoResizeTarget(4032, 3024, 800), { width: 800, height: 600, scale: 800 / 4032 });
+});
+
+it('retrato usa a altura como lado maior', () => {
+  assert.deepEqual(photoResizeTarget(3024, 4032, 800), { width: 600, height: 800, scale: 800 / 4032 });
+});
+
+it('nunca amplia imagem menor que maxSide', () => {
+  assert.deepEqual(photoResizeTarget(640, 480, 800), { width: 640, height: 480, scale: 1 });
+});
+
+it('panorâmica fina não vira 0px', () => {
+  const r = photoResizeTarget(4000, 3, 800);
+  assert.equal(r.width, 800);
+  assert.ok(r.height >= 1);
+});
+
+it('entrada inválida não quebra', () => {
+  assert.deepEqual(photoResizeTarget(0, 0, 800), { width: 1, height: 1, scale: 0 });
+  assert.deepEqual(photoResizeTarget(undefined, null, 0), { width: 1, height: 1, scale: 0 });
+});
 });

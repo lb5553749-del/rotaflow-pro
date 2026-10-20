@@ -8,6 +8,7 @@ import {
     DEFAULT_PHOTO_MAX_PER_ITEM,
     DEFAULT_FINISHED_PHOTO_TTL_DAYS,
     normalizeIdbPhotoValue,
+    photoResizeTarget,
     planIdbPhotoKeysToDelete
 } from '../../lib/photo-helpers.js';
 
@@ -254,7 +255,45 @@ export function yieldToUiFrame() {
     });
 }
 
-async function compressBlobToJpegDataUrl(blob, maxSide = PHOTO_MAX_SIDE, quality = PHOTO_JPEG_QUALITY) {
+function blobToDataUrl(blob) {
+    return new Promise((resolve, reject) => {
+        const fr = new FileReader();
+        fr.onload = () => resolve(String(fr.result || ''));
+        fr.onerror = () => reject(fr.error || new Error('file-reader'));
+        fr.readAsDataURL(blob);
+    });
+}
+
+/**
+ * Caminho rápido: decodifica já sabendo o alvo e codifica o JPEG **fora da main thread**.
+ * `canvas.toDataURL()` é síncrono e trava a UI por 60–150 ms numa foto de 12 MP;
+ * `OffscreenCanvas.convertToBlob()` faz o encode em background. Retorna `null` quando
+ * o WebView não suporta, e aí o caminho antigo assume (mesmo resultado, só mais lento).
+ */
+async function compressWithOffscreenCanvas(blob, maxSide, quality) {
+    if (typeof createImageBitmap !== 'function' || typeof OffscreenCanvas !== 'function') return null;
+    let bitmap = null;
+    try {
+        bitmap = await createImageBitmap(blob);
+        const target = photoResizeTarget(bitmap.width, bitmap.height, maxSide);
+        const canvas = new OffscreenCanvas(target.width, target.height);
+        const ctx = canvas.getContext('2d');
+        if (!ctx) return null;
+        ctx.drawImage(bitmap, 0, 0, target.width, target.height);
+        bitmap.close();
+        bitmap = null;
+        const out = await canvas.convertToBlob({ type: 'image/jpeg', quality });
+        if (!out) return null;
+        return await blobToDataUrl(out);
+    } catch (_) {
+        if (bitmap) { try { bitmap.close(); } catch (__) {} }
+        return null;
+    }
+}
+
+export async function compressBlobToJpegDataUrl(blob, maxSide = PHOTO_MAX_SIDE, quality = PHOTO_JPEG_QUALITY) {
+    const fast = await compressWithOffscreenCanvas(blob, maxSide, quality);
+    if (fast) return fast;
     if (typeof createImageBitmap === 'function') {
         let bitmap = null;
         try {
