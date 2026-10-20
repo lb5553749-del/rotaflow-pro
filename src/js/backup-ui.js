@@ -3,14 +3,7 @@
  * Persistência silenciosa e nuvem ficam em backup-store.js.
  */
 import { cloneWithoutHeavyPhotos } from '../../lib/persist-helpers.js';
-import { parseBackupPayload, parseAgendaBackup } from '../../lib/backup-schema.js';
 
-import {
-    attachPhotoBlobs,
-    collectBackupPhotoIds,
-    collectPhotoBlobsMap,
-    planPhotoRestoreEntries
-} from '../../lib/backup-photos.js';
 import {
     BACKUP_REMIND_DAYS,
     BACKUP_DISMISS_DAYS,
@@ -27,6 +20,25 @@ import {
 } from './backup-store.js';
 import { syncStatus } from './sync-status.js';
 
+
+/**
+ * `backup-schema` e `backup-photos` só são necessários quando o usuário exporta ou
+ * restaura um backup — nunca no boot. Importados sob demanda para tirar ~4,5 KB do
+ * caminho crítico. O resto do módulo (lembrete, agendador) continua síncrono.
+ */
+let backupSchemaModule = null;
+let backupPhotosModule = null;
+
+function loadBackupSchema() {
+    if (!backupSchemaModule) backupSchemaModule = import('../../lib/backup-schema.js');
+    return backupSchemaModule;
+}
+
+function loadBackupPhotos() {
+    if (!backupPhotosModule) backupPhotosModule = import('../../lib/backup-photos.js');
+    return backupPhotosModule;
+}
+
 /** Atualiza o indicador de sync após um resultado de backup na nuvem. */
 function reportCloudBackup(cloudRes) {
     if (cloudRes.ok) {
@@ -35,6 +47,8 @@ function reportCloudBackup(cloudRes) {
         syncStatus.markCloudError(cloudRes.error);
     }
 }
+
+/** @type {any} */
 
 let deps = {
     getDeliveries: () => [],
@@ -75,7 +89,7 @@ let deps = {
 };
 
 export function configureBackupUi(opts) {
-    deps = { ...deps, ...(opts || {}) };
+    deps = { ...deps, ...(opts || /** @type {any} */ ({})) };
 }
 
 let backupAutoTimer = null;
@@ -175,7 +189,7 @@ export function buildRouteExportObject() {
     deps.persistStorageNow();
     deps.syncActiveRouteIntoRoutes();
     const activeId = deps.getActiveRouteId();
-    const route = (deps.getRoutes() || []).find((r) => r && r.id === activeId) || {};
+    const route = (deps.getRoutes() || []).find((r) => r && r.id === activeId) || /** @type {any} */ ({});
     const deliveries = cloneWithoutHeavyPhotos(
         Array.isArray(route.deliveries) ? route.deliveries : deps.getDeliveries()
     );
@@ -208,6 +222,7 @@ export function buildRouteExportObject() {
  */
 export async function buildExportBackupObject() {
     const data = buildRouteExportObject();
+    const { collectBackupPhotoIds, collectPhotoBlobsMap, attachPhotoBlobs } = await loadBackupPhotos();
     const ids = collectBackupPhotoIds(data);
     if (!ids.length) {
         return attachPhotoBlobs(data, {});
@@ -228,6 +243,7 @@ export async function buildExportBackupObject() {
 }
 
 async function restorePhotoBlobsIntoIdb(data) {
+    const { planPhotoRestoreEntries } = await loadBackupPhotos();
     const entries = planPhotoRestoreEntries(data);
     for (let i = 0; i < entries.length; i++) {
         const { id, dataUrl } = entries[i];
@@ -259,6 +275,7 @@ export async function runAutoBackup({ reason = 'auto', cloud = true, silent = tr
         const json = JSON.stringify(data);
         const local = await writeSilentLocalBackup(json);
         if (local.ok) syncStatus.markLocalSave();
+        /** @type {any} */
         let cloudRes = { ok: false, error: 'skipped' };
         if (cloud) {
             syncStatus.markCloudStart();
@@ -403,7 +420,8 @@ export function restoreAgenda(file) {
     const reader = new FileReader();
     reader.onload = async (e) => {
         try {
-            const parsed = parseAgendaBackup(JSON.parse(e.target.result));
+            const { parseAgendaBackup } = await loadBackupSchema();
+            const parsed = parseAgendaBackup(JSON.parse(String(/** @type {any} */ (e.target).result)));
             if (!parsed.ok) throw new Error(parsed.error);
             const ok = await deps.showConfirmModal({
                 title: 'Restaurar agenda',
@@ -528,6 +546,7 @@ export async function backupData() {
 
 export async function restoreFromJson(rawJson) {
     try {
+        const { parseBackupPayload } = await loadBackupSchema();
         const parsed = parseBackupPayload(typeof rawJson === 'string' ? JSON.parse(rawJson) : rawJson);
         if (!parsed.ok) throw new Error(parsed.error);
         const data = parsed.data;
@@ -591,22 +610,25 @@ export function bindBackupButtons() {
     document.getElementById('backupBtn')?.addEventListener('click', backupData);
     document.getElementById('restoreBtn')?.addEventListener('click', () => document.getElementById('importFileInput')?.click());
     document.getElementById('importFileInput')?.addEventListener('change', (e) => {
-        if (e.target.files.length) {
-            restoreData(e.target.files[0]);
-            e.target.value = '';
+        const input = /** @type {HTMLInputElement} */ (e.target);
+        if (input.files && input.files.length) {
+            restoreData(input.files[0]);
+            input.value = '';
         }
     });
     document.getElementById('backupAgendaBtn')?.addEventListener('click', backupAgenda);
     document.getElementById('restoreAgendaBtn')?.addEventListener('click', () => document.getElementById('restoreAgendaInput')?.click());
     document.getElementById('restoreAgendaInput')?.addEventListener('change', (e) => {
-        if (e.target.files.length) {
-            restoreAgenda(e.target.files[0]);
-            e.target.value = '';
+        const input = /** @type {HTMLInputElement} */ (e.target);
+        if (input.files && input.files.length) {
+            restoreAgenda(input.files[0]);
+            input.value = '';
         }
     });
 
     // Escuta evento nativo disparado pelo Android ao clicar num arquivo .rfpro
-    window.addEventListener('rotaflow:openBackup', (e) => {
+    window.addEventListener('rotaflow:openBackup', (ev) => {
+        const e = /** @type {CustomEvent} */ (ev);
         if (e && e.detail) {
             restoreFromJson(e.detail).catch(() => {});
         }

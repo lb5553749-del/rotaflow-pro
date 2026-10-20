@@ -48,11 +48,19 @@ export function openAppModal({ title, bodyHtml, buttons }) {
         overlay.addEventListener('click', (e) => { if (e.target === overlay) finish(null); });
         document.addEventListener('keydown', onKey);
         document.body.appendChild(overlay);
-        const focusEl = overlay.querySelector('textarea, input, .modal-choice-btn, .modal-confirm, .modal-cancel');
+        const focusEl = /** @type {any} */ (overlay.querySelector('textarea, input, .modal-choice-btn, .modal-confirm, .modal-cancel'));
         if (focusEl) setTimeout(() => focusEl.focus(), 30);
     });
 }
 
+/**
+ * @param {Object} opts
+ * @param {string} [opts.title]
+ * @param {any} [opts.message]
+ * @param {string} [opts.confirmText]
+ * @param {string} [opts.cancelText]
+ * @param {boolean} [opts.danger]
+ */
 export function showConfirmModal({
     title = 'Confirmar',
     message,
@@ -88,7 +96,7 @@ export function showPromptModal({
                 label: 'Salvar',
                 className: 'modal-confirm',
                 getValue: () => {
-                    const el = document.getElementById('appModalInput');
+                    const el = /** @type {any} */ (document.getElementById('appModalInput'));
                     return el ? el.value : '';
                 }
             },
@@ -121,7 +129,8 @@ export function showChoiceModal({ title = 'Escolher', message = '', options = []
             resolve(value);
         };
         const onKey = (e) => { if (e.key === 'Escape') finish(null); };
-        overlay.querySelectorAll('.modal-choice-btn').forEach((btn) => {
+        overlay.querySelectorAll('.modal-choice-btn').forEach((el) => {
+            const btn = /** @type {any} */ (el);
             btn.addEventListener('click', () => {
                 const idx = parseInt(btn.dataset.choiceIndex, 10);
                 finish(options[idx] ? options[idx].value : null);

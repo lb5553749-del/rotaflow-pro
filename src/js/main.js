@@ -167,13 +167,11 @@ import {
     trackStatusFor
 } from './tracking.js';
 import {
-    configureHistory,
-    loadHistory,
-    getRouteHistory,
-    archiveCurrentRouteDay,
-    renderHistoryList,
-    setupHistoryListDelegation
-} from './history.js';
+    configureHistoryStore,
+    loadHistory as loadHistoryFromStorage,
+    getRouteHistory
+} from './history-store.js';
+import { loadHistory as loadHistoryModule } from './lazy-modules.js';
 import {
     configureRoutes,
     syncActiveRouteIntoRoutes,
@@ -333,6 +331,85 @@ let routeMetrics = null;
 let routeActive = false;
 let startPoint = null;
 let gpsAccuracyMeters = 0;
+
+// ---------------------------------------------------------------------------
+// Histórico: estado/persistência no boot (history-store.js), UI sob demanda.
+// Carregar o render só quando a aba abre evita ~6 KB no caminho crítico — a
+// lista nem está visível no boot. `renderHistoryList` marca "sujo" se a UI
+// ainda não existe, e a aba executa o render pendente ao abrir.
+// ---------------------------------------------------------------------------
+let historyUi = null;
+let historyUiDirty = false;
+let historyDepsConfigured = false;
+
+function historyUiDeps() {
+    return {
+        getDeliveries: () => deliveries,
+        setDeliveries: (next) => { deliveries = Array.isArray(next) ? next : []; },
+        getNextSequenceNumber: () => nextSequenceNumber,
+        setNextSequenceNumber: (n) => { nextSequenceNumber = n; },
+        getRouteMetrics: () => routeMetrics,
+        setRouteMetrics: (m) => { routeMetrics = m; },
+        setRouteActive: (v) => { routeActive = !!v; },
+        getUserProfile,
+        showToast,
+        showConfirmModal,
+        persistStorageNow,
+        saveStorage,
+        getSequentialId,
+        newId,
+        seedIdCounter,
+        closeTrackingSession,
+        trackStatusFor,
+        clearRouteOverlay,
+        renderDeliveriesList,
+        renderRouteSwitcher,
+        rebuildMarkers,
+        updateLastIdDisplay,
+        closeDeliveryPanel,
+        clearActiveStopNotification,
+        renderAgendaList,
+        switchSidebarTab
+    };
+}
+
+async function ensureHistoryUi() {
+    if (!historyUi) {
+        const mod = await loadHistoryModule();
+        if (!historyDepsConfigured) {
+            mod.configureHistory(historyUiDeps());
+            historyDepsConfigured = true;
+        }
+        mod.setupHistoryListDelegation();
+        historyUi = mod;
+        if (historyUiDirty) {
+            historyUiDirty = false;
+            mod.renderHistoryList();
+        }
+    }
+    return historyUi;
+}
+
+/** Chamado pela aba Histórico: carrega a UI, configura e renderiza. */
+function openHistoryTab() {
+    ensureHistoryUi().catch(() => {});
+}
+
+/** Wrapper injetado no persist.js — barato no boot, renderiza se a aba já abriu. */
+function renderHistoryList() {
+    if (!historyUi) {
+        historyUiDirty = true;
+        return;
+    }
+    historyUi.renderHistoryList();
+}
+
+/** Wrapper do botão "Arquivar dia": carrega a UI antes de arquivar. */
+async function archiveCurrentRouteDay(opts) {
+    const mod = await ensureHistoryUi();
+    return mod.archiveCurrentRouteDay(opts);
+}
+
 let useNativeMap = false, nativeGoogleMap = null, nativeMarkerById = new Map();
 let nativeMapZoom = 12;
 function isNativeApp() {
@@ -1039,7 +1116,7 @@ function configureExtractedModules() {
         empresaPadrao: () => EMPRESA_PADRAO,
         mensagemWhatsappPadrao: () => MENSAGEM_WHATSAPP_PADRAO,
         scheduleBackgroundPhotoMigrate,
-        loadHistory,
+        loadHistory: loadHistoryFromStorage,
         scheduleOrphanPhotoPrune,
         seedIdCounter,
         updateAgendaCountBadge: () => {
@@ -1088,7 +1165,7 @@ function configureExtractedModules() {
         showPromptModal,
         archiveCurrentRouteDay
     });
-    configureHistory({
+    configureHistoryStore({
         getDeliveries: () => deliveries,
         setDeliveries: (next) => { deliveries = Array.isArray(next) ? next : []; },
         getNextSequenceNumber: () => nextSequenceNumber,
@@ -1203,7 +1280,8 @@ configureAppBoot({
     setupFabRailClearance,
     setupPanelPhotoCapture,
     setupUndoSnackbar,
-    setupHistoryListDelegation,
+    // Delegação do histórico é ligada quando a aba abre (ensureHistoryUi).
+    setupHistoryListDelegation: () => {},
     setupOverflowMenus,
     setupBackupReminderUi,
     setupAutoBackupScheduler,
@@ -1225,7 +1303,7 @@ configureAppBoot({
     updateGpsButton,
     getGpsEnabled: () => gpsEnabled,
     enableGpsTracking,
-    switchSidebarTab,
+    switchSidebarTab: (tab) => { switchSidebarTab(tab); if (tab === 'historico') openHistoryTab(); },
     isGalleryOpen,
     closeGallery,
     nextPhoto,

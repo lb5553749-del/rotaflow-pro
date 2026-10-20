@@ -12,7 +12,7 @@ let lastFailAt = 0;
 
 function loadScriptOnce(src) {
     if (scriptPromises.has(src)) return scriptPromises.get(src);
-    const p = new Promise((resolve, reject) => {
+    const p = new Promise((/** @type {(v?: any) => void} */ resolve, reject) => {
         const el = document.createElement('script');
         el.src = src;
         el.async = true;

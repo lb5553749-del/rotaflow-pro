@@ -10,14 +10,22 @@
     // resolução de import com extensão omitida, igual ao esbuild.
     "moduleResolution": "bundler",
     "checkJs": true,
+    // node_modules JS (events/punycode, herdado de @types/node) não é nosso código.
+    "skipLibCheck": true,
     // Sem isso o TS7 não carrega os globais do Node (__dirname, node:test…),
     // e os arquivos de teste viram uma cascata de TS2591. O app só usa
     // google.maps em comentários, então não precisa de outros @types.
     "types": ["node"],
+    // stubs locais para não type-checar JS de terceiros (events/punycode)
+    "paths": {
+      "events": ["./types/stubs.d.ts"],
+      "punycode": ["./types/stubs.d.ts"]
+    },
     "strict": false,
     "noEmit": true
   },
   "include": [
+    "types/**/*.d.ts",
     "lib/**/*.js",
     "src/js/photo-store.js",
     "src/js/backup-store.js",
@@ -27,7 +35,7 @@
     "src/js/tracking.js",
     "src/js/history.js",
     "src/js/backup-ui.js",
-    "test/**/*.js"
+    "test/*.test.js"
   ],
   "exclude": ["node_modules", "build", "www", "dist", "functions/node_modules"]
 }

@@ -1,10 +1,11 @@
 /**
- * Histórico de dias arquivados (localStorage).
- * main.js injeta estado, persistência e renderização via configureHistory().
+ * Histórico — INTERFACE (render, delegação de cliques, arquivar/duplicar/excluir).
+ * Carregado sob demanda pela aba "Histórico" (lazy-modules.js). O estado e a
+ * persistência ficam em history-store.js, que é importado no boot por segurança
+ * de dados (ver comentário lá).
  */
 import { escapeHtml } from '../../lib/html.js';
 import {
-    HISTORY_MAX_DAYS,
     localDateKey,
     formatHistoryDate,
     routeDayStats,
@@ -17,12 +18,16 @@ import {
     formatRouteEconomicsMessage,
     formatBrl
 } from '../../lib/cost-helpers.js';
+import {
+    getRouteHistory,
+    addHistoryEntry,
+    removeHistoryEntry,
+    findHistoryEntry
+} from './history-store.js';
 
-let routeHistory = [];
+/** @type {any} */
 
 let deps = {
-    getRouteHistory: () => routeHistory,
-    setRouteHistory: (h) => { routeHistory = Array.isArray(h) ? h : []; },
     getDeliveries: () => [],
     setDeliveries: () => {},
     getNextSequenceNumber: () => 1,
@@ -31,9 +36,6 @@ let deps = {
     setRouteMetrics: () => {},
     getRouteMetrics: () => null,
     getUserProfile: () => ({}),
-    getAuthReady: () => false,
-    getCurrentUser: () => null,
-    storageKey: (base) => `rotaflow_${base}_guest`,
     showToast: () => {},
     showConfirmModal: async () => false,
     persistStorageNow: () => {},
@@ -55,38 +57,7 @@ let deps = {
 };
 
 export function configureHistory(opts) {
-    deps = { ...deps, ...(opts || {}) };
-}
-
-export { HISTORY_MAX_DAYS, localDateKey, formatHistoryDate, routeDayStats };
-
-export function getRouteHistory() {
-    return deps.getRouteHistory();
-}
-
-export function persistHistory() {
-    if (!deps.getAuthReady() || !deps.getCurrentUser()) return;
-    try {
-        localStorage.setItem(
-            deps.storageKey('history'),
-            JSON.stringify(deps.getRouteHistory().slice(0, HISTORY_MAX_DAYS))
-        );
-    } catch (e) {
-        console.warn('history save', e);
-    }
-}
-
-export function loadHistory() {
-    let routeHistory = [];
-    try {
-        const raw = localStorage.getItem(deps.storageKey('history'));
-        if (raw) routeHistory = JSON.parse(raw) || [];
-        if (!Array.isArray(routeHistory)) routeHistory = [];
-    } catch (_) {
-        routeHistory = [];
-    }
-    deps.setRouteHistory(routeHistory);
-    return routeHistory;
+    deps = { ...deps, ...(opts || /** @type {any} */ ({})) };
 }
 
 export function archiveCurrentRouteDay({ silent = false, clearAfter = false } = {}) {
@@ -112,8 +83,7 @@ export function archiveCurrentRouteDay({ silent = false, clearAfter = false } = 
         stats: routeDayStats(deliveries)
     };
     attachHistoryEconomics(entry, { ...economics, message: economicsMessage });
-    deps.setRouteHistory(prependHistoryDay(deps.getRouteHistory(), entry));
-    persistHistory();
+    addHistoryEntry(entry, prependHistoryDay);
     renderHistoryList();
     if (!silent) {
         const hasFuelPrefs = !!(deps.getUserProfile()?.consumoKmL && deps.getUserProfile()?.precoCombustivel != null);
@@ -147,7 +117,7 @@ export function archiveCurrentRouteDay({ silent = false, clearAfter = false } = 
 }
 
 export async function duplicateHistoryDay(historyId) {
-    const entry = deps.getRouteHistory().find((h) => h.id === historyId);
+    const entry = findHistoryEntry(historyId);
     if (!entry || !entry.deliveries?.length) return;
     const ok = await deps.showConfirmModal({
         title: 'Duplicar dia',
@@ -195,7 +165,7 @@ export async function duplicateHistoryDay(historyId) {
 }
 
 export async function deleteHistoryDay(historyId) {
-    const entry = deps.getRouteHistory().find((h) => h.id === historyId);
+    const entry = findHistoryEntry(historyId);
     if (!entry) return;
     const ok = await deps.showConfirmModal({
         title: 'Excluir dia',
@@ -204,8 +174,7 @@ export async function deleteHistoryDay(historyId) {
         danger: true
     });
     if (!ok) return;
-    deps.setRouteHistory(deps.getRouteHistory().filter((h) => h.id !== historyId));
-    persistHistory();
+    removeHistoryEntry(historyId);
     renderHistoryList();
     deps.showToast('Dia removido do histórico');
 }
@@ -213,7 +182,7 @@ export async function deleteHistoryDay(historyId) {
 export function renderHistoryList() {
     const container = document.getElementById('historyList');
     if (!container) return;
-    const routeHistory = deps.getRouteHistory();
+    const routeHistory = getRouteHistory();
     if (!routeHistory.length) {
         container.innerHTML = `<div class="empty-state">
             <span class="empty-state-mark" aria-hidden="true"></span>
@@ -254,7 +223,8 @@ export function setupHistoryListDelegation() {
     const container = document.getElementById('historyList');
     if (!container || container.dataset.ready) return;
     container.dataset.ready = '1';
-    container.addEventListener('click', (e) => {
+    container.addEventListener('click', (ev) => {
+        const e = /** @type {any} */ (ev);
         const btn = e.target.closest('[data-history-action]');
         const item = e.target.closest('.history-item');
         if (!btn || !item) return;

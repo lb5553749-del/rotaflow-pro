@@ -36,7 +36,7 @@ const photoObjectUrls = new Map();
 
 export function openPhotoDb() {
     if (photoDbPromise) return photoDbPromise;
-    photoDbPromise = new Promise((resolve, reject) => {
+    photoDbPromise = new Promise((/** @type {(v?: any) => void} */ resolve, reject) => {
         const req = indexedDB.open(PHOTO_DB_NAME, PHOTO_DB_VERSION);
         req.onupgradeneeded = () => {
             const db = req.result;
@@ -87,7 +87,7 @@ export async function idbPutPhoto(photoId, blobOrDataUrl) {
         throw new Error('photo-not-blob');
     }
     const db = await openPhotoDb();
-    return new Promise((resolve, reject) => {
+    return new Promise((/** @type {(v?: any) => void} */ resolve, reject) => {
         const tx = db.transaction('photos', 'readwrite');
         tx.objectStore('photos').put(value, photoDbKey(photoId));
         tx.oncomplete = () => resolve(true);
@@ -101,7 +101,7 @@ export async function idbPutPhoto(photoId, blobOrDataUrl) {
  */
 export async function idbExportPhotoDataUrl(photoId) {
     const db = await openPhotoDb();
-    const raw = await new Promise((resolve, reject) => {
+    const raw = await new Promise((/** @type {(v?: any) => void} */ resolve, reject) => {
         const tx = db.transaction('photos', 'readonly');
         const req = tx.objectStore('photos').get(photoDbKey(photoId));
         req.onsuccess = () => resolve(req.result || null);
@@ -110,11 +110,11 @@ export async function idbExportPhotoDataUrl(photoId) {
     if (raw == null) return null;
     const norm = normalizeIdbPhotoValue(raw);
     if (!norm) return null;
-    if (norm.kind === 'dataurl') return norm.value;
+    if (norm.kind === 'dataurl') return String(norm.value);
     const blob = norm.kind === 'blob'
-        ? norm.value
-        : new Blob([norm.value], { type: 'image/jpeg' });
-    return new Promise((resolve, reject) => {
+        ? /** @type {Blob} */ (norm.value)
+        : new Blob([/** @type {any} */ (norm.value)], { type: 'image/jpeg' });
+    return new Promise((/** @type {(v?: any) => void} */ resolve, reject) => {
         const reader = new FileReader();
         reader.onload = () => resolve(typeof reader.result === 'string' ? reader.result : null);
         reader.onerror = () => reject(reader.error || new Error('read'));
@@ -125,7 +125,7 @@ export async function idbExportPhotoDataUrl(photoId) {
 /** @returns {Promise<string|null>} URL de exibição (blob: ou data: legado) */
 export async function idbGetPhoto(photoId) {
     const db = await openPhotoDb();
-    const raw = await new Promise((resolve, reject) => {
+    const raw = await new Promise((/** @type {(v?: any) => void} */ resolve, reject) => {
         const tx = db.transaction('photos', 'readonly');
         const req = tx.objectStore('photos').get(photoDbKey(photoId));
         req.onsuccess = () => resolve(req.result || null);
@@ -135,7 +135,7 @@ export async function idbGetPhoto(photoId) {
     const norm = normalizeIdbPhotoValue(raw);
     if (!norm) return null;
     if (norm.kind === 'blob' || norm.kind === 'buffer') {
-        const blob = norm.kind === 'blob' ? norm.value : new Blob([norm.value], { type: 'image/jpeg' });
+        const blob = norm.kind === 'blob' ? /** @type {Blob} */ (norm.value) : new Blob([/** @type {any} */ (norm.value)], { type: 'image/jpeg' });
         revokePhotoObjectUrl(photoId);
         const url = URL.createObjectURL(blob);
         photoObjectUrls.set(photoId, url);
@@ -144,18 +144,18 @@ export async function idbGetPhoto(photoId) {
     // Legado data URL → migra para Blob em idle (sem bloquear UI)
     if (norm.kind === 'dataurl') {
         const migrate = () => {
-            dataUrlToBlob(norm.value).then((blob) => idbPutPhoto(photoId, blob)).catch(() => {});
+            dataUrlToBlob(String(norm.value)).then((blob) => idbPutPhoto(photoId, blob)).catch(() => {});
         };
         if (typeof requestIdleCallback === 'function') requestIdleCallback(migrate, { timeout: 5000 });
         else setTimeout(migrate, 800);
-        return norm.value;
+        return String(norm.value);
     }
     return null;
 }
 export async function idbDeletePhoto(photoId) {
     revokePhotoObjectUrl(photoId);
     const db = await openPhotoDb();
-    return new Promise((resolve, reject) => {
+    return new Promise((/** @type {(v?: any) => void} */ resolve, reject) => {
         const tx = db.transaction('photos', 'readwrite');
         tx.objectStore('photos').delete(photoDbKey(photoId));
         tx.oncomplete = () => resolve(true);
@@ -165,7 +165,7 @@ export async function idbDeletePhoto(photoId) {
 
 export async function idbGetAllPhotoKeys() {
     const db = await openPhotoDb();
-    return new Promise((resolve, reject) => {
+    return new Promise((/** @type {(v?: any) => void} */ resolve, reject) => {
         const tx = db.transaction('photos', 'readonly');
         const req = tx.objectStore('photos').getAllKeys();
         req.onsuccess = () => resolve(req.result || []);
@@ -201,7 +201,7 @@ export async function purgeStalePhotos(opts) {
         if (photoId) revokePhotoObjectUrl(photoId);
     }
     const db = await openPhotoDb();
-    await new Promise((resolve, reject) => {
+    await new Promise((/** @type {(v?: any) => void} */ resolve, reject) => {
         const tx = db.transaction('photos', 'readwrite');
         const store = tx.objectStore('photos');
         for (const key of toDelete) store.delete(key);
@@ -249,14 +249,14 @@ export function getPendingPhotoTarget() {
 }
 
 export function yieldToUiFrame() {
-    return new Promise((resolve) => {
+    return new Promise((/** @type {(v?: any) => void} */ resolve) => {
         if (typeof requestAnimationFrame === 'function') requestAnimationFrame(() => resolve());
         else setTimeout(resolve, 0);
     });
 }
 
 function blobToDataUrl(blob) {
-    return new Promise((resolve, reject) => {
+    return new Promise((/** @type {(v?: any) => void} */ resolve, reject) => {
         const fr = new FileReader();
         fr.onload = () => resolve(String(fr.result || ''));
         fr.onerror = () => reject(fr.error || new Error('file-reader'));
@@ -313,7 +313,7 @@ export async function compressBlobToJpegDataUrl(blob, maxSide = PHOTO_MAX_SIDE, 
             if (bitmap) { try { bitmap.close(); } catch (__) {} }
         }
     }
-    return new Promise((resolve, reject) => {
+    return new Promise((/** @type {(v?: any) => void} */ resolve, reject) => {
         const url = URL.createObjectURL(blob);
         const img = new Image();
         img.onload = async () => {

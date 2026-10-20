@@ -22,6 +22,8 @@ import {
 } from '../../lib/track-schema.js';
 import { nextActiveTrackTargets } from '../../lib/gps-helpers.js';
 
+/** @type {any} */
+
 let deps = {
     isNativeApp: () => false,
     getDeliveries: () => [],
@@ -46,7 +48,7 @@ let deps = {
 };
 
 export function configureTracking(opts) {
-    deps = { ...deps, ...(opts || {}) };
+    deps = { ...deps, ...(opts || /** @type {any} */ ({})) };
 }
 
 export {
@@ -168,7 +170,7 @@ export async function refreshActiveTrackSessions(opts) {
             payload: buildTrackPayload(delivery, pos ? { pos } : null)
         }));
         const results = await Promise.allSettled(payloads.map(({ token, payload }) => setTrackDoc(db, token, payload)));
-        if (!results.some((r) => r.status === 'fulfilled')) throw results[0].reason;
+        if (!results.some((r) => r.status === 'fulfilled')) throw /** @type {any} */ (results[0]).reason;
         lastPublishedTrackRouteSig = sig;
         lastTrackPublishAt = Date.now();
         if (pos && typeof pos.lat === 'number') lastTrackPublishPos = pos;
@@ -281,7 +283,7 @@ export async function sendTrackPush(delivery, extra) {
         if (window.RotaFlowPush && typeof window.RotaFlowPush.send === 'function') {
             await window.RotaFlowPush.send(null, Object.assign({
                 url: trackingUrl(delivery.trackToken)
-            }, trackPushAssets(), extra || {}));
+            }, trackPushAssets(), extra || /** @type {any} */ ({})));
         }
     } catch (err) {
         console.warn('push track', err);

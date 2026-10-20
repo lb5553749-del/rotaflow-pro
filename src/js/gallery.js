@@ -9,8 +9,8 @@ let gallerySwipeBound = false;
 
 function updateGalleryChrome() {
     const counter = document.getElementById('galleryCounter');
-    const prevBtn = document.getElementById('prevPhotoBtn');
-    const nextBtn = document.getElementById('nextPhotoBtn');
+    const prevBtn = /** @type {any} */ (document.getElementById('prevPhotoBtn'));
+    const nextBtn = /** @type {any} */ (document.getElementById('nextPhotoBtn'));
     const total = currentGalleryPhotos ? currentGalleryPhotos.length : 0;
     const idx = currentGalleryIndex;
     if (counter) {
@@ -27,7 +27,7 @@ function updateGalleryChrome() {
 }
 
 function showGalleryPhotoAt(index, direction = 0) {
-    const img = document.getElementById('galleryImg');
+    const img = /** @type {any} */ (document.getElementById('galleryImg'));
     if (!currentGalleryPhotos || !img) return;
     if (index < 0 || index >= currentGalleryPhotos.length) return;
     currentGalleryIndex = index;
@@ -59,7 +59,7 @@ export function closeGallery() {
     const gallery = document.getElementById('fullscreenGallery');
     if (gallery) gallery.style.display = 'none';
     currentGalleryPhotos = null;
-    const img = document.getElementById('galleryImg');
+    const img = /** @type {any} */ (document.getElementById('galleryImg'));
     if (img) {
         img.classList.remove('gallery-swipe-out-left', 'gallery-swipe-out-right');
         img.removeAttribute('src');
@@ -126,8 +126,8 @@ export function setupGallerySwipe() {
 
 export function bindGalleryChrome() {
     document.getElementById('closeGalleryBtn')?.addEventListener('click', closeGallery);
-    document.getElementById('prevPhotoBtn')?.addEventListener('click', prevPhoto);
-    document.getElementById('nextPhotoBtn')?.addEventListener('click', nextPhoto);
+    /** @type {any} */ (document.getElementById('prevPhotoBtn'))?.addEventListener('click', prevPhoto);
+    /** @type {any} */ (document.getElementById('nextPhotoBtn'))?.addEventListener('click', nextPhoto);
     document.getElementById('fullscreenGallery')?.addEventListener('click', (e) => {
         if (e.target === document.getElementById('fullscreenGallery')) closeGallery();
     });
