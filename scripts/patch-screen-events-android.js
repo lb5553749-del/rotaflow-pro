@@ -7,6 +7,7 @@
  */
 const fs = require('fs');
 const path = require('path');
+const { injectAbiFilters } = require('../lib/android-gradle.js');
 
 const root = path.join(__dirname, '..');
 const javaDir = path.join(root, 'android/app/src/main/java/com/rotaflow/pro');
@@ -193,6 +194,14 @@ if (fs.existsSync(gradlePath)) {
       'minifyEnabled true\n            shrinkResources true'
     );
     changed = true;
+  }
+  // ABIs: só arm64-v8a + armeabi-v7a. Sem isso o APK leva as .so de x86/x86_64,
+  // que nenhum celular usa (~1,5 MB). Para testar em emulador: ROTAFLOW_ALLOW_X86=1.
+  const abi = injectAbiFilters(gradle, { allowX86: process.env.ROTAFLOW_ALLOW_X86 === '1' });
+  if (abi.changed) {
+    gradle = abi.gradle;
+    changed = true;
+    console.log('android/app/build.gradle: abiFilters (arm64-v8a, armeabi-v7a)');
   }
   if (changed) fs.writeFileSync(gradlePath, gradle);
 }
