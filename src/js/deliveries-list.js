@@ -13,9 +13,12 @@ import {
 } from '../../lib/list-helpers.js';
 import { applyDeliveryStatusTransition } from '../../lib/delivery-status-helpers.js';
 import { advancedFilters } from './advanced-filters.js';
-import { updateFiltersUI, updateDistrictsOptions } from './filters-ui.js';
 
 let deps = {
+    // Preenchidos pelo main.js com o painel de filtros (carregado sob demanda).
+    // No-op enquanto o painel não existe: as duas funções já saem cedo sem o DOM.
+    updateFiltersUI: () => {},
+    updateDistrictsOptions: () => {},
     getDeliveries: () => [],
     setDeliveries: () => {},
     getRouteFilter: () => '',
@@ -145,8 +148,8 @@ function renderDeliveriesListNow() {
     // Atualiza UI dos filtros
     const panelRota = document.getElementById('panelRota');
     if (panelRota) {
-        updateFiltersUI(panelRota);
-        updateDistrictsOptions(panelRota, deliveries);
+        deps.updateFiltersUI(panelRota);
+        deps.updateDistrictsOptions(panelRota, deliveries);
     }
 
     if (filtered.length === 0) {

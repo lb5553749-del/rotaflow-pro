@@ -19,6 +19,7 @@ import {
     setupNewDeliveryPhoneUI
 } from './form-phones.js';
 import { getSequentialId, nextGeneratedId, seedIdCounterFromLists } from '../../lib/ids.js';
+import { advancedFilters } from './advanced-filters.js';
 import {
     formatPhoneShort
 } from '../../lib/phone-helpers.js';
@@ -656,6 +657,74 @@ function avisoModuloIndisponivel(err) {
 }
 
 
+// ---------- FILTROS AVANÇADOS (painel) ----------
+// O estado dos filtros (`advanced-filters.js`) continua no boot — é ele que filtra a
+// lista. O que sai do boot é o **painel**: 9 KB de HTML de chips, selects e presets que
+// o motorista só vê se tocar em "Filtros".
+let filtersUiModule = null;
+let filtersUiLoading = null;
+
+/** Wrappers síncronos usados pelo render da lista; no-op até o painel existir. */
+function updateFiltersUI(container) {
+    if (filtersUiModule) filtersUiModule.updateFiltersUI(container);
+    // Enquanto o painel não foi baixado, o contador vive no placeholder.
+    else syncFiltersPlaceholder();
+}
+
+function updateDistrictsOptions(container, deliveries) {
+    if (filtersUiModule) filtersUiModule.updateDistrictsOptions(container, deliveries);
+}
+
+/** Atualiza o contador do placeholder (filtros restaurados de outra sessão). */
+function syncFiltersPlaceholder() {
+    const badge = document.getElementById('filterCountPlaceholder');
+    if (!badge) return;
+    const total = advancedFilters.countActiveFilters();
+    badge.textContent = total > 0 ? String(total) : '';
+    badge.hidden = total === 0;
+}
+
+/**
+ * Baixa o painel e o monta no lugar do placeholder.
+ * @param {{ expand?: boolean }} [opts]
+ */
+function loadFiltersUi(opts = {}) {
+    const panelRota = document.getElementById('panelRota');
+    if (!panelRota) return Promise.resolve(null);
+    if (!filtersUiLoading) {
+        filtersUiLoading = import('./filters-ui.js')
+            .then((mod) => {
+                document.getElementById('filtersPlaceholder')?.remove();
+                mod.initFiltersUI(panelRota, () => renderDeliveriesList());
+                mod.updateFiltersUI(panelRota);
+                mod.updateDistrictsOptions(panelRota, deliveries);
+                filtersUiModule = mod;
+                return mod;
+            })
+            .catch((err) => {
+                filtersUiLoading = null;
+                avisoModuloIndisponivel(err);
+                return null;
+            });
+    }
+    return filtersUiLoading.then((mod) => {
+        // O toque que disparou o carregamento também abre o painel.
+        if (mod && opts.expand) document.getElementById('toggleFiltersBtn')?.click();
+        return mod;
+    });
+}
+
+/** Boot: só arma o toque no placeholder (o painel vem depois, se o motorista quiser). */
+function setupFiltersUi() {
+    syncFiltersPlaceholder();
+    const placeholder = document.getElementById('filtersPlaceholder');
+    if (!placeholder) return;
+    placeholder.addEventListener('click', () => {
+        placeholder.setAttribute('aria-expanded', 'true');
+        loadFiltersUi({ expand: true });
+    });
+}
+
 // ---------- PERFIL ----------
 let profileModulePromise = null;
 
@@ -1069,6 +1138,8 @@ function configureExtractedModules() {
         showToast
     });
     configureDeliveriesList({
+        updateFiltersUI,
+        updateDistrictsOptions,
         getDeliveries: () => deliveries,
         setDeliveries: (next) => { deliveries = Array.isArray(next) ? next : []; },
         getRouteFilter: () => routeFilter,
@@ -1428,6 +1499,7 @@ function refreshMapAfterStorageLoad() {
 // ========== BOOT ==========
 // initAppUi / DOMContentLoaded / PWA / SW: src/js/app-boot.js (configureAppBoot).
 configureAppBoot({
+    setupFiltersUi,
     // O autocomplete só carrega quando o motorista encosta no campo Nome.
     initNameSuggestions: setupNameSuggestionsOnDemand,
     setupNewDeliveryPhoneUI,

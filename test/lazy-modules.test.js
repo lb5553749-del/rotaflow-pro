@@ -42,7 +42,7 @@ describe('main.js — módulos fora do boot', () => {
     const estaticos = importsEstaticos(main);
     const dinamicos = importsDinamicos(main);
 
-    for (const mod of ['./backup-ui.js', './profile.js', './name-suggestions.js']) {
+    for (const mod of ['./backup-ui.js', './profile.js', './name-suggestions.js', './filters-ui.js']) {
         it(`não importa ${mod} estaticamente`, () => {
             assert.ok(
                 !estaticos.includes(mod),
@@ -57,6 +57,30 @@ describe('main.js — módulos fora do boot', () => {
 
     it('não importa o stub morto de resource-hints', () => {
         assert.ok(!estaticos.includes('./resource-hints.js'));
+    });
+});
+
+describe('filters-ui.js — painel sob demanda (09)', () => {
+    it('deliveries-list nao importa o painel: usa deps injetadas', () => {
+        const lista = ler('src/js/deliveries-list.js');
+        assert.ok(!importsEstaticos(lista).includes('./filters-ui.js'));
+        assert.ok(!importsDinamicos(lista).includes('./filters-ui.js'));
+        assert.ok(/updateFiltersUI:\s*\(\)\s*=>\s*\{\}/.test(lista), 'deps no-op precisa existir');
+    });
+
+    it('app-boot nao importa o painel', () => {
+        assert.ok(!importsEstaticos(ler('src/js/app-boot.js')).includes('./filters-ui.js'));
+    });
+
+    it('o estado dos filtros (advanced-filters) continua no boot', () => {
+        // Se isso virar lazy, a lista deixa de ser filtrada — o painel é só a UI.
+        assert.ok(importsEstaticos(ler('src/js/deliveries-list.js')).includes('./advanced-filters.js'));
+    });
+
+    it('index.html tem o placeholder clicavel no lugar do painel', () => {
+        const html = ler('index.html');
+        assert.match(html, /id="filtersPlaceholder"/);
+        assert.ok(!/id="filtersPanel"/.test(html), 'painel nao pode vir no HTML do shell');
     });
 });
 

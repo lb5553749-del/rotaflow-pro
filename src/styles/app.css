@@ -2942,6 +2942,15 @@ html.dark-theme .backup-reminder-title {
   transition: all 0.2s ease;
 }
 
+/* Placeholder clicável que segura o lugar do painel de filtros até ele ser baixado. */
+.filters-placeholder {
+  display: block; width: calc(100% - 32px); padding: 0; text-align: left;
+  font: inherit; color: inherit; cursor: pointer; -webkit-appearance: none; appearance: none;
+}
+.filters-placeholder .filters-header { width: 100%; }
+.filters-placeholder .filters-actions i { color: var(--muted); }
+.filters-placeholder:active { background: var(--bg); }
+
 .filters-header {
   display: flex;
   align-items: center;

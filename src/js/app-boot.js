@@ -5,7 +5,6 @@
 // Tema escuro em módulo próprio: precisa rodar antes do 1º paint e o
 // profile.js (modal, ~10 KB) agora é lazy.
 import { initDarkModeFromStorage } from './theme.js';
-import { initFiltersUI } from './filters-ui.js';
 import { advancedFilters } from './advanced-filters.js';
 import { initSyncStatusUI } from './sync-status.js';
 
@@ -57,6 +56,7 @@ let deps = {
     setAgendaFilter: () => {},
     renderDeliveriesList: () => {},
     renderAgendaList: () => {},
+    setupFiltersUi: () => {},
     setupAddDeliveryForm: () => {},
     initMap: () => {},
     persistStorageNow: () => {},
@@ -160,13 +160,9 @@ export function setupDomContentLoadedBoot() {
             deps.renderDeliveriesList();
         }, 150));
 
-        // Inicializa filtros avançados
-        const panelRota = document.getElementById('panelRota');
-        if (panelRota) {
-            initFiltersUI(panelRota, () => {
-                deps.renderDeliveriesList();
-            });
-        }
+        // Filtros avançados: só o placeholder sobe no boot; o painel (chips, bairros,
+        // presets) é baixado no primeiro toque — ver setupFiltersUi no main.js.
+        deps.setupFiltersUi();
 
         // Busca na agenda (mantém comportamento anterior)
         document.getElementById("agendaSearchInput").addEventListener("input", deps.debounce((e) => {
