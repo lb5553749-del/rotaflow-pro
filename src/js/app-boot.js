@@ -2,7 +2,9 @@
  * Boot da UI do motorista: initAppUi, DOMContentLoaded, PWA e service worker.
  * Dependências injetadas via configureAppBoot() — main.js só orquestra.
  */
-import { initDarkModeFromStorage } from './profile.js';
+// Tema escuro em módulo próprio: precisa rodar antes do 1º paint e o
+// profile.js (modal, ~10 KB) agora é lazy.
+import { initDarkModeFromStorage } from './theme.js';
 import { initFiltersUI } from './filters-ui.js';
 import { advancedFilters } from './advanced-filters.js';
 import { initSyncStatusUI } from './sync-status.js';

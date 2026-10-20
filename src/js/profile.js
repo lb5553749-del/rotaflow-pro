@@ -1,5 +1,7 @@
 /**
  * Modal de perfil e preferências (empresa, WhatsApp, pins, feedback, backup).
+ * Carregado sob demanda (patch 06): só ao abrir o perfil. O tema escuro do boot
+ * fica em theme.js, que é eager.
  * Helpers puros em lib/profile-helpers.js; main injeta prefs via configureProfile().
  */
 import { escapeHtml } from '../../lib/html.js';
@@ -222,17 +224,6 @@ export function applyDarkMode(enabled) {
     } catch (_) {}
     document.documentElement.classList.toggle('dark-theme', !!enabled);
     // Web JS API: reaplica o estilo no mapa já carregado. No nativo o estilo
-    // vale a partir do próximo init (boot já roda initDarkModeFromStorage antes).
+    // vale a partir do próximo init (o boot aplica o tema via theme.js antes).
     refreshMapTheme();
-}
-
-export function initDarkModeFromStorage() {
-    try {
-        const pref = localStorage.getItem('rotaflow_dark_theme');
-        if (pref === '1') {
-            document.documentElement.classList.add('dark-theme');
-        } else if (pref === null && window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches) {
-            document.documentElement.classList.add('dark-theme');
-        }
-    } catch (_) {}
 }

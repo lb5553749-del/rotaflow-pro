@@ -605,32 +605,3 @@ export function restoreData(file) {
     };
     reader.readAsText(file);
 }
-
-export function bindBackupButtons() {
-    document.getElementById('backupBtn')?.addEventListener('click', backupData);
-    document.getElementById('restoreBtn')?.addEventListener('click', () => document.getElementById('importFileInput')?.click());
-    document.getElementById('importFileInput')?.addEventListener('change', (e) => {
-        const input = /** @type {HTMLInputElement} */ (e.target);
-        if (input.files && input.files.length) {
-            restoreData(input.files[0]);
-            input.value = '';
-        }
-    });
-    document.getElementById('backupAgendaBtn')?.addEventListener('click', backupAgenda);
-    document.getElementById('restoreAgendaBtn')?.addEventListener('click', () => document.getElementById('restoreAgendaInput')?.click());
-    document.getElementById('restoreAgendaInput')?.addEventListener('change', (e) => {
-        const input = /** @type {HTMLInputElement} */ (e.target);
-        if (input.files && input.files.length) {
-            restoreAgenda(input.files[0]);
-            input.value = '';
-        }
-    });
-
-    // Escuta evento nativo disparado pelo Android ao clicar num arquivo .rfpro
-    window.addEventListener('rotaflow:openBackup', (ev) => {
-        const e = /** @type {CustomEvent} */ (ev);
-        if (e && e.detail) {
-            restoreFromJson(e.detail).catch(() => {});
-        }
-    });
-}

@@ -18,10 +18,6 @@ import {
     renderTempPhones,
     setupNewDeliveryPhoneUI
 } from './form-phones.js';
-import {
-    configureNameSuggestions,
-    initNameSuggestions
-} from './name-suggestions.js';
 import { getSequentialId, nextGeneratedId, seedIdCounterFromLists } from '../../lib/ids.js';
 import {
     formatPhoneShort
@@ -41,10 +37,6 @@ import {
     setupOverflowMenus,
     toggleSidebar
 } from './sidebar.js';
-import {
-    configureProfile,
-    showProfileModal
-} from './profile.js';
 import {
     configureRiskAreas,
     loadRiskAreas,
@@ -204,16 +196,7 @@ import {
     configureCamera,
     pickPhotoDataUrls
 } from './camera.js';
-import {
-    configureBackupUi,
-    maybeShowBackupReminder,
-    setupBackupReminderUi,
-    noteDeliveryCompletedForBackup,
-    maybeAutoBackupOnDayChange,
-    setupAutoBackupScheduler,
-    backupData,
-    bindBackupButtons
-} from './backup-ui.js';
+import { bindBackupButtons as bindBackupButtonsEager } from './backup-bindings.js';
 import {
     configurePhotoStore,
     idbGetPhoto,
@@ -620,6 +603,233 @@ async function editAgendaItem(id, updates) {
     return m.editAgendaItem(id, updates);
 }
 
+// ========== MÓDULOS DE UI CARREGADOS SOB DEMANDA (patch 06) ==========
+//  Perfil (10 KB), sugestões de nome (7 KB) e backup/restore (12,5 KB) só existem
+//  quando o motorista usa o recurso. Mesmo padrão do edit-modals: um `ensure*()`
+//  memoizado que configura as deps na primeira carga + wrappers com o nome antigo,
+//  então nenhum outro módulo precisou mudar.
+//  Chamadas que acontecem no boot (lembrete de backup, agendador, sugestões de
+//  nome) são **agendadas para o primeiro idle** em vez de puxar o chunk na hora.
+
+/**
+ * Roda `fn` no primeiro idle — opcionalmente só depois de `delay` ms, para não
+ * competir com o boot. O handle é cancelável (usado quando o motorista clica no
+ * botão antes do agendamento disparar).
+ * @param {Function} fn
+ * @param {{ delay?: number, timeout?: number }} [opts]
+ */
+function scheduleIdle(fn, opts = {}) {
+    const { delay = 0, timeout = 2500 } = opts;
+    const handle = { idle: null, timer: null };
+    const agendar = () => {
+        if (typeof requestIdleCallback === 'function') {
+            handle.idle = requestIdleCallback(fn, { timeout });
+        } else {
+            handle.timer = setTimeout(fn, 400);
+        }
+    };
+    if (delay > 0) handle.timer = setTimeout(agendar, delay);
+    else agendar();
+    return handle;
+}
+
+function cancelScheduledIdle(handle) {
+    if (!handle) return;
+    if (handle.idle !== null && typeof cancelIdleCallback === 'function') cancelIdleCallback(handle.idle);
+    if (handle.timer !== null) clearTimeout(handle.timer);
+}
+
+/** Primeiro carregamento de módulo pesado no boot espera este tempo. */
+const IDLE_BOOT_DELAY_MS = 5000;
+
+// ---------- PERFIL ----------
+let profileModulePromise = null;
+
+function ensureProfile() {
+    if (!profileModulePromise) {
+        profileModulePromise = import('./profile.js').then((mod) => {
+            mod.configureProfile({
+                getUserProfile,
+                getCurrentUser,
+                accountLabel,
+                getPinSizePref: () => pinSizePref,
+                getFeedbackVibrateEnabled: () => feedbackVibrateEnabled,
+                getFeedbackSoundEnabled: () => feedbackSoundEnabled,
+                getVehicleModeEnabled: () => isVehicleModeEnabled(),
+                setPinSizePref,
+                setFeedbackPrefs,
+                setVehicleModeEnabled,
+                showRiskAreasModal,
+                saveStorage,
+                backupData,
+                logoutUser,
+                showToast
+            });
+            return mod;
+        });
+    }
+    return profileModulePromise;
+}
+
+/** Abre o modal de perfil (carrega o módulo na primeira vez). */
+async function showProfileModal() {
+    const mod = await ensureProfile();
+    return mod.showProfileModal();
+}
+
+// ---------- SUGESTÕES DE NOME ----------
+let nameSuggestionsModulePromise = null;
+let nameSuggestionsInited = false;
+
+function ensureNameSuggestions() {
+    if (!nameSuggestionsModulePromise) {
+        nameSuggestionsModulePromise = import('./name-suggestions.js').then((mod) => {
+            mod.configureNameSuggestions({
+                debounce,
+                getAgenda: () => agenda,
+                getDeliveries: () => deliveries,
+                findActiveRouteByAddress,
+                setTempPhones,
+                renderTempPhones,
+                checkAddressDuplicate,
+                saveStorage,
+                renderDeliveriesList,
+                getMarker,
+                updateMarkerIcon,
+                updateDeliveryStats,
+                showToast,
+                addDeliveryDirect
+            });
+            return mod;
+        });
+    }
+    return nameSuggestionsModulePromise;
+}
+
+/**
+ * Boot: em vez de inicializar o autocomplete agora, só arma o gatilho.
+ * O módulo (e o listener de `input` que ele instala) entra quando o motorista
+ * encosta no campo "Nome" — antes disso o autocomplete seria inútil.
+ */
+function setupNameSuggestionsOnDemand() {
+    const input = document.getElementById('customerName');
+    if (!input) return;
+    const load = () => {
+        if (nameSuggestionsInited) return;
+        nameSuggestionsInited = true;
+        ensureNameSuggestions()
+            .then((mod) => mod.initNameSuggestions())
+            .catch(() => { nameSuggestionsInited = false; });
+    };
+    input.addEventListener('focus', load, { once: true });
+    input.addEventListener('touchstart', load, { once: true, passive: true });
+}
+
+// ---------- BACKUP / RESTORE ----------
+let backupModulePromise = null;
+let backupIdleHandle = null;
+/** Chamadas feitas antes do módulo existir (ex.: lembrete no boot). */
+let backupPending = [];
+
+function startBackupLoad() {
+    if (!backupModulePromise) {
+        cancelScheduledIdle(backupIdleHandle);
+        backupIdleHandle = null;
+        backupModulePromise = import('./backup-ui.js').then((mod) => {
+            mod.configureBackupUi({
+                getDeliveries: () => deliveries,
+                getAgenda: () => agenda,
+                setAgenda: (a) => { agenda = Array.isArray(a) ? a : []; },
+                getRoutes: () => routes,
+                getActiveRouteId: () => activeRouteId,
+                getNextSequenceNumber: () => nextSequenceNumber,
+                setNextAgendaId: (n) => { nextAgendaId = n; },
+                getNextAgendaId: () => nextAgendaId,
+                getUserProfile,
+                setUserProfile,
+                persistStorageNow,
+                syncActiveRouteIntoRoutes,
+                isNativeApp,
+                showToast,
+                showConfirmModal,
+                showChoiceModal,
+                hydrateRoutesFromData,
+                migrateTelefones,
+                migrateFavorito,
+                normalizeDeliveryCoords,
+                hydrateAllPhotos,
+                exportPhotoDataUrl: idbExportPhotoDataUrl,
+                idbPutPhoto,
+                yieldToUiFrame,
+                seedIdCounter,
+                clearRouteOverlay,
+                renderDeliveriesList,
+                renderRouteSwitcher,
+                renderAgendaList,
+                rebuildMarkers,
+                updateDeliveryStats,
+                updateOptimizeFabVisibility,
+                updateLastIdDisplay,
+                getAuthReady,
+                recoverUiAfterResume
+            });
+            // Roda o que ficou pendente (lembrete, agendador, contador).
+            const fila = backupPending;
+            backupPending = [];
+            for (const [metodo, args] of fila) {
+                try { mod[metodo](...args); } catch (_) {}
+            }
+            return mod;
+        });
+    }
+    return backupModulePromise;
+}
+
+/**
+ * Executa uma função do backup-ui.
+ * @param {string} metodo nome exportado em backup-ui.js
+ * @param {any[]} args
+ * @param {{ now?: boolean }} [opts] `now`: ação do usuário, carrega já; senão agenda no idle
+ */
+function backupCall(metodo, args = [], opts = {}) {
+    if (backupModulePromise) {
+        return backupModulePromise.then((mod) => mod[metodo](...args)).catch(() => {});
+    }
+    if (opts.now) {
+        return startBackupLoad().then((mod) => mod[metodo](...args)).catch(() => {});
+    }
+    // Dedupe: o boot chama o lembrete a cada render; repetir a mesma chamada
+    // na fila não muda nada e só faria trabalho dobrado no flush.
+    const jaNaFila = backupPending.some(([m, a]) => m === metodo && a === args);
+    if (!jaNaFila) backupPending.push([metodo, args]);
+    if (!backupIdleHandle) {
+        backupIdleHandle = scheduleIdle(() => {
+            backupIdleHandle = null;
+            startBackupLoad().catch(() => {});
+        }, { delay: IDLE_BOOT_DELAY_MS });
+    }
+    return Promise.resolve();
+}
+
+// Wrappers com os nomes que os outros módulos já usavam via deps.
+function backupData() { return backupCall('backupData', [], { now: true }); }
+function maybeShowBackupReminder() { return backupCall('maybeShowBackupReminder'); }
+function setupBackupReminderUi() { return backupCall('setupBackupReminderUi'); }
+function setupAutoBackupScheduler() { return backupCall('setupAutoBackupScheduler'); }
+function noteDeliveryCompletedForBackup() { return backupCall('noteDeliveryCompletedForBackup'); }
+function maybeAutoBackupOnDayChange() { return backupCall('maybeAutoBackupOnDayChange'); }
+
+/** Boot: liga os botões na hora; o módulo de verdade vem no uso (ou no idle). */
+function bindBackupButtons() {
+    bindBackupButtonsEager({
+        backupData,
+        restoreData: (file) => backupCall('restoreData', [file], { now: true }),
+        backupAgenda: () => backupCall('backupAgenda', [], { now: true }),
+        restoreAgenda: (file) => backupCall('restoreAgenda', [file], { now: true }),
+        restoreFromJson: (json) => backupCall('restoreFromJson', [json], { now: true })
+    });
+}
+
 function configureExtractedModules() {
     configureWhatsApp({
         isNativeApp,
@@ -636,23 +846,6 @@ function configureExtractedModules() {
         hideMapSelectedChip,
         updateMapNextChip,
         getMap: () => map
-    });
-    configureProfile({
-        getUserProfile,
-        getCurrentUser,
-        accountLabel,
-        getPinSizePref: () => pinSizePref,
-        getFeedbackVibrateEnabled: () => feedbackVibrateEnabled,
-        getFeedbackSoundEnabled: () => feedbackSoundEnabled,
-        getVehicleModeEnabled: () => isVehicleModeEnabled(),
-        setPinSizePref,
-        setFeedbackPrefs,
-        setVehicleModeEnabled,
-        showRiskAreasModal,
-        saveStorage,
-        backupData,
-        logoutUser,
-        showToast
     });
     configureRiskAreas({
         getStorage: () => (typeof localStorage !== 'undefined' ? localStorage : null),
@@ -690,22 +883,6 @@ function configureExtractedModules() {
     });
     configureFormPhones({
         showToast
-    });
-    configureNameSuggestions({
-        debounce,
-        getAgenda: () => agenda,
-        getDeliveries: () => deliveries,
-        findActiveRouteByAddress,
-        setTempPhones,
-        renderTempPhones,
-        checkAddressDuplicate,
-        saveStorage,
-        renderDeliveriesList,
-        getMarker,
-        updateMarkerIcon,
-        updateDeliveryStats,
-        showToast,
-        addDeliveryDirect
     });
     configureNotDelivered({
         getDeliveries: () => deliveries,
@@ -1196,43 +1373,6 @@ function configureExtractedModules() {
         renderAgendaList,
         switchSidebarTab
     });
-    configureBackupUi({
-        getDeliveries: () => deliveries,
-        getAgenda: () => agenda,
-        setAgenda: (a) => { agenda = Array.isArray(a) ? a : []; },
-        getRoutes: () => routes,
-        getActiveRouteId: () => activeRouteId,
-        getNextSequenceNumber: () => nextSequenceNumber,
-        setNextAgendaId: (n) => { nextAgendaId = n; },
-        getNextAgendaId: () => nextAgendaId,
-        getUserProfile,
-        setUserProfile,
-        persistStorageNow,
-        syncActiveRouteIntoRoutes,
-        isNativeApp,
-        showToast,
-        showConfirmModal,
-        showChoiceModal,
-        hydrateRoutesFromData,
-        migrateTelefones,
-        migrateFavorito,
-        normalizeDeliveryCoords,
-        hydrateAllPhotos,
-        exportPhotoDataUrl: idbExportPhotoDataUrl,
-        idbPutPhoto,
-        yieldToUiFrame,
-        seedIdCounter,
-        clearRouteOverlay,
-        renderDeliveriesList,
-        renderRouteSwitcher,
-        renderAgendaList,
-        rebuildMarkers,
-        updateDeliveryStats,
-        updateOptimizeFabVisibility,
-        updateLastIdDisplay,
-        getAuthReady,
-        recoverUiAfterResume
-    });
 }
 configureExtractedModules();
 
@@ -1268,7 +1408,8 @@ function refreshMapAfterStorageLoad() {
 // ========== BOOT ==========
 // initAppUi / DOMContentLoaded / PWA / SW: src/js/app-boot.js (configureAppBoot).
 configureAppBoot({
-    initNameSuggestions,
+    // O autocomplete só carrega quando o motorista encosta no campo Nome.
+    initNameSuggestions: setupNameSuggestionsOnDemand,
     setupNewDeliveryPhoneUI,
     setupAddressDuplicateCheck,
     bindGalleryChrome,
