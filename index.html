@@ -49,6 +49,9 @@
 </div>
 <div class="app-container" id="appContainer">
     <aside class="sidebar" id="sidebar" aria-label="Painel de entregas">
+        <!-- Patch 12: no celular o painel virou folha inferior (bottom sheet); esta alça
+             expande/recolhe. No desktop ela não aparece. -->
+        <button type="button" class="sheet-handle" id="sheetHandle" aria-label="Expandir ou recolher o painel" aria-expanded="false"><span aria-hidden="true"></span></button>
         <div class="sidebar-header">
             <div class="brand">
                 <span class="brand-logo" aria-hidden="true"><svg viewBox="0 0 512 512" xmlns="http://www.w3.org/2000/svg"><rect width="512" height="512" rx="104" fill="#0f172a"/><path d="M148 388C148 300 372 330 372 200" fill="none" stroke="#3b82f6" stroke-width="30" stroke-linecap="round" stroke-dasharray="4 46"/><circle cx="148" cy="388" r="46" fill="#22c55e"/><circle cx="372" cy="176" r="46" fill="#ef4444"/></svg></span>

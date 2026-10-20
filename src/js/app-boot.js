@@ -111,7 +111,14 @@ export function initAppUi() {
     document.getElementById('newRouteBtn')?.addEventListener('click', deps.startNewRoute);
     document.getElementById('newRouteMenuBtn')?.addEventListener('click', deps.startNewRoute);
     document.getElementById('clearRouteBtn').addEventListener('click', deps.clearRoute);
-    document.getElementById('toggleSidebarBtn').addEventListener('click', deps.toggleSidebar);
+    document.getElementById('toggleSidebarBtn').addEventListener('click', () => {
+        // Patch 12: o botão de menu continua abrindo/fechando de vez; ao fechar,
+        // a folha volta ao encaixe padrão na próxima abertura.
+        document.getElementById('appContainer')?.classList.remove('sheet-expanded');
+        syncSheetHandle();
+        deps.toggleSidebar();
+    });
+    setupSheetHandle();
     document.getElementById('copyFromRouteBtn').addEventListener('click', deps.copyFromOtherRoute);
     document.getElementById('gpsBtn').addEventListener('click', deps.toggleGps);
     deps.updateGpsButton();
@@ -226,6 +233,32 @@ function scheduleMapsLoad() {
         if (typeof requestIdleCallback === 'function') requestIdleCallback(run, { timeout: 1500 });
         else run();
     }, MAPS_DEFER_MS);
+}
+
+/**
+ * Patch 12 — folha inferior (bottom sheet) no celular.
+ * Dois encaixes: padrão (~58% da tela, mapa visível em cima) e expandido (~90%).
+ * Puro DOM: não mexe em estado do app, só na classe do container.
+ */
+export function setupSheetHandle() {
+    const handle = document.getElementById('sheetHandle');
+    const app = document.getElementById('appContainer');
+    if (!handle || !app || handle.dataset.rfBound) return;
+    handle.dataset.rfBound = '1';
+    handle.addEventListener('click', () => {
+        app.classList.toggle('sheet-expanded');
+        syncSheetHandle();
+    });
+}
+
+function syncSheetHandle() {
+    const handle = document.getElementById('sheetHandle');
+    const app = document.getElementById('appContainer');
+    if (!handle || !app) return;
+    const aberto = !app.classList.contains('sidebar-hidden');
+    const expandido = app.classList.contains('sheet-expanded');
+    handle.setAttribute('aria-expanded', String(aberto && expandido));
+    handle.hidden = !aberto;
 }
 
 export function setupRuntimeBoot() {

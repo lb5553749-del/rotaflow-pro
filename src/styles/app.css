@@ -438,7 +438,9 @@ html.dark-theme .camera-quick { background: #1e293b; color: #93c5fd; }
 .suggestion-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .form-row-2cols { display: flex; gap: 12px; }
 .form-row-2cols .form-group { flex: 1; }
-@media (max-width: 780px) { .sidebar { position: absolute; left: 0; height: 100%; z-index: 200; transform: translateX(0); transition: transform 0.28s cubic-bezier(0.25, 1, 0.5, 1); width: 85%; max-width: 320px; will-change: transform; } .app-container.sidebar-hidden .sidebar { transform: translateX(-100%); } .app-container:not(.sidebar-hidden) .map-fab-rail { display: none; } }
+/* Patch 12: as regras mobile da sidebar (posição, largura, transform) vivem agora
+   num bloco único no fim do arquivo, junto com a folha inferior. Duas fontes de
+   verdade aqui era o que deixava a sidebar cobrindo o mapa no celular. */
 .modal-overlay {
     position: fixed; inset: 0; z-index: 2000;
     display: flex; align-items: center; justify-content: center;
@@ -2580,7 +2582,6 @@ html.tem-sessao-morta .login-screen { display: flex; }
   }
 }
 @media (max-width: 780px) {
-  .sidebar { width: min(92vw, 360px); max-width: none; box-shadow: var(--shadow); }
   .btn-menu { left: 10px; }
   .stats { gap: 10px; }
   .stat span { font-size: 1rem; }
@@ -3798,3 +3799,97 @@ body {
 }
 .add-phone-row button:hover { background: #dbe6fd; }
 html.dark-theme .add-phone-row button { background: var(--accent-soft); color: var(--accent); }
+
+/* ============================================================================
+   PATCH 12 · Mapa atrás, painel em folha inferior (mobile)
+   ----------------------------------------------------------------------------
+   Antes: no celular o painel ocupava 92% da largura e deslizava para a esquerda,
+   então ou se via a lista ou se via o mapa.
+   Agora: o mapa fica sempre atrás e o painel é uma folha encaixada embaixo, com
+   dois encaixes — padrão (~58% da tela) e expandido (~90%) pela alça.
+   Desktop (>780px) não muda em nada.
+   ========================================================================= */
+.sheet-handle { display: none; }
+
+@media (max-width: 780px) {
+  /* a folha */
+  .sidebar {
+    position: fixed;
+    left: 0; right: 0; bottom: 0; top: auto;
+    width: 100% !important;
+    max-width: none !important;
+    height: 58dvh;
+    z-index: 2000;
+    background: var(--surface);
+    border-right: 0;
+    border-radius: var(--radius-xl) var(--radius-xl) 0 0;
+    box-shadow: 0 -10px 34px rgba(9, 18, 33, 0.20);
+    transform: translateY(0);
+    transition: transform 0.32s cubic-bezier(0.22, 1, 0.36, 1),
+                height 0.32s cubic-bezier(0.22, 1, 0.36, 1);
+    will-change: transform, height;
+  }
+  .app-container.sheet-expanded .sidebar { height: 90dvh; }
+  .app-container.sidebar-hidden .sidebar {
+    transform: translateY(100%);
+    visibility: visible; /* a regra base usava visibility:hidden junto com width 0 */
+    width: 100% !important;
+    padding: 0;
+    overflow: hidden;
+  }
+
+  /* alça de arrastar/tocar */
+  .sheet-handle {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 100%;
+    height: 22px;
+    padding: 0;
+    border: 0;
+    background: transparent;
+    cursor: pointer;
+    flex-shrink: 0;
+    -webkit-tap-highlight-color: transparent;
+    touch-action: manipulation;
+  }
+  .sheet-handle span {
+    width: 42px; height: 4px; border-radius: 999px;
+    background: #d3dae5;
+    transition: background 0.16s ease, width 0.16s ease;
+  }
+  .sheet-handle:active span { background: var(--line-strong); width: 52px; }
+
+  /* cabeçalho da folha fica mais compacto: o mapa precisa de espaço */
+  .sidebar-header { padding: 4px 16px 6px; }
+
+  /* as ações flutuantes do mapa sobem para cima da folha */
+  .app-container:not(.sidebar-hidden) .map-fab-rail {
+    display: flex;
+    bottom: calc(58dvh + 12px + var(--safe-b));
+  }
+  /* expandida, a folha cobre o mapa: os FABs saem de cena */
+  .app-container.sheet-expanded .map-fab-rail { display: none; }
+  /* folha recolhida: o mapa é a tela inteira, os FABs descem para o canto */
+  .app-container.sidebar-hidden .map-fab-rail { bottom: calc(16px + var(--safe-b)); }
+
+  /* O mapa ocupa só a faixa visível (e não a tela toda por baixo da folha):
+     mantém o logo/atribuição do Google visíveis (exigência do Maps) e evita
+     desenhar a parte coberta — ganho de GPU/bateria no celular. */
+  .map-area {
+    height: 42dvh;
+    transition: height 0.32s cubic-bezier(0.22, 1, 0.36, 1);
+  }
+  .app-container.sheet-expanded .map-area { height: 10dvh; }
+  .app-container.sidebar-hidden .map-area { height: 100dvh; }
+}
+
+/* no desktop a alça nunca aparece, mesmo se a classe existir */
+@media (min-width: 781px) {
+  .sheet-handle { display: none !important; }
+  .app-container.sheet-expanded .sidebar { height: auto; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .sidebar { transition: none !important; }
+}
