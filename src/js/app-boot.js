@@ -176,7 +176,11 @@ export function setupDomContentLoadedBoot() {
     });
 }
 
-function loadGoogleMapsJs() {
+/** Quanto tempo o SDK do Maps pode esperar antes de carregar mesmo sem interação. */
+const MAPS_DEFER_MS = 600;
+
+/** Carrega o JSON do SDK. Idempotente: segunda chamada não injeta outro script. */
+export function loadGoogleMapsJs() {
     const key = window.ROTAFLOW_MAPS_KEY || '';
     if (!key || document.querySelector('script[data-rf-maps]')) return;
     const s = document.createElement('script');
@@ -188,9 +192,47 @@ function loadGoogleMapsJs() {
     document.head.appendChild(s);
 }
 
+/**
+ * O SDK do Google Maps tem ~2 MB e não é necessário para a primeira pintura: a lista,
+ * a agenda e o painel renderizam sem ele. Carregar no boot disputa CPU/rede com o
+ * parse do bundle. Aqui o loader é disparado depois do frame pintado, e antecipado se
+ * o motorista tocar no mapa antes disso.
+ * O loader continua sendo o mesmo (`loading=async` + `callback=initMap`), só a injeção
+ * do <script> muda de momento — nada é re-inserido.
+ */
+function scheduleMapsLoad() {
+    let done = false;
+    const run = () => {
+        if (done) return;
+        done = true;
+        cleanup();
+        loadGoogleMapsJs();
+    };
+    const onInteract = (ev) => {
+        if (ev.target && ev.target.closest && ev.target.closest('#map, capacitor-google-map')) run();
+    };
+    const cleanup = () => {
+        clearTimeout(timer);
+        document.removeEventListener('pointerdown', onInteract, true);
+        document.removeEventListener('touchstart', onInteract, true);
+        window.removeEventListener('online', run);
+    };
+
+    // interação no mapa ou volta da rede -> carrega na hora
+    document.addEventListener('pointerdown', onInteract, true);
+    document.addEventListener('touchstart', onInteract, true);
+    window.addEventListener('online', run);
+
+    // espera o primeiro frame estar pintado e o main thread respirar
+    const timer = setTimeout(() => {
+        if (typeof requestIdleCallback === 'function') requestIdleCallback(run, { timeout: 1500 });
+        else run();
+    }, MAPS_DEFER_MS);
+}
+
 export function setupRuntimeBoot() {
     window.initMap = deps.initMap;
-    loadGoogleMapsJs();
+    scheduleMapsLoad();
     window.addEventListener('beforeunload', deps.persistStorageNow);
 
     if ('serviceWorker' in navigator && !deps.isNativeApp()) {
