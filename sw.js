@@ -1,5 +1,5 @@
 /* RotaFlow Pro — service worker (app shell offline) */
-const CACHE_NAME = 'rotaflow-shell-v91.da3fb76d8e';
+const CACHE_NAME = 'rotaflow-shell-v91.7a3badace1';
 const RUNTIME_CACHE = 'rotaflow-runtime-v1';
 const IMAGE_CACHE = 'rotaflow-images-v1';
 const API_CACHE = 'rotaflow-api-v1';
