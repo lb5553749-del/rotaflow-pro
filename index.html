@@ -2,6 +2,16 @@
 <html lang="pt-BR">
 <head>
     <meta charset="UTF-8">
+    <!-- Anti-flash: quem já usou o app neste aparelho não vê a tela de login "piscar"
+         a cada abertura. Roda antes do CSS pintar (~200 B, sem rede) e é revertido
+         pelo próprio app se a sessão não existir (auth.js → showLoginScreen). -->
+    <script>
+    try {
+        if (localStorage.getItem('rotaflow_auth_session') || localStorage.getItem('rotaflow_local_uid')) {
+            document.documentElement.className += ' tem-sessao';
+        }
+    } catch (_) {}
+    </script>
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
     <meta name="theme-color" content="#0f172a">
     <meta name="description" content="RotaFlow Pro — gestão de entregas com mapa, rota e agenda">
@@ -160,7 +170,15 @@
                         </div>
                     </div>
                     <div class="search-box"><i class="fas fa-search"></i><input type="search" id="routeSearchInput" placeholder="Buscar na rota"></div>
-                    <div id="deliveriesList" class="list-scroll"></div>
+                    <div id="deliveriesList" class="list-scroll">
+                        <!-- Placeholder do patch 08: sai no primeiro render da lista. -->
+                        <div class="list-skeleton" aria-hidden="true">
+                            <div class="list-skeleton-item"></div>
+                            <div class="list-skeleton-item"></div>
+                            <div class="list-skeleton-item"></div>
+                            <div class="list-skeleton-item"></div>
+                        </div>
+                    </div>
                 </div>
             </section>
             <section class="sidebar-panel" data-panel="agenda" id="panelAgenda">
@@ -294,6 +312,29 @@
 <!-- Gerado por `npm run build` a partir de src/js/ (inclui native/bridge.js). Firebase SDK carrega sob demanda;
      Maps JS é injetado por app-boot.js com window.ROTAFLOW_MAPS_KEY. ESM: os chunks
      em build/chunks/ são carregados por import() sob demanda a partir do main.js. -->
+<!-- Patch 08: quem já tem rota salva abre direto na aba "Rota" (a lista é o que ele
+     quer ver). Roda antes do primeiro paint; quem nunca usou continua caindo no
+     formulário "Nova entrega". -->
+<script>
+try {
+    var uid = localStorage.getItem('rotaflow_local_uid') || 'guest';
+    var salvo = JSON.parse(localStorage.getItem('rotaflow_data_' + uid) || '{}');
+    var temRota = (Array.isArray(salvo.routes) && salvo.routes.some(function (r) { return r && r.deliveries && r.deliveries.length; }))
+        || (Array.isArray(salvo.deliveries) && salvo.deliveries.length > 0);
+    if (temRota) {
+        var abas = document.querySelector('.sidebar-tabs');
+        var paineis = document.querySelector('.sidebar-panels');
+        if (abas) {
+            abas.querySelector('[data-tab="nova"]').classList.remove('active');
+            abas.querySelector('[data-tab="rota"]').classList.add('active');
+        }
+        if (paineis) {
+            paineis.querySelector('[data-panel="nova"]').classList.remove('active');
+            paineis.querySelector('[data-panel="rota"]').classList.add('active');
+        }
+    }
+} catch (_) {}
+</script>
 <script type="module" src="./build/chunks/app.js"></script>
 </body>
 </html>

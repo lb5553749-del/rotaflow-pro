@@ -176,6 +176,15 @@ export async function loadStorage() {
         deps.hydrateRoutesFromData({});
     }
 
+    // Patch 08: a lista da rota é o que o motorista quer ver ao abrir o app, então ela
+    // (e o selo de contagem) saem ANTES da agenda, do perfil, do histórico e do
+    // persistStorageNow() — que serializa o estado inteiro e custa dezenas de ms.
+    // O resto do boot continua igual e re-renderiza o que precisar depois.
+    deps.seedIdCounter();
+    deps.updateDeliveryStats();
+    deps.renderDeliveriesList();
+    deps.renderRouteSwitcher();
+
     loadAgendaFromStorage();
     loadAndMigrateProfile();
 
@@ -186,11 +195,7 @@ export async function loadStorage() {
     deps.scheduleOrphanPhotoPrune();
     persistStorageNow();
 
-    deps.seedIdCounter();
     deps.updateAgendaCountBadge();
-    deps.updateDeliveryStats();
-    deps.renderDeliveriesList();
-    deps.renderRouteSwitcher();
     deps.renderAgendaList();
     deps.renderHistoryList();
     deps.scheduleListPhotoHydration();

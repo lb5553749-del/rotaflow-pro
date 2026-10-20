@@ -2424,6 +2424,28 @@ html.native-map .toast-message {
     linear-gradient(180deg, #0b1220 0%, #0f172a 48%, #1e293b 100%);
 }
 .login-screen.hidden { display: none; }
+/* Placeholder da lista entre o primeiro paint e o render real (patch 08).
+   Usa as mesmas variáveis do tema, então funciona no claro e no escuro. */
+.list-skeleton { padding: 10px 10px 0; display: flex; flex-direction: column; gap: 10px; }
+.list-skeleton-item {
+  height: 74px; border-radius: var(--radius-md);
+  background: linear-gradient(100deg, var(--line) 30%, var(--surface) 50%, var(--line) 70%);
+  background-size: 220% 100%;
+  animation: listSkeleton 1.1s ease-in-out infinite;
+  opacity: 0.65;
+}
+@keyframes listSkeleton {
+  from { background-position: 140% 0; }
+  to { background-position: -40% 0; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .list-skeleton-item { animation: none; }
+}
+/* Quem já tem sessão não precisa ver a tela de login nem por 150 ms no boot.
+   A marca `tem-sessao` é posta por um script inline no <head> do index.html. */
+html.tem-sessao .login-screen { display: none; }
+/* Se a sessão não se confirmar, o app remove a marca e a tela volta a aparecer. */
+html.tem-sessao-morta .login-screen { display: flex; }
 .login-card {
   width: min(400px, 100%);
   background: #fff;

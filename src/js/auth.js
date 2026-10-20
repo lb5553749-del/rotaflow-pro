@@ -96,10 +96,21 @@ export function hideLoginScreen() {
 }
 
 export function showLoginScreen() {
+    // O index.html marca <html class="tem-sessao"> quando há sessão salva, para o
+    // motorista não ver a tela de login piscar no boot. Se a sessão não se confirmar,
+    // aqui a marca cai e a tela volta a aparecer de verdade.
+    const raiz = document.documentElement;
+    raiz.classList.remove('tem-sessao');
+    raiz.classList.add('tem-sessao-morta');
     document.getElementById('loginScreen')?.classList.remove('hidden');
 }
 
-export async function enterAsUser(user) {
+/**
+ * @param {any} user
+ * @param {{ silent?: boolean }} [opts] `silent`: restauração de sessão no boot —
+ *   não repete o "Bem-vindo" a cada abertura (o toast ficava cobrindo o topo do app).
+ */
+export async function enterAsUser(user, opts = {}) {
     currentUser = user;
     authReady = true;
     saveAuthSession(typeof localStorage !== 'undefined' ? localStorage : null, user);
@@ -111,7 +122,7 @@ export async function enterAsUser(user) {
     updateUserChip();
     hideLoginScreen();
     await deps.loadStorage();
-    deps.showToast(`Bem-vindo, ${user.displayName || 'motorista'}`);
+    if (!opts.silent) deps.showToast(`Bem-vindo, ${user.displayName || 'motorista'}`);
     deps.maybeAutoBackupOnDayChange();
 }
 
@@ -147,7 +158,7 @@ export function initAuthUi() {
     const session = loadAuthSession(typeof localStorage !== 'undefined' ? localStorage : null);
     const restored = localUserFromSession(session);
     if (restored) {
-        enterAsUser(restored);
+        enterAsUser(restored, { silent: true });
     } else {
         // Único modo: entra direto neste aparelho.
         continueLocally();
