@@ -3399,3 +3399,402 @@ html.dark-theme .backup-reminder-title {
     transition-duration: 0.01ms !important;
   }
 }
+
+/* ============================================================================
+   ROTASFLOW · DESIGN SYSTEM v2 — "Ops Claro" (patch 11)
+   ----------------------------------------------------------------------------
+   Regras:
+   - tudo aqui é apresentação; nenhum seletor muda markup ou comportamento;
+   - os tokens (:root) viram a única fonte de cor/tipografia;
+   - bordas de 1px no lugar de sombra; sombra só em camada elevada (painel/modal);
+   - cor tem significado: cinza = pendente, azul = em rota, verde = entregue,
+     vermelho = falhou. Nada de vermelho para "ainda não fiz".
+   - piso tipográfico de 11px no celular.
+   ========================================================================= */
+
+:root {
+  --bg: #eef1f6;
+  --surface: #ffffff;
+  --surface-2: #f6f8fb;
+  --ink: #0e1726;
+  --muted: #5b6b82;
+  --line: #dfe4ec;
+  --line-strong: #c8d1e0;
+  --accent: #1b4dd8;
+  --accent-soft: #e8eefe;
+  --ok: #0f9d58;
+  --ok-soft: #e5f5ec;
+  --danger: #d92d20;
+  --danger-soft: #fdecea;
+  --warn: #b54708;
+  --warn-soft: #fdf2e6;
+  --radius-sm: 8px;
+  --radius-md: 10px;
+  --radius-lg: 14px;
+  --radius-xl: 18px;
+  --shadow-card: none;
+  --shadow-elev: 0 -8px 30px rgba(9, 18, 33, 0.14);
+  --fs-2xs: 0.6875rem; /* 11px */
+  --fs-xs: 0.75rem;    /* 12px */
+  --fs-sm: 0.8125rem;  /* 13px */
+  --fs-md: 0.9375rem;  /* 15px */
+  --fs-lg: 1.0625rem;  /* 17px */
+}
+
+/* ===== 1. Base ===== */
+body {
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, system-ui, sans-serif;
+  letter-spacing: -0.011em;
+  background: var(--bg);
+  color: var(--ink);
+}
+.app-container { background: var(--bg); }
+.sidebar { background: var(--surface); border-right: 1px solid var(--line); }
+
+/* ===== 2. Cabeçalho ===== */
+.sidebar-header {
+  padding: 12px 16px 8px;
+  align-items: center;
+  flex-wrap: nowrap;
+  gap: 8px;
+}
+/* cabeçalho em UMA linha: marca | (Instalar) (estado de sync) */
+.sidebar-header .brand { flex: 0 0 auto; }
+.sidebar-header-meta { flex: 1 1 auto; min-width: 0; flex-wrap: nowrap; gap: 6px; }
+.sidebar-header-meta .sync-status { order: 2; }
+.sidebar-header-meta .install-btn { order: 1; }
+.brand { gap: 9px; }
+.brand-logo { width: 30px; height: 30px; border-radius: 8px; }
+.brand h1 { font-size: 0.98rem; font-weight: 700; letter-spacing: -0.02em; }
+.brand-pro {
+  font-size: 0.52rem; letter-spacing: 0.09em; margin-left: 6px;
+  padding: 2px 5px; border-radius: 4px; vertical-align: 0.16em;
+  background: var(--accent-soft); color: var(--accent);
+}
+.brand p { font-size: 0.66rem; color: var(--muted); }
+/* a conta e o último ID saem do cabeçalho (viram item do Perfil); o botão
+   "Instalar" continua, só que discreto — é a única porta para o PWA. */
+.login-user-chip, .last-id-container { display: none !important; }
+.install-btn {
+  border-radius: 7px; border: 1px solid var(--line); background: var(--surface);
+  color: var(--muted); font-size: var(--fs-2xs); font-weight: 600;
+  padding: 5px 9px; min-height: 0;
+}
+.sync-status { background: transparent; border: 0; padding: 0; gap: 6px; }
+.sync-indicator { width: 7px !important; height: 7px !important; background: var(--ok); }
+.sync-state { font-size: 0.66rem !important; font-weight: 600 !important; color: var(--muted) !important; }
+
+/* ===== 3. Abas ===== */
+.sidebar-tabs {
+  display: flex; gap: 2px;
+  margin: 0; padding: 0 12px;
+  background: transparent; border-radius: 0;
+  border-bottom: 1px solid var(--line);
+}
+.sidebar-tabs button {
+  flex: 1 1 0; min-height: 40px; padding: 10px 4px 9px;
+  border-radius: 0;
+  font-size: 0.71rem; font-weight: 600;
+  letter-spacing: 0.03em; text-transform: uppercase;
+  color: var(--muted);
+  background: transparent !important; box-shadow: none !important;
+  border-bottom: 2px solid transparent;
+  transition: color 0.16s ease, border-color 0.16s ease;
+}
+.sidebar-tabs button.active { color: var(--ink); border-bottom-color: var(--accent); }
+.sidebar-tabs .tab-count {
+  min-width: 17px; height: 17px; padding: 0 5px;
+  font-size: 0.6rem; font-weight: 700; margin-left: 5px;
+  font-variant-numeric: tabular-nums;
+  background: var(--bg); color: var(--muted);
+}
+.sidebar-tabs button.active .tab-count { background: var(--accent-soft); color: var(--accent); }
+
+/* ===== 4. Cartões e títulos ===== */
+.section-card {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  box-shadow: none;
+  padding: 16px;
+}
+.section-title {
+  border-left: 0; padding-left: 0; margin-bottom: 12px;
+  font-size: 0.72rem; font-weight: 700; letter-spacing: 0.08em;
+  text-transform: uppercase; color: var(--muted);
+  display: flex; align-items: center; gap: 7px;
+}
+.section-title i { color: var(--muted); }
+.section-title::after { content: ''; flex: 1; height: 1px; background: var(--line); }
+.form-nova .section-card { border-top: 3px solid var(--accent); }
+
+/* ===== 5. Busca ===== */
+.search-box {
+  gap: 8px; padding: 9px 12px; margin-bottom: 10px;
+  border-radius: var(--radius-sm);
+  background: var(--surface); border: 1px solid var(--line);
+}
+.search-box > i { flex-shrink: 0; color: var(--muted); }
+.search-box input { font-size: 0.86rem; min-width: 0; }
+.search-box input::placeholder { color: var(--muted); }
+
+/* ===== 6. Item de entrega ===== */
+.delivery-item {
+  position: relative; overflow: hidden;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  box-shadow: none;
+  padding: 12px 12px 12px 15px;
+  margin-bottom: 8px;
+}
+.delivery-item:hover { border-color: var(--line-strong); }
+/* barra de status: lê a rota inteira sem ler texto */
+.delivery-item::before {
+  content: ''; position: absolute; left: 0; top: 0; bottom: 0; width: 3px;
+  background: #cfd7e3;
+}
+.delivery-item:has(.status-em-rota)::before { background: var(--accent); }
+.delivery-item:has(.status-entregue)::before { background: var(--ok); }
+.delivery-item:has(.status-falhou)::before { background: var(--danger); }
+
+.delivery-header { align-items: flex-start; gap: 8px; }
+.delivery-title-row { gap: 7px; align-items: center; }
+.delivery-id {
+  font-variant-numeric: tabular-nums; font-size: 0.72rem; font-weight: 700;
+  min-width: 22px; height: 22px; border-radius: 6px; padding: 0 4px;
+  background: var(--surface-2); color: var(--muted);
+  border: 1px solid var(--line);
+  display: inline-flex; align-items: center; justify-content: center;
+}
+.delivery-title-row strong {
+  font-size: 0.94rem; font-weight: 650; letter-spacing: -0.015em; color: var(--ink);
+}
+.status-badge {
+  font-size: 0.6rem; font-weight: 700; letter-spacing: 0.06em;
+  text-transform: uppercase; border-radius: 5px; padding: 3px 6px;
+}
+/* cor semântica: pendente não é erro */
+.status-pendente { background: #f1f4f9; color: #475467; }
+.status-em-rota { background: var(--accent-soft); color: var(--accent); }
+.status-entregue { background: var(--ok-soft); color: #0f7a45; }
+.status-falhou { background: var(--danger-soft); color: #b42318; }
+.status-voltar-depois { background: var(--warn-soft); color: var(--warn); }
+
+.delivery-body-line {
+  font-size: 0.79rem; color: var(--muted);
+  display: flex; gap: 7px; align-items: flex-start; line-height: 1.4;
+}
+.delivery-body-line i { margin-top: 3px; font-size: 0.68rem; opacity: 0.8; }
+.delivery-links { gap: 6px; margin-top: 8px; }
+.camera-quick, .whatsapp-link, .track-link {
+  font-size: 0.71rem; font-weight: 600; letter-spacing: 0.01em;
+  border-radius: 7px; padding: 7px 10px; min-height: 32px;
+  display: inline-flex; align-items: center; gap: 6px;
+}
+.camera-quick { background: var(--surface-2); border: 1px solid var(--line); color: #344054; }
+.whatsapp-link { background: var(--ok-soft); border: 1px solid #cfeadd; color: #0f7a45; }
+.track-link { background: var(--accent-soft); border: 1px solid #dbe3f6; color: var(--accent); }
+.delivery-actions {
+  border-top: 1px solid var(--line); padding-top: 10px; margin-top: 10px;
+}
+.select-status {
+  font-size: 0.78rem; font-weight: 600;
+  border-radius: var(--radius-sm); min-height: 34px; padding: 0 10px;
+  border: 1px solid var(--line); background: var(--surface); color: var(--ink);
+}
+.icon-btn { border-radius: 8px; }
+
+/* ===== 7. Ações da rota: grade 2x2 (nada escapa do cartão) ===== */
+.route-tools { display: block; margin-bottom: 10px; }
+.route-tools-end {
+  display: grid !important;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 6px !important; margin-left: 0 !important; flex: initial !important;
+}
+.route-tools-end > * { min-width: 0; justify-content: center; }
+.route-tools .route-tool-btn { width: 100%; }
+.route-tools .overflow-wrap { display: flex; justify-content: center; }
+.route-tool-btn {
+  border-radius: var(--radius-sm); border: 1px solid var(--line);
+  padding: 6px 11px; font-size: 0.76rem; font-weight: 600;
+  min-height: 36px; box-shadow: none !important; background: var(--surface);
+  color: var(--ink);
+}
+.route-tool-btn .rt-label, .route-tool-btn > span:last-child {
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.route-tool-btn.new-route { background: var(--accent); border-color: var(--accent); color: #fff; }
+.route-tool-btn.new-route .rt-icon { background: rgba(255, 255, 255, 0.18); color: #fff; }
+.route-tool-btn.danger { background: var(--surface); border-color: #f4cfcb; color: #b42318; }
+.route-tool-btn.danger .rt-icon { background: var(--danger-soft); color: var(--danger); }
+.overflow-trigger {
+  border-radius: var(--radius-sm) !important; border: 1px solid var(--line) !important;
+  width: 36px !important; height: 36px !important;
+  min-width: 36px !important; min-height: 36px !important;
+  background: var(--surface) !important; color: var(--ink) !important;
+}
+
+/* ===== 8. Progresso e resumo do dia ===== */
+.day-progress-label { font-size: 0.78rem; color: var(--muted); }
+.day-progress-pct { font-variant-numeric: tabular-nums; font-weight: 700; color: var(--accent); }
+.day-progress-bar { height: 5px; border-radius: 999px; overflow: hidden; background: #e7ecf3; }
+.day-progress-fill { background: var(--accent); border-radius: 999px; }
+.day-summary { gap: 6px; margin: -2px 0 12px; }
+.day-summary-item {
+  font-size: 0.68rem; font-weight: 600; letter-spacing: 0.02em;
+  border-radius: 6px; padding: 4px 8px;
+  font-variant-numeric: tabular-nums;
+  background: var(--surface-2); color: var(--muted);
+}
+.day-summary-item.ok { background: var(--ok-soft); color: #0f7a45; }
+.day-summary-item.warn { background: var(--warn-soft); color: var(--warn); }
+.day-summary-item.km { background: var(--accent-soft); color: var(--accent); }
+
+/* ===== 9. Estado vazio ===== */
+.empty-state { padding: 30px 18px 24px; }
+.empty-state-mark { display: none; }
+.empty-state-title { font-size: 0.98rem; font-weight: 700; letter-spacing: -0.01em; }
+.empty-state-msg { font-size: 0.82rem; color: var(--muted); margin-bottom: 14px; }
+.empty-state-cta {
+  min-height: 38px; padding: 0 14px; border-radius: var(--radius-sm);
+  font-size: 0.8rem; font-weight: 600;
+  border: 1px solid var(--line); background: var(--surface); color: var(--ink);
+}
+.empty-state-cta:hover { background: var(--surface-2); }
+
+/* ===== 10. Formulário e ação primária ===== */
+.form-group { margin-bottom: 14px; }
+.form-group label, .modal-field-label {
+  font-size: 0.67rem; font-weight: 700; letter-spacing: 0.08em;
+  text-transform: uppercase; color: var(--muted);
+}
+.form-group input, .form-group select {
+  border-radius: var(--radius-sm); padding: 13px; font-size: 0.92rem;
+  border: 1px solid var(--line); background: var(--surface); color: var(--ink);
+}
+.form-group input:focus, .form-group select:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px rgba(27, 77, 216, 0.14);
+}
+.btn-primary {
+  border-radius: var(--radius-md); min-height: 48px;
+  font-size: 0.92rem; font-weight: 650; letter-spacing: 0.01em;
+  background: var(--accent);
+}
+.checkbox-group label { font-size: 0.82rem; color: var(--ink); letter-spacing: 0; text-transform: none; font-weight: 500; }
+
+/* ===== 11. Painel da entrega (folha elevada) ===== */
+.delivery-bottom-panel,
+.delivery-bottom-panel.red-bg,
+.delivery-bottom-panel.green-bg,
+.delivery-bottom-panel.orange-bg {
+  background: var(--surface) !important;
+  border-top: 1px solid var(--line);
+  box-shadow: var(--shadow-elev);
+  border-radius: var(--radius-xl) var(--radius-xl) 0 0;
+}
+.delivery-bottom-panel .panel-phone-edit,
+.delivery-bottom-panel .panel-observacao,
+.delivery-bottom-panel .panel-pacotes-control,
+.delivery-bottom-panel.red-bg .panel-phone-edit,
+.delivery-bottom-panel.red-bg .panel-observacao,
+.delivery-bottom-panel.red-bg .panel-pacotes-control {
+  background: var(--surface-2) !important;
+  border: 1px solid var(--line) !important;
+  border-radius: var(--radius-md) !important;
+}
+.delivery-bottom-panel .panel-title-block h3,
+.delivery-bottom-panel.red-bg .panel-title-block h3 { color: var(--ink) !important; }
+.delivery-bottom-panel .panel-mini-address,
+.delivery-bottom-panel .panel-client-name { color: var(--muted) !important; }
+.panel-pacotes-control button { border-radius: 7px; }
+.close-panel-btn { border-radius: var(--radius-sm); }
+
+/* hierarquia das ações: "Entregar" é a primária; WhatsApp vira contorno */
+.spoke-actions { display: grid !important; grid-template-columns: 1fr 1fr; gap: 8px; }
+.spoke-actions .panel-action-btn {
+  min-height: 46px !important; border-radius: var(--radius-md) !important;
+  flex-direction: row !important; gap: 8px !important;
+  font-size: 0.8rem !important; font-weight: 650 !important; letter-spacing: 0.01em;
+  border: 1px solid var(--line);
+  background: var(--surface) !important; color: var(--ink) !important;
+  box-shadow: none !important;
+}
+.spoke-actions .panel-action-btn i { font-size: 0.95rem !important; }
+.spoke-actions .panel-action-btn.deliver {
+  background: var(--accent) !important; border-color: var(--accent); color: #fff !important;
+}
+.spoke-actions .panel-action-btn.deliver i { color: #fff !important; }
+.spoke-actions .panel-action-btn.whatsapp-primary {
+  background: var(--surface) !important; color: var(--ink) !important; border-color: var(--line) !important;
+}
+.spoke-actions .panel-action-btn.whatsapp-primary i { color: #1a9e57 !important; }
+.spoke-actions .panel-action-btn.fail i { color: var(--danger) !important; }
+.spoke-actions .panel-action-btn.nav-fallback {
+  background: var(--surface) !important; color: var(--ink) !important; border-color: var(--line) !important;
+}
+.spoke-actions .panel-action-btn.nav-fallback i { color: var(--accent) !important; }
+.panel-photo-toolbar .photo-btn { border-radius: var(--radius-sm); min-height: 42px; font-size: 0.78rem; }
+/* título do painel: endereço é a linha principal, mas sem competir com a ação */
+.delivery-bottom-panel .panel-title-block h3 { font-size: 1rem; font-weight: 700; letter-spacing: -0.015em; }
+.delivery-bottom-panel .panel-meta-line, .delivery-bottom-panel .panel-id-line {
+  font-size: var(--fs-2xs); letter-spacing: 0.04em; font-variant-numeric: tabular-nums;
+  text-transform: uppercase; color: var(--muted);
+}
+
+/* ===== 12. Mapa: FABs ===== */
+.map-fab-btn {
+  width: 44px !important; height: 44px !important;
+  background: rgba(255, 255, 255, 0.97);
+  box-shadow: 0 1px 3px rgba(9, 18, 33, 0.16);
+  color: var(--ink);
+}
+
+/* ===== 13. Backup e avisos ===== */
+.backup-reminder {
+  border-radius: var(--radius-sm); border: 1px solid #f3e0c0; background: #fffbf2;
+}
+.backup-reminder-title { color: var(--warn); }
+.backup-reminder-actions .backup-now { border-radius: 7px; background: var(--warn); color: #fff; }
+.backup-reminder-actions .backup-dismiss { color: var(--muted); }
+
+/* ===== 14. Polimento final (patch 11) ===== */
+/* "Limpar" é destrutiva, mas não pode competir com a ação primária */
+.route-tool-btn.danger .rt-icon { background: transparent !important; color: var(--danger) !important; }
+.route-tool-btn.danger { border-color: var(--line) !important; }
+.route-tool-btn.danger:hover { border-color: #f4cfcb !important; background: #fff8f7 !important; }
+/* aviso de backup: informa sem gritar */
+.backup-reminder { padding: 10px 12px; gap: 8px; }
+.backup-reminder-title { font-size: 0.78rem; font-weight: 700; }
+.backup-reminder-text { font-size: 0.76rem; color: var(--muted); line-height: 1.35; }
+.backup-reminder-actions .backup-now {
+  background: transparent !important; color: var(--warn) !important;
+  font-size: 0.76rem; font-weight: 700; padding: 4px 6px; border-radius: 6px;
+}
+.backup-reminder-actions .backup-now:hover { background: var(--warn-soft) !important; }
+.backup-reminder-actions .backup-dismiss { font-size: 0.74rem; }
+/* painel de filtros alinhado com a busca (mesma altura e raio) */
+.filters-panel, .filters-placeholder {
+  border-radius: var(--radius-sm);
+  border-color: var(--line);
+  background: var(--surface);
+}
+.filters-placeholder .filters-header, .filters-panel .filters-header { padding: 10px 12px; }
+.filters-title { font-size: 0.86rem; font-weight: 600; color: var(--ink); gap: 8px; }
+.filters-title i { color: var(--accent); font-size: 0.8rem; }
+.filters-placeholder .filters-actions i, .filters-panel .filters-actions i { color: var(--muted); }
+.filters-clear { font-size: 0.74rem; }
+
+/* linha de telefone: lugar para o número e botão "+" como ação secundária */
+.add-phone-row { grid-template-columns: minmax(0, 1.15fr) minmax(0, 0.9fr) 44px; gap: 6px; }
+.add-phone-row input[type="tel"], .add-phone-row input[type="text"] {
+  border-radius: var(--radius-sm); border: 1px solid var(--line);
+  padding: 11px 10px; font-size: 0.86rem; background: var(--surface);
+}
+.add-phone-row button {
+  background: var(--accent-soft); color: var(--accent);
+  border-radius: var(--radius-sm); min-height: 42px; padding: 0; font-size: 0.9rem;
+}
+.add-phone-row button:hover { background: #dbe6fd; }
+html.dark-theme .add-phone-row button { background: var(--accent-soft); color: var(--accent); }
