@@ -4638,3 +4638,128 @@ html.dark-theme .backup-reminder.is-visible {
     padding: 5px 6px;
   }
 }
+
+/* ============================================================================
+   PATCH 18 — moldura em ~230 px e item em ~110 px (redesign 2.0, parte 4)
+
+   Medição da 01-17 (412x915): moldura 258 px, item 120 px, 2 paradas inteiras
+   e a 3ª cortada. O que sobrava de peso: 47 px em progresso+resumo (duas
+   linhas para a mesma informação) e a linha de meta do item (13 px) empilhada
+   sobre o endereço.
+   Aqui: a meta vai para o lado direito do endereço (float + BFC) e a moldura
+   cai ~25 px, o que faz a 3ª parada caber inteira.
+   ========================================================================== */
+
+@media (max-width: 780px) {
+  /* alça e abas */
+  .sheet-handle {
+    height: 12px;
+  }
+  .sidebar-tabs button {
+    padding: 4px 6px;
+    font-size: .74rem;
+  }
+
+  /* progresso + resumo do dia: duas linhas finas em vez de duas gordas */
+  .day-progress {
+    margin-bottom: 2px;
+  }
+  .day-progress-head {
+    margin-bottom: 2px;
+  }
+  .day-progress-label,
+  .day-progress-pct {
+    font-size: .64rem;
+  }
+  .day-summary {
+    margin: 0 0 4px;
+    gap: 3px;
+  }
+  .day-summary-item {
+    padding: 0 6px;
+    font-size: .6rem;
+    line-height: 1.5;
+  }
+
+  /* banner de backup: 24 px */
+  .backup-reminder.is-visible {
+    padding: 3px 8px;
+    margin-bottom: 4px;
+  }
+  .backup-reminder .backup-now {
+    padding: 2px 7px;
+  }
+
+  /* ferramentas: 32 px */
+  .route-tools {
+    margin-bottom: 3px;
+  }
+  .route-tool-btn {
+    padding: 3px 6px;
+  }
+  .route-tool-btn .rt-icon {
+    width: 18px;
+    height: 18px;
+  }
+  .overflow-trigger {
+    height: 30px;
+  }
+
+  /* busca: 32 px */
+  .search-row {
+    margin-bottom: 3px;
+  }
+  .search-box input {
+    padding: 4px 0;
+  }
+
+  /* item: meta (ordem, janela, tempo, fotos) ao lado do endereço, não acima */
+  .delivery-item {
+    padding: 5px 9px;
+    margin-bottom: 3px;
+  }
+  .delivery-meta {
+    float: right;
+    margin: 0 0 0 6px;
+    max-width: 62%;
+    justify-content: flex-end;
+  }
+  .delivery-address {
+    overflow: hidden;
+  }
+  .delivery-foot {
+    margin-top: 2px;
+    padding-top: 2px;
+  }
+}
+
+/* PATCH 18 — resumo do dia na mesma linha do progresso (bloco B) */
+@media (max-width: 780px) {
+  .day-progress {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0 6px;
+  }
+  .day-progress-head {
+    order: 1;
+    flex: 0 0 auto;
+    margin: 0;
+    gap: 5px;
+  }
+  .day-progress-pct {
+    font-weight: 700;
+    color: var(--accent);
+  }
+  .day-summary {
+    order: 2;
+    flex: 0 1 auto;
+    margin: 0;
+    gap: 3px;
+  }
+  .day-progress-bar {
+    order: 3;
+    flex: 1 1 100%;
+    margin-top: 2px;
+  }
+}

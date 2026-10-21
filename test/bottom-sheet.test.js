@@ -263,3 +263,31 @@ describe('redesign 2.0, parte 3 (patch 17) — item compacto', () => {
         assert.match(mobile, /\.delivery-foot \.select-status\s*\{[^}]*height:\s*26px/s);
     });
 });
+
+describe('redesign 2.0, parte 4 (patch 18) — moldura em 230 px', () => {
+    const html = ler('index.html');
+    const css = ler('src/styles/app.css');
+    const mobile = blocoMobile(css);
+
+    it('o resumo do dia mora dentro do progresso (divide a linha no celular)', () => {
+        const progresso = html.slice(html.indexOf('id="dayProgress"'), html.indexOf('id="routeSwitcher"'));
+        assert.match(progresso, /id="daySummary"/);
+        // e continua depois da barra: no desktop a ordem visual não muda
+        assert.ok(progresso.indexOf('id="dayProgressBar"') < progresso.indexOf('id="daySummary"'));
+    });
+
+    it('no celular progresso e resumo ficam na mesma linha, com a barra embaixo', () => {
+        assert.match(mobile, /\.day-progress\s*\{[^}]*display:\s*flex/s);
+        assert.match(mobile, /\.day-progress-bar\s*\{[^}]*flex:\s*1 1 100%/s);
+    });
+
+    it('a meta do item (tempo, janela, risco) vai ao lado do endereço, não acima', () => {
+        assert.match(mobile, /\.delivery-meta\s*\{[^}]*float:\s*right/s);
+    });
+
+    it('alça e abas ficam mais baixas, sem furar alvo de toque dos botões', () => {
+        assert.match(mobile, /\.sheet-handle\s*\{\s*height:\s*12px/);
+        // os botões de ferramenta continuam com min-height de toque (36 px)
+        assert.match(css, /min-height:\s*36px/);
+    });
+});

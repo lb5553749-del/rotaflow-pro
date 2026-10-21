@@ -139,13 +139,14 @@
                         <div class="day-progress-bar" id="dayProgressBar" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" aria-label="Progresso de entregas do dia">
                             <div class="day-progress-fill" id="dayProgressFill"></div>
                         </div>
-                    </div>
-                    <div class="route-switcher" id="routeSwitcher" role="tablist" aria-label="Trocar de rota" hidden></div>
-                    <div class="day-summary" id="daySummary" aria-live="polite">
+                        <!-- Patch 18: o resumo mora dentro do progresso para dividir a linha com ele no celular. -->
+                        <div class="day-summary" id="daySummary" aria-live="polite">
                         <span class="day-summary-item ok"><span id="daySumEntregue">0</span> entregues</span>
                         <span class="day-summary-item warn"><span id="daySumFalhou">0</span> falhas</span>
                         <span class="day-summary-item km" id="daySumKmItem"><span id="daySumKm">—</span></span>
+                        </div>
                     </div>
+                    <div class="route-switcher" id="routeSwitcher" role="tablist" aria-label="Trocar de rota" hidden></div>
                     <div class="backup-reminder" id="backupReminder" role="status">
                         <div class="backup-reminder-body">
                             <div class="backup-reminder-title">Backup recomendado</div>
