@@ -4820,7 +4820,11 @@ html.dark-theme .backup-reminder.is-visible {
   }
   .backup-reminder .backup-reminder-actions {
     display: flex;
+    flex-direction: row;
+    align-items: center;
     gap: 2px;
+    padding: 0;
+    margin: 0;
   }
   .backup-reminder .backup-now {
     padding: 1px 4px;
@@ -4881,7 +4885,9 @@ html.dark-theme .backup-reminder.is-visible {
     font-size: .58rem;
     padding: 0 3px;
     min-height: 16px;
-    line-height: 1.5;
+    height: 16px;
+    line-height: 1;
+    flex: none;
   }
   .day-progress {
     padding: 1px 0 2px;
@@ -4896,4 +4902,25 @@ html.dark-theme .backup-reminder.is-visible {
     min-height: 36px;
     padding: 3px 6px;
   }
+}
+
+/* PATCH 19 — o "Agora não" do selo vira ✕ no celular (não some: continua dispensável) */
+.backup-reminder .backup-dismiss .lbl { display: inline; }
+.backup-reminder .backup-dismiss i { display: none; }
+@media (max-width: 780px) {
+  .backup-reminder .backup-dismiss {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 16px;
+    height: 16px;
+    min-height: 16px;
+    padding: 0;
+    margin: 0;
+    line-height: 1;
+    font-size: .62rem;
+    flex: none;
+  }
+  .backup-reminder .backup-dismiss .lbl { display: none; }
+  .backup-reminder .backup-dismiss i { display: inline-block; font-size: .6rem; }
 }
