@@ -40,6 +40,12 @@ type Delivery = {
   valor?: number;
   janelaInicio?: string;
   janelaFim?: string;
+  /** Cronômetro: quando a entrega entrou em rota (ms). */
+  iniciadaEm?: number;
+  /** Cronômetro: quando foi concluída (ms). */
+  concluidaEm?: number;
+  /** Cronômetro: duração fechada em ms (só após entregue/falhou). */
+  duracaoMs?: number;
   [key: string]: any;
 };
 

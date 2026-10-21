@@ -3896,3 +3896,125 @@ html.dark-theme .add-phone-row button { background: var(--accent-soft); color: v
 @media (prefers-reduced-motion: reduce) {
   .sidebar { transition: none !important; }
 }
+
+/* ============================================================================
+   PATCH 14 — cronômetro de entrega e resumo do dia
+   O relógio segue o status (em-rota abre, entregue/falhou fecha), então na
+   lista só aparecem duas formas: duração fechada e tempo correndo.
+   ========================================================================== */
+
+.tempo-item {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    font-variant-numeric: tabular-nums;
+}
+.tempo-item b { font-weight: 700; }
+.tempo-correndo { color: var(--accent); }
+.tempo-correndo::after {
+    content: '';
+    width: 5px; height: 5px; border-radius: 50%;
+    background: currentColor;
+    margin-left: 2px;
+    animation: rf-pulso 1.6s ease-in-out infinite;
+}
+@keyframes rf-pulso { 0%, 100% { opacity: 1; } 50% { opacity: .15; } }
+
+/* botão da barra de ferramentas da rota */
+.route-tool-btn.tempo .rt-icon { color: var(--accent); }
+
+.tempo-modal {
+    max-width: 420px;
+    width: calc(100% - 24px);
+    max-height: 84dvh;
+    display: flex;
+    flex-direction: column;
+    padding-bottom: calc(10px + var(--safe-b));
+}
+.tempo-modal h3 { display: flex; align-items: center; gap: 8px; }
+
+.tempo-cards {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 8px;
+    margin: 2px 0 12px;
+}
+.tempo-card {
+    background: var(--chip, #f1f4f9);
+    border-radius: 12px;
+    padding: 10px 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+.tempo-card span {
+    font-size: .64rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: .05em;
+    color: var(--muted);
+}
+.tempo-card b {
+    font-size: 1.16rem;
+    font-weight: 800;
+    letter-spacing: -.02em;
+    font-variant-numeric: tabular-nums;
+}
+.tempo-card.destaque { background: var(--accent); }
+.tempo-card.destaque span,
+.tempo-card.destaque b { color: #fff; }
+
+.tempo-extremos {
+    font-size: .72rem;
+    color: var(--muted);
+    margin: 0 0 10px;
+    line-height: 1.5;
+}
+.tempo-extremos b { color: var(--text); }
+
+.tempo-lista {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
+    flex: 1;
+    min-height: 0;
+}
+.tempo-linha {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 2px;
+    border-bottom: 1px solid var(--line);
+}
+.tempo-linha:last-child { border-bottom: 0; }
+.tempo-num {
+    width: 26px; height: 26px; flex: none;
+    border-radius: 8px;
+    background: var(--chip, #f1f4f9);
+    display: grid; place-items: center;
+    font-size: .72rem; font-weight: 800;
+    color: var(--muted);
+}
+.tempo-linha.st-ok .tempo-num { background: var(--ok-soft, #e8f7ee); color: var(--ok); }
+.tempo-linha.st-falhou .tempo-num { background: #fdecec; color: var(--danger); }
+.tempo-linha.st-andamento .tempo-num { background: var(--accent); color: #fff; }
+.tempo-quem { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.tempo-quem b {
+    font-size: .8rem; font-weight: 700;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.tempo-quem span { font-size: .66rem; color: var(--muted); }
+.tempo-val {
+    font-size: .82rem; font-weight: 800;
+    font-variant-numeric: tabular-nums;
+    flex: none;
+}
+.tempo-vazio { font-size: .8rem; color: var(--muted); line-height: 1.6; margin: 4px 0 12px; }
+.tempo-acoes { display: flex; gap: 8px; margin-top: 12px; }
+.tempo-acoes button { flex: 1; }
+
+@media (prefers-reduced-motion: reduce) {
+    .tempo-correndo::after { animation: none; }
+}

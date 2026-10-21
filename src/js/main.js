@@ -1500,6 +1500,8 @@ function refreshMapAfterStorageLoad() {
 // initAppUi / DOMContentLoaded / PWA / SW: src/js/app-boot.js (configureAppBoot).
 configureAppBoot({
     setupFiltersUi,
+    // Patch 14: o resumo do dia lê a lista viva (não uma cópia).
+    getDeliveries: () => deliveries,
     // O autocomplete só carrega quando o motorista encosta no campo Nome.
     initNameSuggestions: setupNameSuggestionsOnDemand,
     setupNewDeliveryPhoneUI,

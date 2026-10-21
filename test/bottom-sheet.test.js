@@ -116,3 +116,32 @@ describe('app.css — FABs do mapa', () => {
         assert.match(mobile, /\.sheet-expanded\s+\.map-fab-rail\s*\{\s*display:\s*none/);
     });
 });
+
+describe('tempo (patch 14) — fiação na interface', () => {
+    const boot = ler('src/js/app-boot.js');
+    const listHelpers = ler('lib/list-helpers.js');
+    const html = ler('index.html');
+
+    it('a barra da rota tem o botão de resumo do dia', () => {
+        assert.match(html, /id="resumoTempoBtn"/);
+        assert.match(html, /fa-stopwatch/);
+    });
+
+    it('o boot liga o ticker e o resumo', () => {
+        assert.match(boot, /iniciarTickerDeTempo\(\)/);
+        assert.match(boot, /abrirResumoDoDia\(/);
+    });
+
+    it('a lista mostra a duração fechada e o tempo correndo', () => {
+        assert.match(listHelpers, /duracaoMs/);
+        assert.match(listHelpers, /data-tempo-inicio/);
+        assert.match(listHelpers, /fa-stopwatch/);
+    });
+
+    it('o ticker só mexe no texto, não re-renderiza a lista', () => {
+        const tempoUi = ler('src/js/tempo-ui.js');
+        assert.match(tempoUi, /\[data-tempo-inicio\]/);
+        assert.doesNotMatch(tempoUi, /renderDeliveriesList/);
+        assert.match(tempoUi, /document\.hidden/, 'não gasta bateria com a aba em segundo plano');
+    });
+});

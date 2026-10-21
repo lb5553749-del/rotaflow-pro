@@ -5,6 +5,7 @@
 // Tema escuro em módulo próprio: precisa rodar antes do 1º paint e o
 // profile.js (modal, ~10 KB) agora é lazy.
 import { initDarkModeFromStorage } from './theme.js';
+import { abrirResumoDoDia, iniciarTickerDeTempo, configureTempoUi } from './tempo-ui.js';
 import { advancedFilters } from './advanced-filters.js';
 import { initSyncStatusUI } from './sync-status.js';
 
@@ -26,6 +27,7 @@ let deps = {
     setupBackupReminderUi: () => {},
     setupAutoBackupScheduler: () => {},
     getCurrentSelectedDelivery: () => null,
+    getDeliveries: () => [],
     focusDeliveryInPanel: () => {},
     isNativeApp: () => false,
     setupScreenLockNotificationBridge: () => {},
@@ -111,6 +113,11 @@ export function initAppUi() {
     document.getElementById('newRouteBtn')?.addEventListener('click', deps.startNewRoute);
     document.getElementById('newRouteMenuBtn')?.addEventListener('click', deps.startNewRoute);
     document.getElementById('clearRouteBtn').addEventListener('click', deps.clearRoute);
+    // Patch 14: cronômetro. O relógio já é gravado nas transições de status
+    // (lib/delivery-status-helpers); aqui só ligamos o ticker da UI e o resumo.
+    configureTempoUi({ getDeliveries: deps.getDeliveries });
+    iniciarTickerDeTempo();
+    document.getElementById('resumoTempoBtn')?.addEventListener('click', () => abrirResumoDoDia(deps.getDeliveries()));
     document.getElementById('toggleSidebarBtn').addEventListener('click', () => {
         // Patch 12: o botão de menu continua abrindo/fechando de vez; ao fechar,
         // a folha volta ao encaixe padrão na próxima abertura.
