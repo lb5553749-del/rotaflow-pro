@@ -112,7 +112,9 @@ export function initAppUi() {
     document.getElementById('archiveDayBtn')?.addEventListener('click', () => deps.archiveCurrentRouteDay({ silent: false }));
     document.getElementById('newRouteBtn')?.addEventListener('click', deps.startNewRoute);
     document.getElementById('newRouteMenuBtn')?.addEventListener('click', deps.startNewRoute);
-    document.getElementById('clearRouteBtn').addEventListener('click', deps.clearRoute);
+    // Patch 16: com as ferramentas consolidadas, os dois botões vivem no menu ⋯.
+    document.getElementById('clearRouteBtn')?.addEventListener('click', deps.clearRoute);
+    document.getElementById('clearRouteMenuBtn')?.addEventListener('click', deps.clearRoute);
     // Patch 14: cronômetro. O relógio já é gravado nas transições de status
     // (lib/delivery-status-helpers); aqui só ligamos o ticker da UI e o resumo.
     configureTempoUi({ getDeliveries: deps.getDeliveries });

@@ -179,3 +179,33 @@ describe('redesign 2.0 (patch 15) — ícones travados e tema', () => {
         assert.match(css, /html\.dark-theme \.tema-seletor/);
     });
 });
+
+describe('redesign 2.0, parte 2 (patch 16) — moldura antes da lista', () => {
+    const html = ler('index.html');
+    const boot = ler('src/js/app-boot.js');
+    const mobile = blocoMobile(ler('src/styles/app.css'));
+
+    it('as ações destrutivas vão para o menu ⋯ em vez de ficarem soltas', () => {
+        assert.match(html, /id="clearRouteMenuBtn"/);
+        assert.match(html, /overflow-danger/);
+        // os botões grandes saíram da barra; os ids antigos continuam no menu
+        assert.doesNotMatch(html, /id="clearRouteBtn"/);
+        assert.doesNotMatch(html, /id="newRouteBtn"/);
+    });
+
+    it('o boot continua ligando Limpar rota pelo botão do menu', () => {
+        assert.match(boot, /clearRouteMenuBtn/);
+    });
+
+    it('a marca sai do topo da folha no celular (o mapa já diz onde você está)', () => {
+        assert.match(mobile, /\.sidebar-header \.brand\s*\{\s*display:\s*none/);
+    });
+
+    it('a barra de ferramentas é uma linha só, não o grid 2x2', () => {
+        assert.match(mobile, /\.route-tools-end\s*\{[^}]*display:\s*flex !important/s);
+    });
+
+    it('o banner de backup vira uma linha (texto com ellipsis)', () => {
+        assert.match(mobile, /\.backup-reminder \.backup-reminder-text\s*\{[^}]*-webkit-line-clamp:\s*1/s);
+    });
+});

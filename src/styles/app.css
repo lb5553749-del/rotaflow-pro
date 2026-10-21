@@ -4083,3 +4083,196 @@ html.dark-theme .route-tool-btn { background: #1c1c1e; border-color: #38383a; co
 @media (prefers-reduced-motion: reduce) {
     .tema-seletor button { transition: none; }
 }
+
+/* ============================================================================
+   PATCH 16 — corta a moldura antes da lista (redesign 2.0, parte 2)
+
+   Medição que motivou: com a folha em 64% a lista mostrava ~1 entrega, porque
+   ~570 px de moldura (marca, abas, progresso, chips, banner, 5 ferramentas,
+   busca) vinham antes do primeiro item. Aqui a moldura cai para ~330 px.
+   ========================================================================== */
+
+@media (max-width: 780px) {
+  /* 1. Marca: sai do topo da folha e vira marca d'água discreta na primeira aba.
+        O nome do app já está no ícone; ocupar 90 px fixos todo dia não paga. */
+  .sidebar-header .brand {
+    display: none;
+  }
+  .sidebar-header {
+    padding: 2px 12px 4px;
+  }
+  .sidebar-header-meta {
+    gap: 6px;
+  }
+  .last-id-container,
+  .install-btn {
+    font-size: .64rem;
+  }
+
+  /* 2. Abas mais baixas */
+  .sidebar-tabs {
+    padding: 2px;
+    gap: 2px;
+  }
+  .sidebar-tabs button {
+    padding: 8px 6px;
+    font-size: .78rem;
+  }
+
+  /* 3. Rota atual: cabeçalho e progresso em uma linha compacta */
+  .sidebar-panel[data-panel="rota"] .section-title,
+  #panelRota .section-title {
+    font-size: .68rem;
+    margin-bottom: 2px;
+  }
+  .day-summary {
+    gap: 4px;
+    padding: 4px 0 6px;
+  }
+  .day-summary-item {
+    font-size: .68rem;
+    padding: 3px 7px;
+  }
+  .day-progress {
+    height: 4px;
+    margin-bottom: 6px;
+  }
+
+  /* 4. Banner de backup: de bloco amarelo para uma linha */
+  .backup-reminder {
+    display: none;
+  }
+  .backup-reminder.is-visible {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 10px;
+    margin-bottom: 8px;
+    border-radius: 9px;
+    font-size: .7rem;
+    flex-wrap: nowrap;
+  }
+  .backup-reminder .backup-reminder-title {
+    display: none;
+  }
+  .backup-reminder .backup-reminder-text {
+    font-size: .7rem;
+    line-height: 1.25;
+    flex: 1;
+    min-width: 0;
+  }
+  .backup-reminder .backup-reminder-actions {
+    flex: none;
+    gap: 4px;
+  }
+  .backup-reminder .backup-now,
+  .backup-reminder .backup-dismiss {
+    padding: 4px 8px;
+    font-size: .68rem;
+  }
+  .backup-reminder .backup-dismiss {
+    display: none;
+  }
+
+  /* 5. Ferramentas: uma linha só — Tempo · Otimizar · ⋯
+        (havia um grid 2x2 global que jogava o ⋯ para a segunda linha) */
+  .route-tools {
+    margin-bottom: 8px;
+  }
+  .route-tools-end {
+    display: flex !important;
+    grid-template-columns: none;
+    flex-wrap: nowrap;
+    gap: 6px;
+    align-items: stretch;
+  }
+  .route-tools-end > * {
+    min-width: 0;
+  }
+  .route-tools .route-tool-btn {
+    width: auto;
+    flex: 1 1 0;
+  }
+  .route-tools .overflow-wrap {
+    flex: 0 0 auto;
+    display: flex;
+  }
+  /* banner de backup em uma linha: o texto não pode empurrar os botões */
+  .backup-reminder.is-visible .backup-reminder-body {
+    flex: 1;
+    min-width: 0;
+  }
+  .backup-reminder .backup-reminder-text {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    display: -webkit-box;
+    -webkit-line-clamp: 1;
+    -webkit-box-orient: vertical;
+  }
+  .route-tool-btn {
+    flex: 1;
+    padding: 8px 6px;
+    font-size: .74rem;
+  }
+  .route-tool-btn .rt-icon {
+    width: 22px;
+    height: 22px;
+  }
+  .overflow-trigger {
+    width: 38px;
+    height: 36px;
+    font-size: 1.2rem;
+  }
+
+  /* 6. Busca e filtros mais baixos */
+  .search-box {
+    padding: 3px 10px;
+    margin-bottom: 6px;
+  }
+  .search-box input {
+    padding: 7px 0;
+    font-size: .82rem;
+  }
+  .filters-placeholder {
+    padding: 7px 12px;
+    margin-bottom: 6px;
+  }
+
+  /* 7. Entrega: linha mais baixa, com o tempo à vista */
+  .delivery-item {
+    padding: 8px 10px;
+    margin-bottom: 6px;
+  }
+  .delivery-header {
+    margin-bottom: 2px;
+  }
+  .delivery-title-row strong {
+    font-size: .86rem;
+  }
+  .delivery-body-line,
+  .leg-info {
+    font-size: .72rem;
+    margin-top: 1px;
+  }
+  .delivery-meta {
+    gap: 6px;
+    font-size: .66rem;
+    margin-top: 2px;
+  }
+  .status-badge {
+    font-size: .6rem;
+    padding: 2px 6px;
+  }
+}
+
+/* item "Limpar rota" do menu ⋯ (ação destrutiva, separada) */
+.overflow-panel .overflow-danger {
+  color: var(--danger);
+}
+.overflow-panel .overflow-danger i {
+  color: var(--danger);
+}
+html.dark-theme .backup-reminder.is-visible {
+  background: #2a2210;
+  border-color: #4a3a12;
+}
