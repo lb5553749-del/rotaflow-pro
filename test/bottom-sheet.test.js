@@ -209,3 +209,57 @@ describe('redesign 2.0, parte 2 (patch 16) — moldura antes da lista', () => {
         assert.match(mobile, /\.backup-reminder \.backup-reminder-text\s*\{[^}]*-webkit-line-clamp:\s*1/s);
     });
 });
+
+describe('redesign 2.0, parte 3 (patch 17) — item compacto', () => {
+    const html = ler('index.html');
+    const lista = ler('lib/list-helpers.js');
+    const css = ler('src/styles/app.css');
+    const mobile = blocoMobile(css);
+
+    it('links e ações dividem um rodapé só (uma linha, não duas)', () => {
+        assert.match(lista, /class="delivery-foot"/);
+        const item = lista.slice(lista.indexOf('delivery-foot'));
+        assert.match(item, /class="delivery-links"/);
+        assert.match(item, /class="delivery-actions"/);
+        // o rodapé fecha depois das ações: as duas coisas ficam dentro dele
+        assert.ok(item.indexOf('delivery-links') < item.indexOf('delivery-actions'));
+        const fecha = item.indexOf('</div>\n                </div>`');
+        assert.ok(fecha > item.indexOf('Remover'), 'wrapper fechado depois do menu de ações');
+    });
+
+    it('endereço e telefone têm classes próprias (dá para estilizar sem adivinhar)', () => {
+        assert.match(lista, /delivery-body-line delivery-address/);
+        assert.match(lista, /delivery-body-line delivery-phone/);
+    });
+
+    it('os rótulos dos botões ficam em spans (só o ícone aparece no celular)', () => {
+        assert.match(lista, /<span class="lbl">Foto<\/span>/);
+        assert.match(lista, /<span class="lbl">WhatsApp<\/span>/);
+        assert.match(lista, /<span class="lbl">Rastreio<\/span>/);
+        assert.match(mobile, /\.delivery-foot \.track-link \.lbl\s*\{\s*display:\s*none/);
+    });
+
+    it('o desenho de cada ícone é o mesmo (o layout mudou, não o ícone)', () => {
+        const foot = lista.slice(lista.indexOf('class="delivery-foot"'), lista.indexOf('delivery-actions'));
+        assert.match(foot, /fas fa-camera/);
+        assert.match(foot, /fab fa-whatsapp/);
+        assert.match(foot, /fas fa-map-location-dot/);
+    });
+
+    it('busca e filtros ficam na mesma linha no celular', () => {
+        assert.match(html, /class="search-row"/);
+        assert.match(mobile, /\.search-row\s*\{[^}]*display:\s*flex/s);
+        assert.match(mobile, /\.search-row \.filters-placeholder \.filters-label/);
+    });
+
+    it('a barra de progresso tem altura própria (não vaza sobre o resumo do dia)', () => {
+        assert.match(mobile, /\.day-progress\s*\{\s*height:\s*auto/);
+        assert.match(mobile, /\.day-progress-bar\s*\{\s*height:\s*4px/);
+    });
+
+    it('o item do celular cabe em ~110 px', () => {
+        assert.match(mobile, /\.delivery-item\s*\{[^}]*padding:\s*6px 9px/s);
+        assert.match(mobile, /\.delivery-address,\s*\n\s*\.delivery-phone\s*\{[^}]*text-overflow:\s*ellipsis/s);
+        assert.match(mobile, /\.delivery-foot \.select-status\s*\{[^}]*height:\s*26px/s);
+    });
+});

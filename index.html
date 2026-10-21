@@ -172,15 +172,18 @@
                             </div>
                         </div>
                     </div>
-                    <div class="search-box"><i class="fas fa-search"></i><input type="search" id="routeSearchInput" placeholder="Buscar na rota"></div>
-                    <!-- Patch 09: placeholder dos filtros avançados. O painel de verdade (chips,
-                         bairros, presets) só é baixado quando o motorista toca aqui. -->
-                    <button type="button" class="filters-panel filters-placeholder" id="filtersPlaceholder" aria-label="Abrir filtros avançados" aria-expanded="false">
-                        <span class="filters-header">
-                            <span class="filters-title"><i class="fas fa-filter"></i> <span>Filtros</span> <span class="filter-count" id="filterCountPlaceholder" hidden></span></span>
-                            <span class="filters-actions"><i class="fas fa-chevron-down"></i></span>
-                        </span>
-                    </button>
+                    <!-- Patch 17: busca e filtros dividem a mesma linha no celular. -->
+                    <div class="search-row">
+                        <div class="search-box"><i class="fas fa-search"></i><input type="search" id="routeSearchInput" placeholder="Buscar na rota"></div>
+                        <!-- Patch 09: placeholder dos filtros avançados. O painel de verdade (chips,
+                             bairros, presets) só é baixado quando o motorista toca aqui. -->
+                        <button type="button" class="filters-panel filters-placeholder" id="filtersPlaceholder" aria-label="Abrir filtros avançados" aria-expanded="false">
+                            <span class="filters-header">
+                                <span class="filters-title"><i class="fas fa-filter"></i> <span class="filters-label">Filtros</span> <span class="filter-count" id="filterCountPlaceholder" hidden></span></span>
+                                <span class="filters-actions"><i class="fas fa-chevron-down"></i></span>
+                            </span>
+                        </button>
+                    </div>
                     <div id="deliveriesList" class="list-scroll">
                         <!-- Placeholder do patch 08: sai no primeiro render da lista. -->
                         <div class="list-skeleton" aria-hidden="true">
