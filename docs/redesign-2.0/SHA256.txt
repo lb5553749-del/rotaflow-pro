@@ -1,0 +1,13 @@
+RotaFlow Pro - serie perf 01-19  ("cabecalho magro e progresso fixo")
+Aviso de backup virou selo no cabecalho; progresso do dia gruda no topo ao rolar.
+
+rotaflow-pro-1.5.31-perf-01-19.apk   <- INSTALAR ESTE
+  bytes:  3867750
+  sha256: 0442f72d00215a69153f22347fe6ccb26f474954962dc501cb0db4b7ab305a78
+
+rotaflow-pro-1.5.31-perf-01-19-UNSIGNED.apk   (mesmo conteudo, antes da assinatura; zipalign aplicado)
+  bytes:  3863163
+  sha256: 22a2d83eb5540b6b165b0f85a58e99620fc27f16ea586426ad6dccb7d877d2fe
+
+Assinatura v2 apenas (apksigner --v1-signing-enabled false --v2-signing-enabled true),
+keystore rotaflow-teste.jks (alias rotaflow). Mesma chave das series 01-14 a 01-18.
