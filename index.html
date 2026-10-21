@@ -12,7 +12,7 @@
         }
     } catch (_) {}
     </script>
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, interactive-widget=resizes-content">
     <meta name="theme-color" content="#0f172a">
     <meta name="description" content="RotaFlow Pro — gestão de entregas com mapa, rota e agenda">
     <title>RotaFlow Pro - Gestão de Entregas</title>
@@ -112,6 +112,9 @@
                     <div class="form-group">
                         <label for="address">Endereço completo</label>
                         <input type="text" id="address" placeholder="Rua, número, bairro, cidade" autocomplete="off">
+                        <!-- Patch 20: sugestões do endereço (histórico do motorista + Google Places novo).
+                             O widget antigo do Places foi descontinuado em 2025. -->
+                        <div id="addressSuggestions" class="address-suggestions" role="listbox" aria-label="Sugestões de endereço" hidden></div>
                         <div id="addressWarning" class="address-warning">
                             <i class="fas fa-exclamation-triangle"></i>
                             <span id="addressWarningText">Endereço já está na rota (ID: A1)</span>

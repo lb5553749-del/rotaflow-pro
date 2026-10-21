@@ -8,6 +8,9 @@ import { initDarkModeFromStorage } from './theme.js';
 import { abrirResumoDoDia, iniciarTickerDeTempo, configureTempoUi } from './tempo-ui.js';
 import { advancedFilters } from './advanced-filters.js';
 import { initSyncStatusUI } from './sync-status.js';
+import { initAddressSuggestions, configureAddressSuggestions } from './address-suggestions.js';
+// Patch 20: teclado do celular em módulo próprio (o boot fica só com a ligação).
+import { setupTecladoNaFolha } from './teclado-folha.js';
 
 let deps = {
     initNameSuggestions: () => {},
@@ -28,6 +31,8 @@ let deps = {
     setupAutoBackupScheduler: () => {},
     getCurrentSelectedDelivery: () => null,
     getDeliveries: () => [],
+    getAgenda: () => [],
+    getHistory: () => [],
     focusDeliveryInPanel: () => {},
     isNativeApp: () => false,
     setupScreenLockNotificationBridge: () => {},
@@ -95,6 +100,16 @@ export function initAppUi() {
     initAppUi.done = true;
     initDarkModeFromStorage();
     deps.initNameSuggestions();
+    // Patch 20: sugestões do campo de endereço (o autocomplete do Places saiu do ar em 2025).
+    configureAddressSuggestions({
+        getDeliveries: deps.getDeliveries,
+        getAgenda: deps.getAgenda,
+        getHistory: deps.getHistory,
+        getGeocoder: deps.getGeocoder,
+        showToast: deps.showToast
+    });
+    initAddressSuggestions();
+    setupTecladoNaFolha();
     deps.setupNewDeliveryPhoneUI();
     deps.setupAddressDuplicateCheck();
 

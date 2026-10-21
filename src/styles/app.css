@@ -4924,3 +4924,90 @@ html.dark-theme .backup-reminder.is-visible {
   .backup-reminder .backup-dismiss .lbl { display: none; }
   .backup-reminder .backup-dismiss i { display: inline-block; font-size: .6rem; }
 }
+
+/* ============================================================================
+   PATCH 20 — sugestões de endereço e teclado (parte 6)
+
+   Dois problemas relatados no aparelho:
+   1. "a sugestão de endereço não funciona" — o widget google.maps.places
+      .Autocomplete foi descontinuado em março/2025 para contas novas; o campo
+      ficava sem lista nenhuma. A lista agora é nossa (ver address-suggestions.js).
+   2. "ao clicar em um campo o app se desestabiliza" — com o teclado aberto a
+      folha continuava em 64% e o campo focado ficava embaixo do teclado.
+      Agora, com um campo focado, a folha sobe para a tela inteira.
+   ========================================================================== */
+
+.address-suggestions {
+  display: none;
+  margin-top: 4px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  box-shadow: 0 10px 24px rgba(15, 23, 42, 0.12);
+  overflow: hidden;
+  max-height: 46vh;
+  overflow-y: auto;
+}
+.address-suggestion {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 9px 10px;
+  border: 0;
+  border-bottom: 1px solid var(--line);
+  background: transparent;
+  text-align: left;
+  font-size: 0.82rem;
+  color: var(--ink);
+  cursor: pointer;
+}
+.address-suggestion:last-child { border-bottom: 0; }
+.address-suggestion:hover,
+.address-suggestion:focus-visible { background: var(--accent-soft); outline: none; }
+.address-suggestion i { color: var(--accent); font-size: 0.76rem; flex: none; }
+.address-suggestion-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.address-suggestion-badge {
+  flex: none;
+  font-size: 0.6rem;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  color: var(--muted);
+  background: var(--surface-2);
+  border-radius: 5px;
+  padding: 1px 5px;
+}
+html.dark-theme .address-suggestion-badge { background: #2c2c2e; color: #c7c7cc; }
+
+/* teclado aberto no celular: a folha ocupa a tela toda para o campo caber */
+@media (max-width: 780px) {
+  html.kb-open .sidebar {
+    height: 100dvh !important;
+    border-radius: 0;
+  }
+  html.kb-open .map-area {
+    height: 0 !important;
+  }
+  html.kb-open .sheet-handle {
+    display: none;
+  }
+  html.kb-open .sidebar-panel.active {
+    padding-bottom: 40vh; /* espaço para o teclado não cobrir o último campo */
+    scroll-padding-top: 64px;
+  }
+  /* o progresso preso ao topo sairia por cima do formulário: some enquanto digita */
+  html.kb-open .day-progress {
+    position: static;
+  }
+  .address-suggestion {
+    padding: 11px 10px;
+    font-size: 0.84rem;
+  }
+}

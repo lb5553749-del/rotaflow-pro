@@ -264,4 +264,11 @@ export function initNameSuggestions() {
     document.addEventListener('click', (e) => {
         if (e.target !== input && !suggestionsDiv.contains(e.target)) suggestionsDiv.style.display = 'none';
     });
+    // Patch 20: ao sair do campo a lista some. Antes ela ficava por cima do
+    // formulário e engolia o toque no campo seguinte (dava a impressão de app travado).
+    input.addEventListener('blur', () => {
+        setTimeout(() => {
+            if (document.activeElement !== input) suggestionsDiv.style.display = 'none';
+        }, 150);
+    });
 }

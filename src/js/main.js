@@ -1502,6 +1502,9 @@ configureAppBoot({
     setupFiltersUi,
     // Patch 14: o resumo do dia lê a lista viva (não uma cópia).
     getDeliveries: () => deliveries,
+    // Patch 20: sugestões do endereço usam rota + agenda + histórico do motorista.
+    getAgenda: () => agenda,
+    getHistory: () => getRouteHistory().flatMap((dia) => (Array.isArray(dia.deliveries) ? dia.deliveries : [])),
     // O autocomplete só carrega quando o motorista encosta no campo Nome.
     initNameSuggestions: setupNameSuggestionsOnDemand,
     setupNewDeliveryPhoneUI,

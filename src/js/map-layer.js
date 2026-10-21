@@ -247,29 +247,15 @@ export function createNativeMarkerShim(opts) {
     return shim;
 }
 
+/**
+ * Patch 20: o widget `google.maps.places.Autocomplete` foi descontinuado para
+ * contas novas (março/2025) e não devolvia mais sugestões. As sugestões do campo
+ * de endereço agora são montadas em src/js/address-suggestions.js (histórico do
+ * motorista + Places API nova + Geocoder). A função fica como no-op para não
+ * quebrar quem ainda a chama.
+ */
 export async function ensurePlacesAutocomplete() {
-    if (deps.getAutocomplete() || !document.getElementById('address')) return;
-    try {
-        if (google.maps.importLibrary) {
-            await google.maps.importLibrary('places');
-        }
-        const addressInput = document.getElementById('address');
-        const autocomplete = new google.maps.places.Autocomplete(addressInput, {
-            componentRestrictions: { country: 'br' },
-            fields: ['formatted_address', 'geometry'],
-            types: ['address'],
-            location: PORTO_VELHO_CENTER,
-            radius: PORTO_VELHO_RADIUS,
-            strictBounds: false
-        });
-        deps.setAutocomplete(autocomplete);
-        autocomplete.addListener('place_changed', () => {
-            const place = autocomplete.getPlace();
-            if (place && place.formatted_address) addressInput.value = place.formatted_address;
-        });
-    } catch (e) {
-        console.warn('Places autocomplete', e);
-    }
+    return null;
 }
 
 async function initNativeGoogleMap() {
@@ -371,9 +357,8 @@ export async function initMap() {
 
     deps.setGeocoder(new google.maps.Geocoder());
     setDirectionsService(new google.maps.DirectionsService());
-    const addressInput = document.getElementById('address');
-    // Places só quando o usuário for digitar endereço (menos peso no boot).
-    addressInput.addEventListener('focus', () => { ensurePlacesAutocomplete(); }, { once: true });
+    // Patch 20: as sugestões de endereço são ligadas por address-suggestions.js
+    // (o listener do widget antigo do Places saiu junto com ele).
 
     // Login automático já rodou loadStorage no DOMContentLoaded: não reler/re-renderizar tudo.
     if (deps.getAuthReady()) {

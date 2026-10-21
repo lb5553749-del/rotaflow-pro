@@ -324,3 +324,46 @@ describe('redesign 2.0, parte 5 (patch 19) — backup no cabeçalho e progresso 
         assert.match(boot, /sidebar-tabs button/);
     });
 });
+
+describe('redesign 2.0, parte 6 (patch 20) — sugestões de endereço e teclado', () => {
+    const html = ler('index.html');
+    const boot = ler('src/js/app-boot.js');
+    const mapa = ler('src/js/map-layer.js');
+    const nomes = ler('src/js/name-suggestions.js');
+    const css = ler('src/styles/app.css');
+    const mobile = blocoMobile(css);
+
+    it('o campo de endereço tem a própria lista de sugestões', () => {
+        assert.match(html, /id="addressSuggestions"/);
+        assert.match(html, /role="listbox"/);
+    });
+
+    it('o widget antigo do Places (descontinuado em 2025) não é mais criado', () => {
+        assert.doesNotMatch(mapa, /new google\.maps\.places\.Autocomplete/);
+    });
+
+    it('o boot liga as sugestões de endereço e o teclado', () => {
+        assert.match(boot, /initAddressSuggestions\(\)/);
+        assert.match(boot, /setupTecladoNaFolha\(\)/);
+        assert.match(boot, /configureAddressSuggestions\(/);
+    });
+
+    it('a viewport deixa o teclado encolher o conteúdo (interactive-widget)', () => {
+        assert.match(html, /viewport[^>]*interactive-widget=resizes-content/);
+    });
+
+    it('com o teclado aberto a folha vira tela cheia e o mapa sai', () => {
+        assert.match(mobile, /html\.kb-open \.sidebar\s*\{[^}]*height:\s*100dvh/s);
+        assert.match(mobile, /html\.kb-open \.map-area\s*\{[^}]*height:\s*0/s);
+    });
+
+    it('a lista de nomes fecha ao sair do campo (não engole o toque no campo seguinte)', () => {
+        assert.match(nomes, /addEventListener\('blur'/);
+    });
+
+    it('o ranking puro das sugestões existe e é testado', () => {
+        const helpers = require('../lib/address-suggest-helpers.js');
+        assert.equal(typeof helpers.rankLocalAddresses, 'function');
+        assert.equal(typeof helpers.mergeAddressSuggestions, 'function');
+    });
+});
