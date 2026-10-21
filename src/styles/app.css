@@ -5011,3 +5011,127 @@ html.dark-theme .address-suggestion-badge { background: #2c2c2e; color: #c7c7cc;
     font-size: 0.84rem;
   }
 }
+
+/* ============================================================================
+   PATCH 21 — painel de diagnóstico no aparelho
+   Abre com toque longo (600 ms) na etiqueta "Salvo no aparelho".
+   ========================================================================== */
+.diag-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 9000;
+  background: rgba(9, 18, 33, .55);
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  padding: 12px;
+}
+.diag-card {
+  width: 100%;
+  max-width: 520px;
+  max-height: 86vh;
+  display: flex;
+  flex-direction: column;
+  background: var(--surface);
+  border-radius: 14px;
+  box-shadow: 0 18px 40px rgba(9, 18, 33, .35);
+  overflow: hidden;
+}
+.diag-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--line);
+  font-size: .9rem;
+}
+.diag-close {
+  border: 0;
+  background: transparent;
+  font-size: 1rem;
+  padding: 4px 8px;
+  color: var(--muted);
+  cursor: pointer;
+}
+.diag-body {
+  padding: 8px 12px;
+  overflow-y: auto;
+  font-size: .74rem;
+  line-height: 1.35;
+}
+.diag-row {
+  display: flex;
+  gap: 8px;
+  padding: 3px 0;
+  border-bottom: 1px dashed var(--line);
+}
+.diag-key { flex: 0 0 42%; color: var(--muted); font-weight: 600; }
+.diag-val { flex: 1 1 auto; word-break: break-word; }
+.diag-sec {
+  margin: 10px 0 4px;
+  font-weight: 700;
+  font-size: .72rem;
+  text-transform: uppercase;
+  letter-spacing: .04em;
+  color: var(--muted);
+}
+.diag-err {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: .66rem;
+  background: var(--surface-2);
+  border-radius: 6px;
+  padding: 4px 6px;
+  margin-bottom: 3px;
+  word-break: break-word;
+}
+.diag-teste {
+  margin: 6px 12px 0;
+  padding: 6px 8px;
+  border-radius: 8px;
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-size: .72rem;
+  font-weight: 600;
+}
+.diag-actions {
+  display: flex;
+  gap: 6px;
+  padding: 10px 12px;
+  border-top: 1px solid var(--line);
+}
+.diag-actions button {
+  flex: 1 1 0;
+  min-height: 36px;
+  border-radius: 9px;
+  border: 1px solid var(--line);
+  background: var(--surface-2);
+  color: var(--ink);
+  font-size: .74rem;
+  font-weight: 700;
+  cursor: pointer;
+}
+.diag-actions button:last-child { background: var(--accent-soft); color: var(--accent); border-color: transparent; }
+html.dark-theme .diag-err { background: #2c2c2e; color: #e5e5ea; }
+
+/* PATCH 21 — atalho de um toque para o mapa da web (só quando o nativo não pinta) */
+#mapaWebChip {
+  position: absolute;
+  left: 12px;
+  bottom: 12px;
+  z-index: 30;
+  max-width: 62%;
+  padding: 8px 10px;
+  border-radius: 10px;
+  border: 1px solid var(--line);
+  background: rgba(255, 255, 255, .96);
+  color: var(--ink);
+  font-size: .72rem;
+  font-weight: 700;
+  text-align: left;
+  box-shadow: 0 6px 16px rgba(9, 18, 33, .18);
+}
+html.dark-theme #mapaWebChip {
+  background: rgba(28, 28, 30, .96);
+  color: #f2f2f7;
+  border-color: #3a3a3c;
+}

@@ -11,6 +11,8 @@ import { initSyncStatusUI } from './sync-status.js';
 import { initAddressSuggestions, configureAddressSuggestions } from './address-suggestions.js';
 // Patch 20: teclado do celular em módulo próprio (o boot fica só com a ligação).
 import { setupTecladoNaFolha } from './teclado-folha.js';
+// Patch 21: diagnóstico no aparelho (long-press em "Salvo no aparelho").
+import { initDiagnostico } from './diagnostico.js';
 
 let deps = {
     initNameSuggestions: () => {},
@@ -110,6 +112,13 @@ export function initAppUi() {
     });
     initAddressSuggestions();
     setupTecladoNaFolha();
+    initDiagnostico({
+        getDeliveries: deps.getDeliveries,
+        getAgenda: deps.getAgenda,
+        getHistory: deps.getHistory,
+        isNativeApp: deps.isNativeApp,
+        showToast: deps.showToast
+    });
     deps.setupNewDeliveryPhoneUI();
     deps.setupAddressDuplicateCheck();
 

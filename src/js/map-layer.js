@@ -293,6 +293,8 @@ async function initNativeGoogleMap() {
     });
     deps.setNativeMapZoom(12);
     deps.setNativeGoogleMap(nativeGoogleMap);
+    // 6 s sem interação: se o mapa nativo não pintou, o atalho aparece.
+    setTimeout(() => { if (deps.getUseNativeMap()) mostrarAtalhoMapaWeb(); }, 6000);
     deps.setMap(createNativeMapFacade(nativeGoogleMap));
     deps.setUseNativeMap(true);
 
@@ -306,12 +308,36 @@ async function initNativeGoogleMap() {
  * CameraPreview toBack foi removido do caminho multi-foto.
  * O mapa nativo já não precisa de suspend/destroy/recreate por causa da câmera.
  */
+/**
+ * Patch 21: no APK assinado com a chave de teste, o mapa nativo do Google pode
+ * ficar em branco (chave presa por SHA-1/pacote). Em vez de deixar o motorista
+ * sem mapa, mostramos um atalho de um toque para o mapa da WebView.
+ */
+function mostrarAtalhoMapaWeb() {
+    if (document.getElementById('mapaWebChip')) return;
+    const area = document.querySelector('.map-area');
+    if (!area) return;
+    const chip = document.createElement('button');
+    chip.type = 'button';
+    chip.id = 'mapaWebChip';
+    chip.textContent = 'Mapa em branco? Toque para carregar o mapa da web';
+    chip.addEventListener('click', () => {
+        try { localStorage.setItem('rotaflow_forcar_mapa_web', '1'); } catch (_) {}
+        location.reload();
+    });
+    area.appendChild(chip);
+}
+
 export async function initMap() {
     deps.setUseNativeMap(false);
+    // Patch 21: se a chave do Maps for recusada no aparelho, o diagnóstico grava
+    // este sinalizador e as próximas aberturas já usam o mapa da WebView.
+    let forcarWeb = false;
+    try { forcarWeb = localStorage.getItem('rotaflow_forcar_mapa_web') === '1'; } catch (_) {}
     deps.setNativeGoogleMap(null);
     deps.setNativeMarkerById(new Map());
 
-    if (deps.isNativeApp()) {
+    if (deps.isNativeApp() && !forcarWeb) {
         try {
             await initNativeGoogleMap();
         } catch (e) {

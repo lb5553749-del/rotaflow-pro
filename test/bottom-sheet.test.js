@@ -367,3 +367,32 @@ describe('redesign 2.0, parte 6 (patch 20) — sugestões de endereço e teclado
         assert.equal(typeof helpers.mergeAddressSuggestions, 'function');
     });
 });
+
+describe('redesign 2.0, parte 7 (patch 21) — diagnóstico e mapa', () => {
+    const boot = ler('src/js/app-boot.js');
+    const mapa = ler('src/js/map-layer.js');
+    const sugest = ler('src/js/address-suggestions.js');
+    const diag = ler('src/js/diagnostico.js');
+
+    it('a biblioteca places é importada antes de usar AutocompleteSuggestion', () => {
+        assert.match(sugest, /importLibrary\('places'\)/);
+        assert.ok(sugest.indexOf("importLibrary('places')") < sugest.indexOf('AutocompleteSuggestion.fetchAutocompleteSuggestions'));
+    });
+
+    it('existe diagnóstico no aparelho com o SHA-1 da chave de teste', () => {
+        assert.match(diag, /SHA1_CHAVE_TESTE/);
+        assert.match(diag, /65:DB:C0:4B/);
+        assert.match(boot, /initDiagnostico\(/);
+    });
+
+    it('a recusa da chave do Maps força o mapa da web na próxima abertura', () => {
+        assert.match(diag, /gm_authFailure/);
+        assert.match(diag, /rotaflow_forcar_mapa_web/);
+        assert.match(mapa, /rotaflow_forcar_mapa_web/);
+    });
+
+    it('há atalho de um toque quando o mapa nativo não pinta', () => {
+        assert.match(mapa, /mostrarAtalhoMapaWeb/);
+        assert.match(mapa, /mapaWebChip/);
+    });
+});

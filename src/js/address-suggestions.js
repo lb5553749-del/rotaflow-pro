@@ -12,6 +12,7 @@
  */
 import { rankLocalAddresses, mergeAddressSuggestions, normalizeAddressText } from '../../lib/address-suggest-helpers.js';
 import { escapeHtml } from '../../lib/html.js';
+import { definirUltimaSugestao } from './diagnostico.js';
 
 let deps = {
     getDeliveries: () => [],
@@ -57,6 +58,13 @@ function enderecosConhecidos() {
 
 /** Places API nova (recomendada desde 2025). Retorna [] quando indisponível. */
 async function sugerirViaPlaces(query) {
+    // A biblioteca "places" não vem no boot: sem este import, `AutocompleteSuggestion`
+    // não existe e a camada do Google ficava sempre vazia (patch 21).
+    try {
+        if (window.google && window.google.maps && typeof window.google.maps.importLibrary === 'function') {
+            await window.google.maps.importLibrary('places');
+        }
+    } catch (_) { /* segue sem a camada do Google */ }
     const places = window.google && window.google.maps && window.google.maps.places;
     if (!places || !places.AutocompleteSuggestion || typeof places.AutocompleteSuggestion.fetchAutocompleteSuggestions !== 'function') {
         return [];
@@ -141,6 +149,7 @@ async function buscar(query) {
     const minha = ++sequencia;
     const locais = rankLocalAddresses(enderecosConhecidos(), query, { limit: 4, minChars: 2 });
     // as locais aparecem na hora; o Google completa depois
+    definirUltimaSugestao(query, locais.length);
     renderizar(locais, query);
 
     let remotas = [];
@@ -153,11 +162,15 @@ async function buscar(query) {
     if (!remotas.length) {
         sugerirViaGeocoder(query, (res) => {
             if (minha !== sequencia) return;
-            renderizar(mergeAddressSuggestions(locais, res, 5), query);
+            const juntas = mergeAddressSuggestions(locais, res, 5);
+            definirUltimaSugestao(query, juntas.length);
+            renderizar(juntas, query);
         });
         return;
     }
-    renderizar(mergeAddressSuggestions(locais, remotas, 5), query);
+    const juntas = mergeAddressSuggestions(locais, remotas, 5);
+    definirUltimaSugestao(query, juntas.length);
+    renderizar(juntas, query);
 }
 
 export function initAddressSuggestions() {
