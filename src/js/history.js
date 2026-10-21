@@ -5,6 +5,7 @@
  * de dados (ver comentário lá).
  */
 import { escapeHtml } from '../../lib/html.js';
+import { formatarDuracao } from '../../lib/tempo-helpers.js';
 import {
     localDateKey,
     formatHistoryDate,
@@ -202,7 +203,7 @@ export function renderHistoryList() {
             <div class="history-item-header">
                 <div>
                     <div class="history-item-title">${escapeHtml(formatHistoryDate(h.date))}</div>
-                    <div class="history-item-meta">${s.total} parada(s)${eco && eco.netProfit != null ? ` · ${escapeHtml(formatBrl(eco.netProfit))}` : ''}</div>
+                    <div class="history-item-meta">${s.total} parada(s)${s.tempoTotalMs ? ` · ${formatarDuracao(s.tempoTotalMs)} em entregas` : ''}${eco && eco.netProfit != null ? ` · ${escapeHtml(formatBrl(eco.netProfit))}` : ''}</div>
                 </div>
             </div>
             <div class="history-stats">

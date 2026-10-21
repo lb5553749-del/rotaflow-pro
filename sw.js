@@ -1,5 +1,5 @@
 /* RotaFlow Pro — service worker (app shell offline) */
-const CACHE_NAME = 'rotaflow-shell-v91.c0ec125fc1';
+const CACHE_NAME = 'rotaflow-shell-v91.935c984e66';
 const RUNTIME_CACHE = 'rotaflow-runtime-v1';
 const IMAGE_CACHE = 'rotaflow-images-v1';
 const API_CACHE = 'rotaflow-api-v1';
@@ -23,13 +23,13 @@ const PRECACHE = [
    Sem a parte do boot, "instalar e abrir offline" quebrava no próprio boot; sem as telas,
    o primeiro uso na rua falhava no import(). Plugins nativos ficam de fora de propósito. */
 const PRECACHE_JS = [
-  './build/chunks/agenda-route-SDZH3ROV.js',
+  './build/chunks/agenda-route-CV2PDAIO.js',
   './build/chunks/app.js',
   './build/chunks/backup-ui-SP3SB7LU.js',
   './build/chunks/chunk-2DJRFQWG.js',
   './build/chunks/chunk-2ZLV5RPF.js',
+  './build/chunks/chunk-32BRZWF4.js',
   './build/chunks/chunk-4VEU6F5P.js',
-  './build/chunks/chunk-4XSU32MQ.js',
   './build/chunks/chunk-5H3YXSQH.js',
   './build/chunks/chunk-5O6JUYTR.js',
   './build/chunks/chunk-AM7GZWVJ.js',
@@ -39,18 +39,19 @@ const PRECACHE_JS = [
   './build/chunks/chunk-FKTRBSTE.js',
   './build/chunks/chunk-FVHPOIYF.js',
   './build/chunks/chunk-GK6NHKGD.js',
+  './build/chunks/chunk-GVM2HX4K.js',
+  './build/chunks/chunk-HIHKWFG7.js',
   './build/chunks/chunk-KJRLPQGI.js',
   './build/chunks/chunk-L243JO4Y.js',
   './build/chunks/chunk-MRZ7II3V.js',
   './build/chunks/chunk-QXBMFZ2D.js',
-  './build/chunks/chunk-RBUS722K.js',
   './build/chunks/chunk-TKPLL3WH.js',
   './build/chunks/chunk-VKXBX6VR.js',
   './build/chunks/chunk-XOUKIOFE.js',
   './build/chunks/chunk-YWSOG3PW.js',
   './build/chunks/edit-modals-HQGOK2AI.js',
   './build/chunks/filters-ui-KZARUUC2.js',
-  './build/chunks/history-3XTUVZSM.js',
+  './build/chunks/history-GBCJKUO2.js',
   './build/chunks/name-suggestions-NRA3RCBS.js',
   './build/chunks/profile-VSHMOLSY.js'
 ];

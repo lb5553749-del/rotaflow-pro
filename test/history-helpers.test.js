@@ -27,8 +27,32 @@ describe('routeDayStats', () => {
       { status: 'falhou' },
       { status: 'pendente' },
       { status: 'em-rota' }
-    ]), { total: 4, entregue: 1, falhou: 1, pendente: 2 });
-    assert.deepEqual(routeDayStats(null), { total: 0, entregue: 0, falhou: 0, pendente: 0 });
+    ]), {
+      total: 4, entregue: 1, falhou: 1, pendente: 2,
+      comTempo: 0, tempoTotalMs: 0, tempoMedioMs: null
+    });
+    assert.deepEqual(routeDayStats(null), {
+      total: 0, entregue: 0, falhou: 0, pendente: 0,
+      comTempo: 0, tempoTotalMs: 0, tempoMedioMs: null
+    });
+  });
+
+  it('soma o tempo só das entregas com cronômetro fechado (patch 14)', () => {
+    const s = routeDayStats([
+      { status: 'entregue', duracaoMs: 7 * 60000 },
+      { status: 'falhou', duracaoMs: 3 * 60000 },
+      { status: 'em-rota', iniciadaEm: Date.now() },
+      { status: 'pendente' }
+    ]);
+    assert.equal(s.comTempo, 2);
+    assert.equal(s.tempoTotalMs, 10 * 60000);
+    assert.equal(s.tempoMedioMs, 5 * 60000);
+  });
+
+  it('dias arquivados antes do patch 14 não quebram (sem duração)', () => {
+    const s = routeDayStats([{ status: 'entregue' }, { status: 'falhou' }]);
+    assert.equal(s.tempoTotalMs, 0);
+    assert.equal(s.tempoMedioMs, null);
   });
 });
 
