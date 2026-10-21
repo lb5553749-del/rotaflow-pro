@@ -291,3 +291,36 @@ describe('redesign 2.0, parte 4 (patch 18) — moldura em 230 px', () => {
         assert.match(css, /min-height:\s*36px/);
     });
 });
+
+describe('redesign 2.0, parte 5 (patch 19) — backup no cabeçalho e progresso fixo', () => {
+    const html = ler('index.html');
+    const boot = ler('src/js/app-boot.js');
+    const css = ler('src/styles/app.css');
+    const mobile = blocoMobile(css);
+
+    it('o aviso de backup mora no cabeçalho, não numa linha dentro da folha', () => {
+        const header = html.slice(html.indexOf('class="sidebar-header"'), html.indexOf('class="sidebar-tabs"'));
+        assert.match(header, /id="backupReminder"/);
+        assert.match(header, /id="backupReminderNowBtn"/);
+        // e não sobrou cópia na área da lista
+        const painel = html.slice(html.indexOf('id="panelRota"'), html.indexOf('id="deliveriesList"'));
+        assert.doesNotMatch(painel, /id="backupReminder"/);
+    });
+
+    it('no celular o aviso vira selo de uma linha (texto escondido, ícone visível)', () => {
+        assert.match(mobile, /\.backup-reminder \.backup-reminder-text\s*\{\s*display:\s*none/);
+        assert.match(mobile, /\.backup-reminder-icon\s*\{\s*display:\s*inline-block/);
+        assert.match(css, /\.backup-reminder-icon\s*\{\s*display:\s*none/);
+    });
+
+    it('o progresso fica preso no topo do painel e encolhe ao rolar', () => {
+        assert.match(mobile, /\.day-progress\s*\{[^}]*position:\s*sticky/s);
+        assert.match(mobile, /\.day-progress\.is-scrolled \.day-summary\s*\{\s*display:\s*none/);
+    });
+
+    it('o boot liga o observador de rolagem e zera no clique das abas', () => {
+        assert.match(boot, /setupProgressoSticky\(\)/);
+        assert.match(boot, /classList\.toggle\('is-scrolled'/);
+        assert.match(boot, /sidebar-tabs button/);
+    });
+});

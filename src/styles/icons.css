@@ -56,6 +56,7 @@
 .fa-times::before{content:"\f00d"}
 .fa-trash::before{content:"\f1f8"}
 .fa-trash-alt::before{content:"\f2ed"}
+.fa-triangle-exclamation::before{content:"\f071"}
 .fa-upload::before{content:"\f093"}
 .fa-user::before{content:"\f007"}
 .fa-user-cog::before{content:"\f4fe"}

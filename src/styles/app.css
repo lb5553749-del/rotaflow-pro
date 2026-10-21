@@ -4763,3 +4763,137 @@ html.dark-theme .backup-reminder.is-visible {
     margin-top: 2px;
   }
 }
+
+/* ============================================================================
+   PATCH 19 — backup no cabeçalho e progresso fixo ao rolar (parte 5)
+
+   Medição da 01-18 (412x915): a folha já rola a moldura junto com a lista
+   (.sidebar-panel é o rolador), então ao descer 120 px cabiam 4 paradas
+   inteiras. Faltava o topo: banner de backup gastava 24 px + margem numa linha
+   só dele.
+   Aqui: (1) o aviso vira um selo no cabeçalho, na linha do "Salvo no aparelho";
+   (2) o progresso fica preso no topo do painel e, ao rolar, encolhe para uma
+   linha fina — o motorista não perde o "quanto falta" nem as paradas.
+   ========================================================================== */
+
+/* ícone do selo de backup (só aparece no selo compacto) */
+.backup-reminder-icon { display: none; font-size: .74rem; color: var(--warn); }
+
+@media (max-width: 780px) {
+  /* 1. cabeçalho: status + selo de backup na mesma linha */
+  .sidebar-header {
+    display: flex;
+    align-items: center;
+    flex-wrap: nowrap;
+    row-gap: 0;
+    gap: 6px;
+    padding: 2px 10px 4px;
+  }
+  .sidebar-header-meta {
+    flex: 1 1 auto;
+    width: auto;
+    min-width: 0;
+    overflow: hidden;
+    gap: 6px;
+    justify-content: flex-start;
+  }
+  .backup-reminder {
+    display: none;
+  }
+  .backup-reminder.is-visible {
+    display: inline-flex;
+    align-items: center;
+    gap: 3px;
+    flex: 0 0 auto;
+    margin: 0;
+    padding: 1px 4px 1px 5px;
+    border-radius: 8px;
+    max-width: 48%;
+  }
+  .backup-reminder-icon {
+    display: inline-block;
+  }
+  .backup-reminder .backup-reminder-body,
+  .backup-reminder .backup-reminder-title,
+  .backup-reminder .backup-reminder-text {
+    display: none;
+  }
+  .backup-reminder .backup-reminder-actions {
+    display: flex;
+    gap: 2px;
+  }
+  .backup-reminder .backup-now {
+    padding: 1px 4px;
+    font-size: .6rem;
+    min-height: 18px;
+    white-space: nowrap;
+  }
+  .backup-reminder .backup-dismiss {
+    display: none;
+  }
+
+  /* 2. progresso preso no topo do painel, encolhendo quando rola */
+  .day-progress {
+    position: sticky;
+    top: 0;
+    z-index: 6;
+    background: var(--surface);
+    padding: 2px 0 3px;
+    margin: -2px 0 2px;
+    border-bottom: 1px solid transparent;
+  }
+  .day-progress.is-scrolled {
+    border-bottom-color: var(--line);
+    box-shadow: 0 4px 10px rgba(15, 23, 42, .06);
+  }
+  .day-progress.is-scrolled .day-summary {
+    display: none;
+  }
+  .day-progress.is-scrolled .day-progress-head {
+    margin-bottom: 1px;
+  }
+  html.dark-theme .day-progress {
+    background: var(--surface);
+  }
+}
+
+/* desktop: o aviso continua dentro do cabeçalho, em linha própria */
+@media (min-width: 781px) {
+  .sidebar-header {
+    flex-wrap: wrap;
+  }
+  .sidebar-header .backup-reminder {
+    flex: 1 1 100%;
+    margin: 6px 0 0;
+  }
+}
+
+/* PATCH 19 — acabamento: selo de backup em 18 px e progresso grudado em 30 px */
+@media (max-width: 780px) {
+  .backup-reminder.is-visible {
+    padding: 0 3px 0 4px;
+    max-width: 52%;
+  }
+  .backup-reminder-icon {
+    font-size: .66rem;
+  }
+  .backup-reminder .backup-now {
+    font-size: .58rem;
+    padding: 0 3px;
+    min-height: 16px;
+    line-height: 1.5;
+  }
+  .day-progress {
+    padding: 1px 0 2px;
+    margin: -1px 0 2px;
+  }
+  .day-summary-item {
+    font-size: .58rem;
+    padding: 0 5px;
+    line-height: 1.45;
+  }
+  .sidebar-tabs button {
+    min-height: 36px;
+    padding: 3px 6px;
+  }
+}

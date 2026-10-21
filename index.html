@@ -80,6 +80,19 @@
                 </div>
                 <button type="button" id="installBtn" class="install-btn">Instalar</button>
             </div>
+            <!-- Patch 19: o aviso de backup divide a linha com o status de sincronização
+                 em vez de gastar uma linha inteira dentro da folha. -->
+            <div class="backup-reminder" id="backupReminder" role="status" aria-label="Backup recomendado">
+                <i class="fas fa-triangle-exclamation backup-reminder-icon" aria-hidden="true"></i>
+                <div class="backup-reminder-body">
+                    <div class="backup-reminder-title">Backup recomendado</div>
+                    <div class="backup-reminder-text" id="backupReminderText">Exporte um backup JSON para não perder a rota e a agenda.</div>
+                </div>
+                <div class="backup-reminder-actions">
+                    <button type="button" class="backup-now" id="backupReminderNowBtn" title="Exportar backup agora">Fazer agora</button>
+                    <button type="button" class="backup-dismiss" id="backupReminderDismissBtn">Agora não</button>
+                </div>
+            </div>
         </div>
         <nav class="sidebar-tabs" aria-label="Seções">
             <button type="button" class="active" data-tab="nova"><i class="fas fa-plus"></i> Nova</button>
@@ -147,16 +160,6 @@
                         </div>
                     </div>
                     <div class="route-switcher" id="routeSwitcher" role="tablist" aria-label="Trocar de rota" hidden></div>
-                    <div class="backup-reminder" id="backupReminder" role="status">
-                        <div class="backup-reminder-body">
-                            <div class="backup-reminder-title">Backup recomendado</div>
-                            <div class="backup-reminder-text" id="backupReminderText">Exporte um backup JSON para não perder a rota e a agenda.</div>
-                        </div>
-                        <div class="backup-reminder-actions">
-                            <button type="button" class="backup-now" id="backupReminderNowBtn">Fazer agora</button>
-                            <button type="button" class="backup-dismiss" id="backupReminderDismissBtn">Agora não</button>
-                        </div>
-                    </div>
                     <div class="route-tools" aria-label="Ações da rota">
                         <div class="route-tools-end">
                             <button type="button" id="resumoTempoBtn" class="route-tool-btn tempo" title="Resumo do dia: tempo de cada entrega e total da rota" aria-label="Resumo do dia"><span class="rt-icon"><i class="fas fa-stopwatch"></i></span><span class="rt-label">Tempo</span></button>

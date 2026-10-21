@@ -69,6 +69,26 @@ export function configureAppBoot(opts) {
     deps = { ...deps, ...(opts || {}) };
 }
 
+/** Patch 19: marca #dayProgress como "grudado" quando o painel da rota rola. */
+export function setupProgressoSticky() {
+    const painel = document.getElementById('panelRota');
+    const progresso = document.getElementById('dayProgress');
+    if (!painel || !progresso || painel.dataset.stickyProgresso === 'on') return;
+    painel.dataset.stickyProgresso = 'on';
+    let grudado = false;
+    const atualizar = () => {
+        const rolou = painel.scrollTop > 24;
+        if (rolou === grudado) return;
+        grudado = rolou;
+        progresso.classList.toggle('is-scrolled', rolou);
+    };
+    painel.addEventListener('scroll', atualizar, { passive: true });
+    // trocar de aba pode zerar o scroll sem disparar evento: reavalia no clique
+    document.querySelectorAll('.sidebar-tabs button').forEach((btn) => {
+        btn.addEventListener('click', () => requestAnimationFrame(atualizar));
+    });
+}
+
 /** Interface do motorista. Roda no DOMContentLoaded, sem esperar o callback do Google Maps. */
 export function initAppUi() {
     if (initAppUi.done) return;
@@ -115,6 +135,10 @@ export function initAppUi() {
     // Patch 16: com as ferramentas consolidadas, os dois botões vivem no menu ⋯.
     document.getElementById('clearRouteBtn')?.addEventListener('click', deps.clearRoute);
     document.getElementById('clearRouteMenuBtn')?.addEventListener('click', deps.clearRoute);
+    // Patch 19: o progresso do dia fica preso no topo do painel enquanto a lista
+    // rola; ao passar de ~24 px ele encolhe (perde os chips) para não roubar
+    // altura das paradas.
+    setupProgressoSticky();
     // Patch 14: cronômetro. O relógio já é gravado nas transições de status
     // (lib/delivery-status-helpers); aqui só ligamos o ticker da UI e o resumo.
     configureTempoUi({ getDeliveries: deps.getDeliveries });
