@@ -40,6 +40,8 @@
 .fa-location-dot::before{content:"\f3c5"}
 .fa-map-location-dot::before{content:"\f5a0"}
 .fa-map-marker-alt::before{content:"\f3c5"}
+.fa-mobile-screen::before{content:"\f3cf"}
+.fa-moon::before{content:"\f186"}
 .fa-pen::before{content:"\f304"}
 .fa-phone-alt::before{content:"\f879"}
 .fa-plus::before{content:"\2b"}
@@ -50,6 +52,7 @@
 .fa-spinner::before{content:"\f110"}
 .fa-star::before{content:"\f005"}
 .fa-stopwatch::before{content:"\f2f2"}
+.fa-sun::before{content:"\f185"}
 .fa-times::before{content:"\f00d"}
 .fa-trash::before{content:"\f1f8"}
 .fa-trash-alt::before{content:"\f2ed"}

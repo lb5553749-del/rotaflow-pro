@@ -1,5 +1,5 @@
 /* RotaFlow Pro — service worker (app shell offline) */
-const CACHE_NAME = 'rotaflow-shell-v91.a7b14eb31d';
+const CACHE_NAME = 'rotaflow-shell-v91.c0ec125fc1';
 const RUNTIME_CACHE = 'rotaflow-runtime-v1';
 const IMAGE_CACHE = 'rotaflow-images-v1';
 const API_CACHE = 'rotaflow-api-v1';
@@ -52,7 +52,7 @@ const PRECACHE_JS = [
   './build/chunks/filters-ui-KZARUUC2.js',
   './build/chunks/history-3XTUVZSM.js',
   './build/chunks/name-suggestions-NRA3RCBS.js',
-  './build/chunks/profile-4DQRXM76.js'
+  './build/chunks/profile-VSHMOLSY.js'
 ];
 
 // TTL dos caches em milissegundos

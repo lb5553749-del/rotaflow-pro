@@ -46,6 +46,7 @@ export function showProfileModal() {
     const vehicleModeEnabled = !!deps.getVehicleModeEnabled();
     let darkMapPref = false;
     try { darkMapPref = localStorage.getItem('rotaflow_dark_map') === '1'; } catch (_) {}
+    const prefTema = getPrefTema();
     overlay.innerHTML = `
         <div class="modal-container" style="max-width:450px;">
             <h3 class="modal-title">Perfil e preferências</h3>
@@ -110,12 +111,16 @@ export function showProfileModal() {
             </div>
             <div class="form-group">
                 <label>Aparência</label>
-                <div class="pref-toggle-row">
+                <div class="pref-toggle-row pref-toggle-col">
                     <div>
-                        <span>Modo escuro</span>
-                        <small>Tema escuro para conforto visual à noite</small>
+                        <span>Tema do app</span>
+                        <small>Claro, escuro, ou seguindo o aparelho</small>
                     </div>
-                    <input type="checkbox" id="profileDarkMode" ${document.documentElement.classList.contains('dark-theme') ? 'checked' : ''} aria-label="Ativar modo escuro">
+                    <div class="tema-seletor" role="radiogroup" aria-label="Tema do app">
+                        <button type="button" role="radio" data-tema="claro" aria-checked="${prefTema === 'claro'}"><i class="fas fa-sun" aria-hidden="true"></i> Claro</button>
+                        <button type="button" role="radio" data-tema="escuro" aria-checked="${prefTema === 'escuro'}"><i class="fas fa-moon" aria-hidden="true"></i> Escuro</button>
+                        <button type="button" role="radio" data-tema="sistema" aria-checked="${prefTema === 'sistema'}"><i class="fas fa-mobile-screen" aria-hidden="true"></i> Sistema</button>
+                    </div>
                 </div>
                 <div class="pref-toggle-row">
                     <div>
@@ -201,8 +206,8 @@ export function showProfileModal() {
             sound: !!document.getElementById('profileSound')?.checked
         });
         deps.setVehicleModeEnabled(!!document.getElementById('profileVehicleMode')?.checked);
-        const darkMode = !!document.getElementById('profileDarkMode')?.checked;
-        applyDarkMode(darkMode);
+        const temaEscolhido = overlay.querySelector('.tema-seletor [aria-checked="true"]')?.dataset.tema || 'sistema';
+        applyTema(temaEscolhido);
         try {
             localStorage.setItem('rotaflow_dark_map', document.getElementById('profileDarkMap')?.checked ? '1' : '0');
         } catch (_) {}
@@ -211,11 +216,49 @@ export function showProfileModal() {
         deps.showToast("Perfil salvo");
         overlay.remove();
     };
+    // Seletor de tema: exclusivo, acessível (role=radio) e com retorno imediato.
+    overlay.querySelectorAll('.tema-seletor [data-tema]').forEach((btn) => {
+        btn.onclick = () => {
+            overlay.querySelectorAll('.tema-seletor [data-tema]').forEach((b) => b.setAttribute('aria-checked', String(b === btn)));
+            applyTema(btn.dataset.tema);
+        };
+    });
     document.getElementById('cancelProfileBtn').onclick = () => overlay.remove();
     document.getElementById('logoutProfileBtn').onclick = () => {
         overlay.remove();
         deps.logoutUser();
     };
+}
+
+/**
+ * Preferência de tema em três estados: 'claro' | 'escuro' | 'sistema'.
+ * Compatível com o formato antigo ('1' = escuro, '0' = claro, ausente = sistema).
+ * @returns {'claro'|'escuro'|'sistema'}
+ */
+export function getPrefTema() {
+    try {
+        const v = localStorage.getItem('rotaflow_dark_theme');
+        if (v === '1') return 'escuro';
+        if (v === '0') return 'claro';
+    } catch (_) {}
+    return 'sistema';
+}
+
+/**
+ * Aplica e salva o tema. 'sistema' volta a seguir o aparelho (prefers-color-scheme).
+ * @param {'claro'|'escuro'|'sistema'} tema
+ */
+export function applyTema(tema) {
+    const escolhido = tema === 'claro' || tema === 'escuro' ? tema : 'sistema';
+    try {
+        if (escolhido === 'sistema') localStorage.removeItem('rotaflow_dark_theme');
+        else localStorage.setItem('rotaflow_dark_theme', escolhido === 'escuro' ? '1' : '0');
+    } catch (_) {}
+    const escuro = escolhido === 'escuro'
+        || (escolhido === 'sistema'
+            && !!(window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches));
+    document.documentElement.classList.toggle('dark-theme', escuro);
+    refreshMapTheme();
 }
 
 export function applyDarkMode(enabled) {

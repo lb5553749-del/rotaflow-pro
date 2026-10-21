@@ -3818,7 +3818,7 @@ html.dark-theme .add-phone-row button { background: var(--accent-soft); color: v
     left: 0; right: 0; bottom: 0; top: auto;
     width: 100% !important;
     max-width: none !important;
-    height: 58dvh;
+    height: 64dvh;
     z-index: 2000;
     background: var(--surface);
     border-right: 0;
@@ -3880,7 +3880,7 @@ html.dark-theme .add-phone-row button { background: var(--accent-soft); color: v
      mantém o logo/atribuição do Google visíveis (exigência do Maps) e evita
      desenhar a parte coberta — ganho de GPU/bateria no celular. */
   .map-area {
-    height: 42dvh;
+    height: 36dvh;
     transition: height 0.32s cubic-bezier(0.22, 1, 0.36, 1);
   }
   .app-container.sheet-expanded .map-area { height: 10dvh; }
@@ -4017,4 +4017,69 @@ html.dark-theme .add-phone-row button { background: var(--accent-soft); color: v
 
 @media (prefers-reduced-motion: reduce) {
     .tempo-correndo::after { animation: none; }
+}
+
+/* ============================================================================
+   PATCH 15 — tema em três estados + encaixe da folha em 64% (redesign 2.0)
+   ========================================================================== */
+
+/* seletor de tema no Perfil */
+.pref-toggle-col {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 8px;
+}
+.tema-seletor {
+    display: flex;
+    gap: 4px;
+    background: var(--chip, #f1f4f9);
+    border-radius: 11px;
+    padding: 4px;
+}
+.tema-seletor button {
+    flex: 1;
+    border: 0;
+    background: transparent;
+    border-radius: 8px;
+    padding: 8px 6px;
+    font-size: .72rem;
+    font-weight: 700;
+    color: var(--muted);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 5px;
+    cursor: pointer;
+    transition: background .16s ease, color .16s ease, box-shadow .16s ease;
+}
+.tema-seletor button i { font-size: .78rem; }
+.tema-seletor button[aria-checked="true"] {
+    background: var(--surface, #fff);
+    color: var(--accent);
+    box-shadow: 0 1px 3px rgba(15, 30, 60, .12);
+}
+html.dark-theme .tema-seletor { background: #0f172a; }
+html.dark-theme .tema-seletor button[aria-checked="true"] { background: #1e293b; color: #38bdf8; }
+
+/* o escuro do app usa #000/#1c1c1e; o card do delivery vinha com #1e293b (azulado)
+   e destoava da folha. Alinha os componentes novos ao mesmo cinza do sistema. */
+html.dark-theme .section-card,
+html.dark-theme .delivery-item,
+html.dark-theme .agenda-item,
+html.dark-theme .history-item {
+    background: #1c1c1e;
+    border-color: #38383a;
+}
+html.dark-theme .tempo-card { background: #1c1c1e; }
+html.dark-theme .tempo-card.destaque { background: var(--accent); }
+html.dark-theme .tempo-linha { border-bottom-color: #38383a; }
+html.dark-theme .tempo-num { background: #2c2c2e; color: #8e8e93; }
+html.dark-theme .tempo-modal { background: #1c1c1e; }
+html.dark-theme .sheet-handle span { background: #48484a; }
+html.dark-theme .filters-placeholder,
+html.dark-theme .search-box { background: #1c1c1e; border-color: #38383a; }
+html.dark-theme .route-tool-btn { background: #1c1c1e; border-color: #38383a; color: #f2f2f7; }
+
+@media (prefers-reduced-motion: reduce) {
+    .tema-seletor button { transition: none; }
 }

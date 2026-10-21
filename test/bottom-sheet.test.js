@@ -89,7 +89,8 @@ describe('app.css — folha inferior no celular', () => {
     });
 
     it('o mapa não fica atrás da folha (Maps exige logo/atribuição visíveis)', () => {
-        assert.match(mobile, /\.map-area\s*\{[^}]*height:\s*42dvh/);
+        // Folha padrão em 64% (redesign 2.0) deixa 36dvh de mapa visível.
+        assert.match(mobile, /\.map-area\s*\{[^}]*height:\s*36dvh/);
         assert.match(mobile, /\.app-container\.sheet-expanded \.map-area\s*\{[^}]*height:\s*10dvh/);
     });
 
@@ -109,7 +110,7 @@ describe('app.css — FABs do mapa', () => {
         // regressão: no canto inferior direito o rail caía em cima dos controles
         // do Google Maps (zoom/street view) e dos botões no topo da folha
         assert.match(mobile, /\.map-fab-rail\s*\{[^}]*top:\s*calc\(/s);
-        assert.doesNotMatch(mobile, /\.map-fab-rail\s*\{[^}]*bottom:\s*calc\(58dvh/s);
+        assert.doesNotMatch(mobile, /\.map-fab-rail\s*\{[^}]*bottom:\s*calc\(64dvh/s);
     });
 
     it('somem quando a folha está expandida', () => {
@@ -143,5 +144,38 @@ describe('tempo (patch 14) — fiação na interface', () => {
         assert.match(tempoUi, /\[data-tempo-inicio\]/);
         assert.doesNotMatch(tempoUi, /renderDeliveriesList/);
         assert.match(tempoUi, /document\.hidden/, 'não gasta bateria com a aba em segundo plano');
+    });
+});
+
+describe('redesign 2.0 (patch 15) — ícones travados e tema', () => {
+    const painel = ler('src/js/delivery-panel.js');
+    const perfil = ler('src/js/profile.js');
+    const css = ler('src/styles/app.css');
+
+    it('mantém os ícones originais das ações do painel', () => {
+        // decisão do dono: layout novo, desenho de ícone o mesmo de antes
+        assert.match(painel, /fa-location-arrow/, 'Navegar');
+        assert.match(painel, /fab fa-whatsapp/, 'WhatsApp');
+        assert.match(painel, /fa-box-open/, 'Entregar');
+        assert.match(painel, /fa-box\b/, 'Falhou');
+        assert.match(painel, /fa-rotate-left/, 'Desfazer');
+    });
+
+    it('o tema é escolhido em três estados, não em liga/desliga', () => {
+        assert.match(perfil, /data-tema="claro"/);
+        assert.match(perfil, /data-tema="escuro"/);
+        assert.match(perfil, /data-tema="sistema"/);
+        assert.match(perfil, /applyTema\(/);
+        assert.doesNotMatch(perfil, /profileDarkMode/, 'checkbox antigo saiu');
+    });
+
+    it('"sistema" volta a seguir o aparelho em vez de fixar claro', () => {
+        assert.match(perfil, /removeItem\('rotaflow_dark_theme'\)/);
+        assert.match(perfil, /prefers-color-scheme: dark/);
+    });
+
+    it('o seletor tem estilo e contrasta no tema escuro', () => {
+        assert.match(css, /\.tema-seletor button\[aria-checked="true"\]/);
+        assert.match(css, /html\.dark-theme \.tema-seletor/);
     });
 });
