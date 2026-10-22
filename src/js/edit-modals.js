@@ -45,7 +45,9 @@ let deps = {
     getAgenda: () => [],
     setAgendaItemAt: () => {},
     getGeocoder: () => null,
-    renderAgendaList: () => {}
+    renderAgendaList: () => {},
+    // Patch 22
+    aplicarOrdemDaParada: () => {}
 };
 
 export function configureEditModals(opts) {
@@ -82,6 +84,41 @@ export function showEditDeliveryModal(delivery, onSave) {
                 <button type="button" id="modalPacotesMinus" aria-label="Diminuir pacotes">−</button>
                 <span id="modalPacotesValue">${currentPacotes}</span>
                 <button type="button" id="modalPacotesPlus" aria-label="Aumentar pacotes">+</button>
+            </div>
+        </div>
+        <div class="modal-form-group">
+            <label class="modal-field-label">Tipo de operação</label>
+            <div class="modal-segmented" id="editTipo" role="radiogroup" aria-label="Tipo de operação">
+                <button type="button" role="radio" data-tipo="entrega" aria-checked="${String(delivery.tipo || 'entrega') !== 'coleta'}">Entrega</button>
+                <button type="button" role="radio" data-tipo="coleta" aria-checked="${String(delivery.tipo || 'entrega') === 'coleta'}">Coleta</button>
+            </div>
+        </div>
+        <div class="modal-form-row-2">
+            <div class="modal-form-group">
+                <label class="modal-field-label" for="editPedido">Nº do pedido / código</label>
+                <input id="editPedido" class="edit-input" value="${escapeHtml(delivery.pedido || '')}" placeholder="Opcional" maxlength="40">
+            </div>
+            <div class="modal-form-group">
+                <label class="modal-field-label" for="editTempoParada">Tempo na parada (min)</label>
+                <input id="editTempoParada" class="edit-input" type="number" min="1" max="240" inputmode="numeric" value="${delivery.tempoParadaMin ? escapeHtml(String(delivery.tempoParadaMin)) : ''}" placeholder="Padrão">
+            </div>
+        </div>
+        <div class="modal-form-row-2">
+            <div class="modal-form-group">
+                <label class="modal-field-label" for="editComplemento">Complemento</label>
+                <input id="editComplemento" class="edit-input" value="${escapeHtml(delivery.complemento || '')}" placeholder="Apto, bloco, fundos" maxlength="120">
+            </div>
+            <div class="modal-form-group">
+                <label class="modal-field-label" for="editReferencia">Ponto de referência</label>
+                <input id="editReferencia" class="edit-input" value="${escapeHtml(delivery.referencia || '')}" placeholder="Ex.: ao lado do mercado" maxlength="120">
+            </div>
+        </div>
+        <div class="modal-form-group">
+            <label class="modal-field-label">Ordem na rota</label>
+            <div class="modal-segmented" id="editOrdem" role="radiogroup" aria-label="Ordem na rota">
+                <button type="button" role="radio" data-ordem="primeira" aria-checked="false">Primeira</button>
+                <button type="button" role="radio" data-ordem="automatica" aria-checked="true">Automática</button>
+                <button type="button" role="radio" data-ordem="ultima" aria-checked="false">Última</button>
             </div>
         </div>
         <div class="modal-form-group">
@@ -290,6 +327,21 @@ export function showEditDeliveryModal(delivery, onSave) {
         if (urls.length) await addPhotoFromDataUrls(urls);
     });
 
+    let editTipo = String(delivery.tipo || 'entrega') === 'coleta' ? 'coleta' : 'entrega';
+    let editOrdem = 'automatica';
+    overlay.querySelectorAll('#editTipo button').forEach((btn) => {
+        btn.addEventListener('click', () => {
+            editTipo = btn.dataset.tipo;
+            overlay.querySelectorAll('#editTipo button').forEach((b) => b.setAttribute('aria-checked', String(b === btn)));
+        });
+    });
+    overlay.querySelectorAll('#editOrdem button').forEach((btn) => {
+        btn.addEventListener('click', () => {
+            editOrdem = btn.dataset.ordem;
+            overlay.querySelectorAll('#editOrdem button').forEach((b) => b.setAttribute('aria-checked', String(b === btn)));
+        });
+    });
+
     let editPacotes = currentPacotes;
     function updatePacotesDisplay() { overlay.querySelector('#modalPacotesValue').innerText = editPacotes; }
     overlay.querySelector('#modalPacotesMinus').addEventListener('click', () => { if (editPacotes > 1) { editPacotes--; updatePacotesDisplay(); } });
@@ -324,6 +376,13 @@ export function showEditDeliveryModal(delivery, onSave) {
             telefones: finalPhones,
             pacotes: editPacotes,
             status: newStatus,
+            // Patch 22: operação da parada
+            tipo: editTipo,
+            pedido: (overlay.querySelector('#editPedido')?.value || '').trim(),
+            complemento: (overlay.querySelector('#editComplemento')?.value || '').trim(),
+            referencia: (overlay.querySelector('#editReferencia')?.value || '').trim(),
+            tempoParadaMin: overlay.querySelector('#editTempoParada')?.value || '',
+            ordem: editOrdem,
             photos: newPhotosArray,
             photoIds: newPhotoIdsArray.filter(Boolean),
             notes: newNotes,
@@ -338,6 +397,10 @@ export function showEditDeliveryModal(delivery, onSave) {
 
 export function editDeliveryInRoute(delivery, updatedData) {
     const { oldAddress, addressChanged } = applyDeliveryUpdatedFields(delivery, updatedData);
+    // Patch 22: "Primeira" / "Última" na ficha move a parada e renumera a rota.
+    if (updatedData && (updatedData.ordem === 'primeira' || updatedData.ordem === 'ultima')) {
+        deps.aplicarOrdemDaParada?.(delivery, updatedData.ordem);
+    }
     // Re-renderiza os botoes do painel (WhatsApp, navegar) quando ele esta aberto
     // sobre esta entrega — os telefones podem ter mudado.
     const refreshPanelActions = () => {

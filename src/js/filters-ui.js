@@ -55,6 +55,19 @@ function renderFiltersPanel(container) {
                     </div>
                 </div>
 
+                <!-- Tipo de operação (patch 22) -->
+                <div class="filter-group">
+                    <label class="filter-label">Operação</label>
+                    <div class="filter-chips">
+                        <button type="button" class="filter-chip" data-filter="tipo" data-value="entrega">
+                            <i class="fas fa-box-open" aria-hidden="true"></i> Entrega
+                        </button>
+                        <button type="button" class="filter-chip" data-filter="tipo" data-value="coleta">
+                            <i class="fas fa-box" aria-hidden="true"></i> Coleta
+                        </button>
+                    </div>
+                </div>
+
                 <!-- Bairros -->
                 <div class="filter-group">
                     <label class="filter-label">Bairro/Região</label>
@@ -249,6 +262,12 @@ export function updateFiltersUI(container) {
     filtersPanel.querySelectorAll('.filter-chip[data-filter="status"]').forEach(chip => {
         const value = chip.dataset.value;
         chip.classList.toggle('active', filters.status.includes(value));
+    });
+
+    // Atualiza chips de tipo de operação (patch 22)
+    filtersPanel.querySelectorAll('.filter-chip[data-filter="tipo"]').forEach(chip => {
+        const value = chip.dataset.value;
+        chip.classList.toggle('active', (filters.tipo || []).includes(value));
     });
 
     // Atualiza chips de failReason

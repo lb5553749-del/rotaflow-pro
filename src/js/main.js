@@ -19,6 +19,8 @@ import {
     setupNewDeliveryPhoneUI
 } from './form-phones.js';
 import { getSequentialId, nextGeneratedId, seedIdCounterFromLists } from '../../lib/ids.js';
+// Patch 22: ficha da parada (ordem primeira/última e duplicação).
+import { moverParadaParaExtremo, duplicarParada } from '../../lib/delivery-extra-helpers.js';
 import { advancedFilters } from './advanced-filters.js';
 import {
     formatPhoneShort
@@ -553,6 +555,54 @@ configureBackupStore({ getUid: currentUid, storageKey, isNativeApp });
 // Carregado sob demanda; a configuração das deps acontece na primeira chamada.
 let editModalsReady = false;
 
+/**
+ * Patch 22: "Primeira" / "Última" na ficha da parada.
+ * Move, renumera routeOrder 1..n, salva e manda o mapa/lista refletirem.
+ */
+function aplicarOrdemDaParada(delivery, extremo) {
+    if (!delivery) return;
+    const antes = deliveries.map((d) => d.id).join(',');
+    const proxima = moverParadaParaExtremo(deliveries, delivery.id, extremo);
+    const depois = proxima.map((d) => d.id).join(',');
+    if (antes === depois) {
+        showToast(`A parada ${delivery.sequentialId} já está nessa posição`);
+        return;
+    }
+    deliveries = proxima;
+    saveStorage();
+    clearRouteOverlay();
+    renderDeliveriesList();
+    updateProgressAndEstimates();
+    rebuildMarkers(false);
+    showToast(extremo === 'primeira'
+        ? `Parada ${delivery.sequentialId} agora é a primeira da rota`
+        : `Parada ${delivery.sequentialId} agora é a última da rota`);
+}
+
+/**
+ * Patch 22: duplica uma parada como nova entrega pendente (sem fotos/cronômetro).
+ * O número do pedido NÃO é copiado — duas paradas com o mesmo código confundiriam
+ * a conferência de pacotes.
+ */
+function duplicateDelivery(delivery) {
+    if (!delivery) return null;
+    const copia = duplicarParada(delivery, {
+        id: newId(),
+        sequentialId: getSequentialId(nextSequenceNumber)
+    });
+    if (!copia) return null;
+    delete copia.pedido;
+    nextSequenceNumber += 1;
+    deliveries = [...deliveries, copia];
+    saveStorage();
+    clearRouteOverlay();
+    rebuildMarkers(false);
+    renderDeliveriesList();
+    updateProgressAndEstimates();
+    showToast(`Parada ${delivery.sequentialId} duplicada como ${copia.sequentialId}`);
+    return copia;
+}
+
 async function ensureEditModals() {
     if (editModalsReady) return;
     editModalsReady = true;
@@ -576,7 +626,9 @@ async function ensureEditModals() {
         getAgenda: () => agenda,
         setAgendaItemAt: (idx, item) => { agenda[idx] = item; },
         getGeocoder: () => geocoder,
-        renderAgendaList
+        renderAgendaList,
+        // Patch 22
+        aplicarOrdemDaParada
     });
 }
 
@@ -1174,7 +1226,9 @@ function configureExtractedModules() {
         maybeNotifyVoltarDepois,
         getRiskLevelForDelivery: riskLevelForDelivery,
         setRiskLevelFromList,
-        rebuildMarkers
+        rebuildMarkers,
+        // Patch 22
+        duplicateDelivery
     });
     configureAgendaList({
         getAgenda: () => agenda,

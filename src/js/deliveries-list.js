@@ -53,7 +53,9 @@ let deps = {
     maybeNotifyVoltarDepois: () => {},
     getRiskLevelForDelivery: () => null,
     setRiskLevelFromList: () => {},
-    rebuildMarkers: () => {}
+    rebuildMarkers: () => {},
+    // Patch 22
+    duplicateDelivery: () => null
 };
 
 let renderDeliveriesQueued = false;
@@ -290,6 +292,10 @@ function ensureDeliveryListDelegation(container) {
             deps.setRiskLevelFromList(delivery, null);
             deps.rebuildMarkers(false);
             renderDeliveriesList();
+            return;
+        }
+        if (action === 'duplicate') {
+            deps.duplicateDelivery(delivery);
             return;
         }
         if (action === 'agenda') {

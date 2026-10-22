@@ -5135,3 +5135,86 @@ html.dark-theme #mapaWebChip {
   color: #f2f2f7;
   border-color: #3a3a3c;
 }
+
+/* ============================================================================
+   PATCH 22 — ficha da parada com operação (parte 8)
+   Tipo de operação, nº do pedido, complemento, referência, tempo na parada e
+   ordem (Primeira / Automática / Última). Também: duplicar parada e total de
+   pacotes no resumo do dia.
+   ========================================================================== */
+
+/* segmentado (Tipo e Ordem) */
+.modal-segmented {
+  display: flex;
+  gap: 4px;
+  padding: 3px;
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+}
+.modal-segmented button {
+  flex: 1 1 0;
+  min-height: 34px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--muted);
+  font-size: .8rem;
+  font-weight: 700;
+  cursor: pointer;
+}
+.modal-segmented button[aria-checked="true"] {
+  background: var(--surface);
+  color: var(--accent);
+  box-shadow: 0 1px 3px rgba(15, 23, 42, .12);
+}
+html.dark-theme .modal-segmented button[aria-checked="true"] {
+  background: #3a3a3c;
+  color: #f2f2f7;
+}
+
+/* selos da lista */
+.tipo-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-size: .58rem;
+  font-weight: 800;
+  letter-spacing: .03em;
+  text-transform: uppercase;
+  padding: 1px 5px;
+  border-radius: 5px;
+}
+.tipo-badge.tipo-coleta {
+  background: var(--warn-soft);
+  color: var(--warn);
+}
+.pedido-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  font-size: .6rem;
+  font-weight: 700;
+  color: var(--muted);
+  background: var(--surface-2);
+  border-radius: 5px;
+  padding: 1px 5px;
+  max-width: 42%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.delivery-meta .pedido-badge i { font-size: .52rem; opacity: .8; }
+
+/* total de pacotes no resumo do dia */
+.day-summary-item.pk {
+  background: var(--surface-2);
+  color: var(--ink);
+  font-weight: 700;
+}
+.day-summary-item.pk i { font-size: .58rem; opacity: .7; }
+
+@media (max-width: 780px) {
+  .modal-segmented button { min-height: 30px; font-size: .74rem; }
+  .delivery-meta .tipo-badge { font-size: .54rem; padding: 0 4px; }
+}

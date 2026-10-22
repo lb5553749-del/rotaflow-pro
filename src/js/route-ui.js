@@ -146,6 +146,17 @@ export function updateMapNextChip() {
 export function updateDaySummary() {
     const deliveries = deps.getDeliveries();
     updateDayProgressBar(deliveries);
+    // Patch 22: total de pacotes da rota (cada parada sem quantidade conta 1).
+    const elPacotes = document.getElementById('daySumPacotes');
+    if (elPacotes) {
+        const total = deliveries.reduce((soma, d) => {
+            const n = Number(d && d.pacotes);
+            return soma + (Number.isFinite(n) && n > 0 ? Math.floor(n) : 1);
+        }, 0);
+        elPacotes.textContent = String(total);
+        const item = document.getElementById('daySumPacotesItem');
+        if (item) item.title = `${total} pacote(s) em ${deliveries.length} parada(s)`;
+    }
     const root = document.getElementById('daySummary');
     if (!root) return;
     const stats = routeDayStats(deliveries);
