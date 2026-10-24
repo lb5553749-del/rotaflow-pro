@@ -1,0 +1,28 @@
+<resources>
+    <string name="app_name">RotaFlow Pro</string>
+    <string name="nav_nova">Nova</string>
+    <string name="nav_rota">Rota</string>
+    <string name="nav_agenda">Agenda</string>
+    <string name="nav_historico">Histórico</string>
+    <string name="nav_perfil">Perfil</string>
+    <string name="title_nova_entrega">Nova entrega</string>
+    <string name="title_rota_atual">Rota atual</string>
+    <string name="client_name">Nome do cliente</string>
+    <string name="address">Endereço completo</string>
+    <string name="phones">Telefones</string>
+    <string name="packages">Pacotes</string>
+    <string name="delivery_value">Valor (R$)</string>
+    <string name="time_window">Janela de horário</string>
+    <string name="notes">Observações</string>
+    <string name="save_to_agenda">Salvar também na agenda</string>
+    <string name="add_delivery">Adicionar entrega</string>
+    <string name="optimize_route">Otimizar rota</string>
+    <string name="clear_route">Limpar rota</string>
+    <string name="archive_day">Arquivar dia</string>
+    <string name="status_pending">Pendente</string>
+    <string name="status_in_transit">Em rota</string>
+    <string name="status_delivered">Entregue</string>
+    <string name="status_failed">Falhou</string>
+    <string name="avisar_cliente">Avisar cliente</string>
+    <string name="detalhes_entrega">Detalhes da entrega</string>
+</resources>

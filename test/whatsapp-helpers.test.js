@@ -67,6 +67,24 @@ describe('buildDeliveryWhatsAppMessage', () => {
     assert.equal(msg, 'Oi Maria\nFim');
     assert.doesNotMatch(msg, /Faltam cerca de/);
   });
+  it('formats status and ETA in custom template', () => {
+    const msg = buildDeliveryWhatsAppMessage(
+      {
+        nome: 'Carlos',
+        sequentialId: 5,
+        status: 'em_rota',
+        etaHorario: '14:30'
+      },
+      { trackUrl: 'https://track.example/t5' },
+      {
+        mensagemPadrao: 'Olá {nome}! Entrega {id}. Status: {status}. Chegada: {horario}. {link}',
+        empresaPadrao: 'RotaFlow'
+      }
+    );
+    assert.match(msg, /Status: A caminho \/ Em rota/);
+    assert.match(msg, /Chegada: 14:30/);
+    assert.match(msg, /https:\/\/track\.example\/t5/);
+  });
 });
 
 describe('tracking quick-action message', () => {
@@ -79,5 +97,21 @@ describe('tracking quick-action message', () => {
     );
     assert.match(msg, /\/r\/abc123token/);
     assert.equal(ensureTrackingLinkInMessage('Oi', url), `Oi\n${url}`);
+  });
+
+  it('includes status and ETA in fallback message', () => {
+    const msg = buildTrackingQuickWhatsAppMessage(
+      {
+        nome: 'Ana',
+        sequentialId: '10',
+        status: 'em_rota',
+        etaHorario: '15:45'
+      },
+      { trackUrl: 'https://track.example/r/token123' },
+      { mensagemPadrao: '', empresaPadrao: 'RotaFlow' }
+    );
+    assert.match(msg, /status: A caminho \/ Em rota/);
+    assert.match(msg, /ETA\): 15:45/);
+    assert.match(msg, /https:\/\/track\.example\/r\/token123/);
   });
 });

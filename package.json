@@ -10,6 +10,7 @@
     "lint:fix": "npm run lint -- --fix",
     "typecheck": "tsc --noEmit -p jsconfig.json",
     "verify": "npm run lint && npm run typecheck && npm test && npm run build",
+    "dev": "node server.js",
     "build": "node scripts/build-web.js",
     "build:dev": "node scripts/build-web.js --dev",
     "stage": "node scripts/prepare-hosting.js",

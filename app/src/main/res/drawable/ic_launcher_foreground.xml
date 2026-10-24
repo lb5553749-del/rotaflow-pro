@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- Blue curved route line -->
+    <path
+        android:strokeColor="#3B82F6"
+        android:strokeWidth="6"
+        android:strokeLineCap="round"
+        android:pathData="M32,76 C32,58 76,64 76,38" />
+    <!-- Start point: Green circle -->
+    <path
+        android:fillColor="#22C55E"
+        android:pathData="M32,76m-8,0a8,8 0,1 1,16 0a8,8 0,1 1,-16 0" />
+    <!-- Destination: Red marker pin -->
+    <path
+        android:fillColor="#EF4444"
+        android:pathData="M76,38m-8,0a8,8 0,1 1,16 0a8,8 0,1 1,-16 0" />
+    <!-- Delivery truck icon badge -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M50,44h10v6h-10z M44,52h18v4h-18z" />
+</vector>

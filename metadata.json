@@ -1,0 +1,6 @@
+{
+  "name": "RotaFlow Pro",
+  "description": "Delivery management and route planning for drivers with stops, agenda, customer notifications, and metrics.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
